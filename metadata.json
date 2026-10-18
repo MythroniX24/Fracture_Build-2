@@ -1,0 +1,6 @@
+{
+  "name": "FRACTURE — 3D Arena Fighting Game",
+  "description": "Skill-based 3D industrial fantasy arena fighting game featuring procedural Colossi fighters VOLT and RIFT, tactical melee combat, AI bots, training mode, and online multiplayer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
