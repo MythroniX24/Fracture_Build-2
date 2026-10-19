@@ -6,13 +6,19 @@ export type SoundEffectType =
   | 'hit_light'
   | 'hit_heavy'
   | 'hit_ability'
+  | 'hit_marker'
+  | 'jump_thruster'
+  | 'swing_light'
   | 'blocked'
+  | 'block'
   | 'guard_break'
   | 'parried'
+  | 'parry'
   | 'dodge'
   | 'ability_volt'
   | 'ability_rift'
-  | 'ko';
+  | 'ko'
+  | 'ko_slowmo';
 
 class SoundEngine {
   private ctx: AudioContext | null = null;
@@ -39,6 +45,10 @@ class SoundEngine {
     }
 
     return this.ctx;
+  }
+
+  public unlock(): void {
+    this.ensureContext();
   }
 
   public setVolume(volume: number, muted: boolean): void {
@@ -198,6 +208,35 @@ class SoundEngine {
           break;
         }
 
+        case 'jump_thruster': {
+          // Dual jet thruster roar
+          const osc = ctx.createOscillator();
+          osc.type = 'sawtooth';
+          osc.frequency.setValueAtTime(110 * pitchJitter, now);
+          osc.frequency.linearRampToValueAtTime(260, now + 0.18);
+          osc.frequency.exponentialRampToValueAtTime(80, now + 0.35);
+          gain.gain.setValueAtTime(vol * 0.42, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+          osc.connect(gain);
+          osc.start(now);
+          osc.stop(now + 0.37);
+          break;
+        }
+
+        case 'hit_marker': {
+          // PUBG crisp hit marker tick
+          const osc = ctx.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(1200, now);
+          osc.frequency.exponentialRampToValueAtTime(600, now + 0.05);
+          gain.gain.setValueAtTime(vol * 0.55, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+          osc.connect(gain);
+          osc.start(now);
+          osc.stop(now + 0.07);
+          break;
+        }
+
         case 'ability_volt': {
           const osc = ctx.createOscillator();
           osc.type = 'sawtooth';
@@ -224,7 +263,47 @@ class SoundEngine {
           break;
         }
 
-        case 'ko': {
+        case 'swing_light': {
+          const osc = ctx.createOscillator();
+          osc.type = 'triangle';
+          osc.frequency.setValueAtTime(280 * pitchJitter, now);
+          osc.frequency.exponentialRampToValueAtTime(110, now + 0.08);
+          gain.gain.setValueAtTime(vol * 0.4, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+          osc.connect(gain);
+          osc.start(now);
+          osc.stop(now + 0.1);
+          break;
+        }
+
+        case 'block': {
+          const osc = ctx.createOscillator();
+          osc.type = 'square';
+          osc.frequency.setValueAtTime(210 * pitchJitter, now);
+          osc.frequency.exponentialRampToValueAtTime(90, now + 0.1);
+          gain.gain.setValueAtTime(vol * 0.55, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
+          osc.connect(gain);
+          osc.start(now);
+          osc.stop(now + 0.12);
+          break;
+        }
+
+        case 'parry': {
+          const osc = ctx.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(880 * pitchJitter, now);
+          osc.frequency.exponentialRampToValueAtTime(1320, now + 0.18);
+          gain.gain.setValueAtTime(vol * 0.8, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+          osc.connect(gain);
+          osc.start(now);
+          osc.stop(now + 0.23);
+          break;
+        }
+
+        case 'ko':
+        case 'ko_slowmo': {
           const osc = ctx.createOscillator();
           osc.type = 'sawtooth';
           osc.frequency.setValueAtTime(140, now);

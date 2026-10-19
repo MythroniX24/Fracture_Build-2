@@ -1,4 +1,5 @@
-import { ArenaId, CharacterId, FighterActionState } from '../game/config.ts';
+import { ArenaId, CharacterId } from '../game/config.ts';
+import { FighterActionState, FighterInput, SimulationState } from '../game/rules.ts';
 
 export interface LobbyPlayerInfo {
   id: string;
@@ -37,7 +38,13 @@ export interface RemoteFighterSyncPayload {
 
 export interface RemoteCombatEventPayload {
   playerId: string;
-  eventKind: 'attack_hit' | 'guard_hit' | 'parry' | 'ability_trigger' | 'round_over' | 'rematch_request';
+  eventKind:
+    | 'attack_hit'
+    | 'guard_hit'
+    | 'parry'
+    | 'ability_trigger'
+    | 'round_over'
+    | 'rematch_request';
   damage: number;
   knockbackX: number;
   knockbackZ: number;
@@ -55,11 +62,14 @@ type Listener = () => void;
 
 export class MultiplayerClient {
   private ws: WebSocket | null = null;
-  public connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'error' = 'disconnected';
+  public connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'error' =
+    'disconnected';
   public errorMessage: string | null = null;
   public localPlayerId: string | null = null;
+  public localRole: 'host' | 'guest' = 'host';
   public currentRoom: RoomStatePayload | null = null;
   public latencyMs = 0;
+  public latestGuestInput: FighterInput | null = null;
 
   private listeners = new Set<Listener>();
   private onMatchStartCallback: ((room: RoomStatePayload) => void) | null = null;
@@ -92,7 +102,10 @@ export class MultiplayerClient {
   }
 
   public connect(): void {
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)
+    ) {
       return;
     }
 
@@ -171,13 +184,20 @@ export class MultiplayerClient {
       }
 
       case 'room_state': {
+        const players = Array.isArray(msg.players)
+          ? (msg.players as LobbyPlayerInfo[])
+          : [];
+        const self = players.find((p) => p.id === this.localPlayerId);
+        if (self) {
+          this.localRole = self.role;
+        }
         this.currentRoom = {
           code: String(msg.code),
-          arenaId: msg.arenaId === 'overgrown_colossus' ? 'overgrown_colossus' : 'iron_fortress',
+          arenaId: 'foundry_arena',
           roundsToWin: Number(msg.roundsToWin) || 2,
           roundTimeSeconds: Number(msg.roundTimeSeconds) || 90,
           status: (msg.status as 'lobby' | 'playing' | 'finished') || 'lobby',
-          players: Array.isArray(msg.players) ? (msg.players as LobbyPlayerInfo[]) : [],
+          players,
         };
         this.errorMessage = null;
         this.notify();
@@ -189,6 +209,13 @@ export class MultiplayerClient {
           this.currentRoom.status = 'playing';
           this.notify();
           this.onMatchStartCallback?.(this.currentRoom);
+        }
+        break;
+      }
+
+      case 'guest_input': {
+        if (msg.input && typeof msg.input === 'object') {
+          this.latestGuestInput = msg.input as FighterInput;
         }
         break;
       }
@@ -220,6 +247,7 @@ export class MultiplayerClient {
   }
 
   public hostRoom(name: string, characterId: CharacterId, arenaId: ArenaId): void {
+    this.localRole = 'host';
     this.connect();
     const attemptSend = () => {
       if (this.ws?.readyState === WebSocket.OPEN) {
@@ -232,10 +260,16 @@ export class MultiplayerClient {
   }
 
   public joinRoom(code: string, name: string, characterId: CharacterId): void {
+    this.localRole = 'guest';
     this.connect();
     const attemptSend = () => {
       if (this.ws?.readyState === WebSocket.OPEN) {
-        this.send({ type: 'join_room', code: code.trim().toUpperCase(), name, characterId });
+        this.send({
+          type: 'join_room',
+          code: code.trim().toUpperCase(),
+          name,
+          characterId,
+        });
       } else {
         window.setTimeout(attemptSend, 100);
       }
@@ -256,7 +290,41 @@ export class MultiplayerClient {
     this.send({ type: 'start_match' });
   }
 
-  public sendFighterSync(sync: Omit<RemoteFighterSyncPayload, 'playerId' | 'timestamp'>): void {
+  public clearGuestOneShots(): void {
+    if (this.latestGuestInput) {
+      this.latestGuestInput.jumpPressed = false;
+      this.latestGuestInput.lightPressed = false;
+      this.latestGuestInput.heavyPressed = false;
+      this.latestGuestInput.guardJustPressed = false;
+      this.latestGuestInput.dodgePressed = false;
+      this.latestGuestInput.abilityPressed = false;
+      this.latestGuestInput.executionPressed = false;
+    }
+  }
+
+  public sendGuestInput(input: FighterInput): void {
+    this.send({ type: 'guest_input', input });
+  }
+
+  public sendHostSnapshot(sim: SimulationState): void {
+    this.send({
+      type: 'fighter_sync',
+      x: sim.p1.x,
+      z: sim.p1.z,
+      vx: sim.p1.vx,
+      vz: sim.p1.vz,
+      facingAngle: sim.p1.facingAngle,
+      hp: sim.p1.hp,
+      stamina: sim.p1.stamina,
+      actionState: sim.p1.action,
+      actionTimer: sim.p1.actionTimerMs,
+      abilityCooldown: sim.p1.abilityCooldownMs,
+    });
+  }
+
+  public sendFighterSync(
+    sync: Omit<RemoteFighterSyncPayload, 'playerId' | 'timestamp'>
+  ): void {
     this.send({ type: 'fighter_sync', ...sync });
   }
 

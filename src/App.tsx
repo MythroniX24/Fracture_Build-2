@@ -37,7 +37,7 @@ export function App() {
   const [p1Char, setP1Char] = useState<CharacterId>('volt');
   const [p2Char, setP2Char] = useState<CharacterId>('rift');
   const [arenaId, setArenaId] = useState<ArenaId>(
-    initialArenaParam === 'overgrown_colossus' ? 'overgrown_colossus' : 'iron_fortress'
+    initialArenaParam || 'foundry_arena'
   );
   const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>('normal');
   const [roundsToWin, setRoundsToWin] = useState<number>(2);
@@ -68,7 +68,7 @@ export function App() {
 
   // Core simulation state ref
   const simRef = useRef<SimulationState>(
-    createSimulationState('volt', 'rift', 'iron_fortress', 2, 90)
+    createSimulationState('volt', 'rift', 'foundry_arena', 2, 90)
   );
 
   // Touch input state ref
@@ -76,6 +76,9 @@ export function App() {
     moveX: 0,
     moveZ: 0,
     sprint: false,
+    jumpPressed: false,
+    shoulderTogglePressed: false,
+    aimHeld: false,
     lightPressed: false,
     heavyPressed: false,
     guardHeld: false,
@@ -110,6 +113,8 @@ export function App() {
   const timerText = useRef<HTMLSpanElement | null>(null);
   const aiStateBadge = useRef<HTMLSpanElement | null>(null);
   const lockReticle = useRef<HTMLDivElement | null>(null);
+  const crosshairRef = useRef<HTMLDivElement | null>(null);
+  const hitMarkerRef = useRef<HTMLDivElement | null>(null);
   const mobileAbilityOverlay = useRef<HTMLDivElement | null>(null);
   const mobileAbilityTimer = useRef<HTMLSpanElement | null>(null);
   const btnLightRef = useRef<HTMLButtonElement | null>(null);
@@ -141,6 +146,8 @@ export function App() {
     timerText,
     aiStateBadge,
     lockReticle,
+    crosshairRef,
+    hitMarkerRef,
     mobileAbilityOverlay,
     mobileAbilityTimer,
     btnLightRef,
@@ -372,18 +379,26 @@ export function App() {
   const handleCombatEvent = useCallback((evt: CombatEvent) => {
     if (
       evt.type === 'parried' ||
+      evt.type === 'counter_riposte' ||
+      evt.type === 'combo_breaker' ||
       evt.type === 'guard_break' ||
+      evt.type === 'execution_hit' ||
+      evt.type === 'barrel_explode' ||
+      evt.type === 'prop_shatter' ||
       evt.type === 'dodge_evade' ||
-      evt.type === 'blocked' ||
       evt.type === 'ability_cast' ||
       evt.type === 'decoy_shatter' ||
       evt.type === 'hit_heavy'
     ) {
       const colorMap: Record<string, string> = {
         parried: '#38bdf8',
+        counter_riposte: '#fbbf24',
+        combo_breaker: '#38bdf8',
         guard_break: '#ef4444',
+        execution_hit: '#f43f5e',
+        barrel_explode: '#fb923c',
+        prop_shatter: '#f59e0b',
         dodge_evade: '#e6e4e0',
-        blocked: '#94a3b8',
         ability_cast: '#d97706',
         decoy_shatter: '#a3b18a',
         hit_heavy: '#f59e0b',

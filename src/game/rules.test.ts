@@ -1,242 +1,242 @@
-import test from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  computeBotInput,
   createSimulationState,
-  createEmptyInput,
+  emptyInput,
+  getArenaSurfaceHeight,
   stepSimulation,
-  resetRoundPositions,
-  checkSpatialHit,
 } from './rules.ts';
-import { ARENA_REGISTRY, CHARACTER_REGISTRY } from './config.ts';
-import { BotAIController } from './ai.ts';
 
-test('Character definitions for VOLT and RIFT are distinct and properly configured', () => {
-  const volt = CHARACTER_REGISTRY.volt;
-  const rift = CHARACTER_REGISTRY.rift;
+describe('FRACTURE Foundry Arena v4 Combat & Physics Rules', () => {
+  it('initializes both fighters on top of the Foundry Arena central dais at y = 1.2', () => {
+    const sim = createSimulationState('volt', 'rift', 'foundry_arena', 2, 90);
+    assert.equal(sim.p1.hp, 115);
+    assert.equal(sim.p2.hp, 105);
+    assert.equal(sim.p1.y, 1.2, 'P1 should spawn on top of central dais (y = 1.2)');
+    assert.equal(sim.p2.y, 1.2, 'P2 should spawn on top of central dais (y = 1.2)');
+    assert.equal(sim.breakableProps.length, 30, 'Should have 24 breakable crates + 6 energy barrels');
+    assert.ok(sim.floorTiles.length >= 60, 'Should have procedural destructible floor tiles');
+  });
 
-  assert.ok(volt.stats.maxHp > rift.stats.maxHp, 'VOLT should have higher max HP than RIFT');
-  assert.ok(rift.stats.runSpeed > volt.stats.runSpeed, 'RIFT should move faster than VOLT');
-  assert.ok(volt.attacks.heavy.damage > rift.attacks.heavy.damage, 'VOLT heavy attack should deal more damage');
-  assert.ok(rift.attacks.light.startup < volt.attacks.light.startup, 'RIFT light attack should have faster startup');
-});
+  it('initiates a light attack, advances through windup into active frames, and damages the opponent', () => {
+    const sim = createSimulationState('volt', 'rift', 'foundry_arena', 2, 90);
+    sim.p1.x = -1.2;
+    sim.p2.x = 1.2;
+    sim.p1.facingAngle = Math.PI * 0.5;
+    sim.p2.facingAngle = -Math.PI * 0.5;
 
-test('Spatial hit detection validates range, frontal arc cone, and single-hit per swing', () => {
-  const sim = createSimulationState('volt', 'rift', 'iron_fortress', 2, 90);
-  // Place fighters within melee range facing each other
-  sim.p1.x = -1.0;
-  sim.p1.z = 0;
-  sim.p1.facingAngle = Math.PI / 2; // facing +X
-  sim.p2.x = 0.8;
-  sim.p2.z = 0;
-  sim.p2.facingAngle = -Math.PI / 2; // facing -X
+    const p1In = emptyInput();
+    p1In.lightPressed = true;
+    stepSimulation(sim, p1In, emptyInput(), 16);
+    assert.equal(sim.p1.action, 'attack_windup');
+    assert.equal(sim.p1.currentAttack, 'light_1');
 
-  const initialHp = sim.p2.hp;
-  const p1Input = createEmptyInput();
-  p1Input.lightAttackJustPressed = true;
-
-  // Frame 1: trigger light attack
-  stepSimulation(sim, p1Input, createEmptyInput(), 0.016);
-  assert.equal(sim.p1.actionState, 'light_startup');
-
-  // Step through startup and active frames
-  for (let i = 0; i < 30; i++) {
-    stepSimulation(sim, createEmptyInput(), createEmptyInput(), 0.016);
-  }
-
-  assert.equal(
-    sim.p2.hp,
-    initialHp - CHARACTER_REGISTRY.volt.attacks.light.damage,
-    'Defender should take exact light attack damage once'
-  );
-  assert.equal(sim.p1.attacksLanded, 1, 'Single swing should only register one hit');
-});
-
-test('Input buffering queues attack during active/recovery frames and chains 3-hit combo', () => {
-  const sim = createSimulationState('rift', 'volt', 'iron_fortress');
-  sim.p1.x = -0.8;
-  sim.p1.z = 0;
-  sim.p1.facingAngle = Math.PI / 2;
-  sim.p2.x = 0.8;
-  sim.p2.z = 0;
-  sim.p2.facingAngle = -Math.PI / 2;
-
-  // Trigger 1st Light Attack
-  const p1Strike1 = createEmptyInput();
-  p1Strike1.lightAttackJustPressed = true;
-  stepSimulation(sim, p1Strike1, createEmptyInput(), 0.02);
-  assert.equal(sim.p1.actionState, 'light_startup');
-  assert.equal(sim.p1.comboStep, 0);
-
-  // Advance into active frames so 1st hit lands
-  for (let i = 0; i < 10; i++) {
-    stepSimulation(sim, createEmptyInput(), createEmptyInput(), 0.02);
-  }
-  assert.equal(sim.p1.attacksLanded, 1);
-
-  // Queue 2nd Light Attack while still in active/early recovery
-  const p1BufferStrike2 = createEmptyInput();
-  p1BufferStrike2.lightAttackJustPressed = true;
-  stepSimulation(sim, p1BufferStrike2, createEmptyInput(), 0.02);
-
-  // Advance frames and confirm buffered 2nd strike fires and increments comboStep to 1
-  let sawComboStep1 = false;
-  for (let i = 0; i < 12; i++) {
-    stepSimulation(sim, createEmptyInput(), createEmptyInput(), 0.02);
-    if (sim.p1.comboStep === 1 && sim.p1.actionState === 'light_startup') {
-      sawComboStep1 = true;
+    for (let i = 0; i < 20; i++) {
+      stepSimulation(sim, emptyInput(), emptyInput(), 20);
     }
-  }
-  assert.equal(sawComboStep1, true, 'Buffered light attack should chain into combo step 1');
+
+    assert.ok(sim.p2.hp < 105, `Expected P2 HP < 105 after hit, got ${sim.p2.hp}`);
+    assert.equal(sim.p1.comboCount, 1);
+  });
+
+  it('triggers a precision parry when defender presses guard just before an attack lands', () => {
+    const sim = createSimulationState('volt', 'rift', 'foundry_arena', 2, 90);
+    sim.p1.x = -1.2;
+    sim.p2.x = 1.2;
+
+    const p1Attack = emptyInput();
+    p1Attack.lightPressed = true;
+    stepSimulation(sim, p1Attack, emptyInput(), 16);
+
+    stepSimulation(sim, emptyInput(), emptyInput(), 70);
+
+    const p2Parry = emptyInput();
+    p2Parry.guardHeld = true;
+    p2Parry.guardJustPressed = true;
+    stepSimulation(sim, emptyInput(), p2Parry, 16);
+    assert.equal(sim.p2.action, 'parry_window');
+
+    for (let i = 0; i < 6; i++) {
+      stepSimulation(sim, emptyInput(), { ...emptyInput(), guardHeld: true }, 20);
+    }
+
+    assert.equal(sim.p2.parriesLanded, 1, 'Expected P2 to land a timed parry');
+    assert.equal(sim.p1.action, 'parry_stun', 'Expected attacker to enter parry_stun');
+    assert.equal(sim.p1.poise, 0, 'Parried attacker should have 0 poise and be ready for execution');
+  });
+
+  it('allows immediate Counter-Riposte with Hyper-Armor out of blockstun and hitstun breakout via Dodge/Guard', () => {
+    const sim = createSimulationState('volt', 'rift', 'foundry_arena', 2, 90);
+    sim.p1.x = -1.2;
+    sim.p2.x = 1.2;
+    sim.p1.action = 'blockstun';
+    sim.p1.actionTimerMs = 150;
+    sim.p1.actionDurationMs = 160;
+    sim.p1.counterWindowMs = 400;
+
+    // P1 presses Light Attack during blockstun after 70ms -> triggers immediate Counter-Riposte with Hyper-Armor
+    stepSimulation(sim, emptyInput(), emptyInput(), 80);
+    const counterInput = emptyInput();
+    counterInput.lightPressed = true;
+    stepSimulation(sim, counterInput, emptyInput(), 16);
+
+    assert.equal(sim.p1.action, 'attack_windup', 'Expected P1 to break out of blockstun into Counter-Riposte');
+    assert.ok(sim.p1.hyperArmorMs > 0, 'Expected Counter-Riposte to grant Hyper-Armor so bot cannot interrupt');
+
+    // Verify hitstun breakout via Dodge after 115ms so player is never locked for 1-2s
+    sim.p1.action = 'hitstun';
+    sim.p1.actionTimerMs = 240;
+    sim.p1.actionDurationMs = 240;
+    sim.p1.hyperArmorMs = 0;
+    stepSimulation(sim, emptyInput(), emptyInput(), 125);
+    const dodgeOut = emptyInput();
+    dodgeOut.dodgePressed = true;
+    stepSimulation(sim, dodgeOut, emptyInput(), 16);
+    assert.equal(sim.p1.action, 'dodge', 'Expected P1 to escape hitstun via Dodge breakout');
+  });
+
+  it('queues buffered attack inputs during stun and triggers 3-hit Combo Breaker against spam', () => {
+    const sim = createSimulationState('volt', 'rift', 'foundry_arena', 2, 90);
+    sim.p1.x = -1.1;
+    sim.p2.x = 1.1;
+    sim.p1.action = 'hitstun';
+    sim.p1.actionTimerMs = 60;
+    sim.p1.actionDurationMs = 200;
+
+    // Press light attack while still in hitstun -> should buffer and fire automatically when hitstun ends
+    const earlyTap = emptyInput();
+    earlyTap.lightPressed = true;
+    stepSimulation(sim, earlyTap, emptyInput(), 16);
+    assert.equal(sim.p1.bufferedInput, 'light', 'Expected early attack tap to be buffered during hitstun');
+
+    // Step past remaining hitstun -> buffered attack executes automatically without needing another tap
+    stepSimulation(sim, emptyInput(), emptyInput(), 60);
+    assert.equal(sim.p1.action, 'attack_windup', 'Expected buffered attack to fire immediately on hitstun exit');
+  });
+
+  it('shatters breakable crates and detonates volatile barrels when attacked', () => {
+    const sim = createSimulationState('volt', 'rift', 'foundry_arena', 2, 90);
+    const crate = sim.breakableProps.find((p) => p.kind === 'crate')!;
+    assert.ok(crate);
+
+    // Position P1 right in front of crate facing it
+    sim.p1.x = crate.x - 1.5;
+    sim.p1.z = crate.z;
+    sim.p1.y = getArenaSurfaceHeight(sim.arenaId, sim.p1.x, sim.p1.z);
+    sim.p1.facingAngle = Math.PI * 0.5;
+    // Move P2 far away
+    sim.p2.x = 18;
+    sim.p2.z = 12;
+
+    const p1Heavy = emptyInput();
+    p1Heavy.heavyPressed = true;
+    stepSimulation(sim, p1Heavy, emptyInput(), 16);
+
+    for (let i = 0; i < 30; i++) {
+      stepSimulation(sim, emptyInput(), emptyInput(), 20);
+    }
+
+    assert.equal(crate.broken, true, 'Heavy attack should shatter the crate');
+  });
+
+  it('fractures floor tiles on heavy Tectonic Ground Break and supports thruster jumping', () => {
+    const sim = createSimulationState('volt', 'rift', 'foundry_arena', 2, 90);
+    // Place P1 on the outer tiled floor grid (x = 14.5, z = 2.5)
+    sim.p1.x = 14.5;
+    sim.p1.z = 2.5;
+    sim.p1.y = getArenaSurfaceHeight(sim.arenaId, sim.p1.x, sim.p1.z);
+    sim.p1.facingAngle = 0;
+
+    const p1Heavy = emptyInput();
+    p1Heavy.heavyPressed = true;
+    stepSimulation(sim, p1Heavy, emptyInput(), 16);
+    for (let i = 0; i < 25; i++) {
+      stepSimulation(sim, emptyInput(), emptyInput(), 20);
+    }
+
+    const damagedTiles = sim.floorTiles.filter((t) => t.state > 0);
+    assert.ok(damagedTiles.length > 0, 'Expected heavy attack to crack/shatter nearby floor tiles');
+
+    // Wait for recovery to complete, then test thruster jump
+    for (let i = 0; i < 30; i++) {
+      stepSimulation(sim, emptyInput(), emptyInput(), 20);
+    }
+    const jumpIn = emptyInput();
+    jumpIn.jumpPressed = true;
+    stepSimulation(sim, jumpIn, emptyInput(), 16);
+    assert.equal(sim.p1.action, 'jump');
+    assert.ok(sim.p1.vy > 0, 'Expected positive vertical velocity on jump');
+  });
+
+  it('clamps fighters inside arena bounds and slides smoothly around pillars and intact crates', () => {
+    const sim = createSimulationState('volt', 'rift', 'foundry_arena', 2, 90);
+    sim.p1.x = -50;
+    sim.p1.z = 50;
+
+    stepSimulation(sim, emptyInput(), emptyInput(), 16);
+
+    assert.ok(sim.p1.x >= -33.5, `Expected P1 X clamped inside arena, got ${sim.p1.x}`);
+    assert.ok(sim.p1.z <= 23.5, `Expected P1 Z clamped inside arena, got ${sim.p1.z}`);
+  });
+
+  it('generates valid autonomous bot decisions and respects post-attack cooldowns', () => {
+    const sim = createSimulationState('volt', 'rift', 'foundry_arena', 2, 90);
+    const botInput = computeBotInput(sim, sim.p2, sim.p1, 'hard', 16);
+    assert.equal(typeof botInput.moveX, 'number');
+    assert.equal(typeof botInput.moveZ, 'number');
+
+    // When bot has an active aiAttackCooldownMs, it must not spam attacks
+    sim.p2.x = sim.p1.x + 1.4;
+    sim.p2.z = sim.p1.z;
+    sim.p2.aiAttackCooldownMs = 800;
+    sim.p2.aiDecisionTimerMs = 0;
+    const cooledBotInput = computeBotInput(sim, sim.p2, sim.p1, 'hard', 16);
+    assert.equal(cooledBotInput.lightPressed, false, 'Bot should not spam light attack while on attack cooldown');
+    assert.equal(cooledBotInput.heavyPressed, false, 'Bot should not spam heavy attack while on attack cooldown');
+  });
+
+  it('regenerates stamina while standing, walking, and running, and deducts scaled stamina on attacks, dash, and special ability', () => {
+    const sim = createSimulationState('volt', 'rift', 'foundry_arena', 2, 90);
+    sim.p1.stamina = 40;
+    sim.p2.stamina = 40;
+
+    // 1. Standing still regenerates stamina
+    stepSimulation(sim, emptyInput(), emptyInput(), 200);
+    assert.ok(sim.p1.stamina > 40, 'Standing still should regenerate P1 stamina');
+    assert.ok(sim.p2.stamina > 40, 'Standing still should regenerate P2 stamina');
+
+    // 2. Walking and running (sprint: true) regenerate stamina and never drain it
+    const p1AfterStand = sim.p1.stamina;
+    const p2AfterStand = sim.p2.stamina;
+    const walkInput = { ...emptyInput(), moveX: 1, moveZ: 0, sprint: false };
+    const sprintInput = { ...emptyInput(), moveX: -1, moveZ: 0, sprint: true };
+    stepSimulation(sim, walkInput, sprintInput, 250);
+    assert.ok(sim.p1.stamina > p1AfterStand, 'Walking should increase P1 stamina');
+    assert.ok(sim.p2.stamina > p2AfterStand, 'Running/sprinting should increase P2 stamina and never drain it');
+
+    // 3. Scaled stamina consumption: Light Attack (10), Dodge Dash (18), Heavy Attack (24), Special Ability (35)
+    sim.p1.stamina = 100;
+    sim.p1.action = 'idle';
+    stepSimulation(sim, { ...emptyInput(), lightPressed: true }, emptyInput(), 16);
+    assert.equal(sim.p1.stamina, 90, 'Light attack should cost 10 stamina for Volt');
+
+    sim.p1.stamina = 100;
+    sim.p1.action = 'idle';
+    stepSimulation(sim, { ...emptyInput(), dodgePressed: true }, emptyInput(), 16);
+    assert.equal(sim.p1.stamina, 82, 'Dodge dash should cost 18 stamina for Volt');
+    assert.ok(sim.events.some((e) => e.type === 'dodge_dash'), 'Should emit dodge_dash VFX event');
+
+    sim.p1.stamina = 100;
+    sim.p1.action = 'idle';
+    stepSimulation(sim, { ...emptyInput(), heavyPressed: true }, emptyInput(), 16);
+    assert.equal(sim.p1.stamina, 76, 'Heavy attack should cost 24 stamina for Volt');
+
+    sim.p1.stamina = 100;
+    sim.p1.action = 'idle';
+    sim.p1.abilityCooldownMs = 0;
+    stepSimulation(sim, { ...emptyInput(), abilityPressed: true }, emptyInput(), 16);
+    assert.equal(sim.p1.stamina, 65, 'Special ability should cost 35 stamina (> heavy attack)');
+  });
 });
 
-test('Out-of-range or facing-away attacks miss spatially', () => {
-  const arena = ARENA_REGISTRY.iron_fortress;
-  const sim = createSimulationState('volt', 'rift', 'iron_fortress');
-  sim.p1.x = 0;
-  sim.p1.z = 0;
-  sim.p1.facingAngle = Math.PI / 2; // +X
-
-  // Target behind attacker (-X)
-  const hitBehind = checkSpatialHit(sim.p1, -1.2, 0, 0.55, CHARACTER_REGISTRY.volt.attacks.light, arena);
-  assert.equal(hitBehind, false, 'Attack should miss target behind fighter');
-
-  // Target too far away (+X at 6m)
-  const hitFar = checkSpatialHit(sim.p1, 6.0, 0, 0.55, CHARACTER_REGISTRY.volt.attacks.light, arena);
-  assert.equal(hitFar, false, 'Attack should miss target beyond weapon range');
-});
-
-test('Guarding mitigates damage and drains stamina; Guard Break triggers when stamina reaches 0', () => {
-  const sim = createSimulationState('volt', 'rift', 'iron_fortress');
-  sim.p1.x = -0.9;
-  sim.p1.z = 0;
-  sim.p1.facingAngle = Math.PI / 2;
-  sim.p2.x = 0.9;
-  sim.p2.z = 0;
-  sim.p2.facingAngle = -Math.PI / 2;
-  sim.p2.actionState = 'block';
-  sim.p2.stamina = 25; // Low enough that VOLT's heavy attack (38 guard damage) breaks guard!
-
-  const p1Input = createEmptyInput();
-  p1Input.heavyAttackJustPressed = true;
-  const p2Input = createEmptyInput();
-  p2Input.guardHeld = true;
-
-  stepSimulation(sim, p1Input, p2Input, 0.016);
-  for (let i = 0; i < 40; i++) {
-    stepSimulation(sim, createEmptyInput(), p2Input, 0.016);
-  }
-
-  assert.equal(sim.p2.stamina, 0, 'Defender stamina should be depleted on guard crush');
-  assert.equal(sim.p2.actionState, 'stagger', 'Defender should enter stagger state after guard crush');
-});
-
-test('Parry window deflects incoming attack and staggers the attacker', () => {
-  const sim = createSimulationState('volt', 'rift', 'iron_fortress');
-  sim.p1.x = -0.9;
-  sim.p1.z = 0;
-  sim.p1.facingAngle = Math.PI / 2;
-  sim.p2.x = 0.9;
-  sim.p2.z = 0;
-  sim.p2.facingAngle = -Math.PI / 2;
-
-  // P1 initiates light attack (0.15s startup)
-  const p1Input = createEmptyInput();
-  p1Input.lightAttackJustPressed = true;
-  stepSimulation(sim, p1Input, createEmptyInput(), 0.02);
-
-  // Advance 0.10s into startup, then P2 presses Guard to trigger Parry window
-  for (let i = 0; i < 5; i++) {
-    stepSimulation(sim, createEmptyInput(), createEmptyInput(), 0.02);
-  }
-  const p2ParryInput = createEmptyInput();
-  p2ParryInput.guardJustPressed = true;
-  p2ParryInput.guardHeld = true;
-  stepSimulation(sim, createEmptyInput(), p2ParryInput, 0.02);
-  assert.equal(sim.p2.actionState, 'parry_active');
-
-  // Step into active hit frame
-  for (let i = 0; i < 5; i++) {
-    stepSimulation(sim, createEmptyInput(), createEmptyInput(), 0.02);
-  }
-
-  assert.equal(sim.p2.parriesLanded, 1, 'Defender should register a successful parry');
-  assert.equal(sim.p1.actionState, 'stagger', 'Attacker should be staggered by parry');
-});
-
-test('RIFT False Remnant ability spawns a decoy and triggers cooldown', () => {
-  const sim = createSimulationState('rift', 'volt', 'overgrown_colossus');
-  const p1Input = createEmptyInput();
-  p1Input.abilityJustPressed = true;
-
-  stepSimulation(sim, p1Input, createEmptyInput(), 0.016);
-  assert.equal(sim.p1.decoy.active, true, 'RIFT decoy should be active after casting False Remnant');
-  assert.ok(sim.p1.abilityCooldown > 5, 'Ability cooldown should be active');
-});
-
-test('Arena boundary clamping keeps fighters inside playable radius', () => {
-  const sim = createSimulationState('volt', 'rift', 'iron_fortress');
-  sim.p1.x = 99;
-  sim.p1.z = -99;
-
-  stepSimulation(sim, createEmptyInput(), createEmptyInput(), 0.016);
-  const dist = Math.hypot(sim.p1.x, sim.p1.z);
-  assert.ok(
-    dist <= ARENA_REGISTRY.iron_fortress.playableRadius,
-    'Fighter position should be clamped inside arena playable radius'
-  );
-});
-
-test('KO increments round score, resets positions on next round, and completes match', () => {
-  const sim = createSimulationState('volt', 'rift', 'iron_fortress', 2, 90);
-  sim.p1.x = -0.9;
-  sim.p1.z = 0;
-  sim.p2.x = 0.9;
-  sim.p2.z = 0;
-  sim.p2.hp = 5; // Low HP for KO
-
-  const p1Input = createEmptyInput();
-  p1Input.lightAttackJustPressed = true;
-  stepSimulation(sim, p1Input, createEmptyInput(), 0.02);
-  for (let i = 0; i < 20; i++) {
-    stepSimulation(sim, createEmptyInput(), createEmptyInput(), 0.02);
-  }
-
-  assert.equal(sim.roundOver, true);
-  assert.equal(sim.roundWinner, 'p1');
-  assert.equal(sim.p1RoundsWon, 1);
-  assert.equal(sim.matchOver, false);
-
-  // Reset for Round 2 and win again
-  sim.roundNumber = 2;
-  resetRoundPositions(sim);
-  assert.equal(sim.roundOver, false);
-  assert.equal(sim.p2.hp, CHARACTER_REGISTRY.rift.stats.maxHp);
-
-  sim.p1.x = -0.9;
-  sim.p2.x = 0.9;
-  sim.p2.hp = 5;
-  stepSimulation(sim, p1Input, createEmptyInput(), 0.02);
-  for (let i = 0; i < 20; i++) {
-    stepSimulation(sim, createEmptyInput(), createEmptyInput(), 0.02);
-  }
-
-  assert.equal(sim.p1RoundsWon, 2);
-  assert.equal(sim.matchOver, true);
-  assert.equal(sim.matchWinner, 'p1');
-});
-
-test('Bot AI controller transitions states sensibly across distances and difficulties', () => {
-  const sim = createSimulationState('volt', 'rift', 'iron_fortress');
-  const ai = new BotAIController(42);
-
-  // At spawn distance (9m apart), AI should approach
-  const out1 = ai.computeInput(sim, sim.p2, sim.p1, 'normal', 'active_bot', 0.3);
-  assert.equal(ai.currentState, 'approach');
-  assert.ok(Math.hypot(out1.moveX, out1.moveZ) > 0.1, 'Bot should output movement vector when approaching');
-
-  // When backed near arena boundary, AI should return to combat center
-  sim.p2.x = 10.8;
-  sim.p2.z = 0;
-  ai.computeInput(sim, sim.p2, sim.p1, 'hard', 'active_bot', 0.3);
-  assert.equal(ai.currentState, 'return_to_combat');
-});
