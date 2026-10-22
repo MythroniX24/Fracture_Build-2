@@ -1,118 +1,161 @@
 import {
   ARENA_REGISTRY,
+  type ArenaDefinition,
+  type ArenaId,
   BOT_DIFFICULTIES,
-  CHARACTER_REGISTRY,
+  type BotDifficulty,
+  type CharacterId,
+  DEATHMATCH_DURATION_SECONDS,
+  LOADOUT_PAIRS,
+  type MapBoxBlock,
+  type SurfaceMaterial,
+  type TrainingConfig,
+  WEAPON_ORDER,
+  WEAPON_REGISTRY,
+  type WeaponId,
 } from './config.ts';
-import type {
-  ArenaId,
-  AttackSpec,
-  BotDifficulty,
-  CharacterId,
-  TrainingConfig,
-} from './config.ts';
 
-export type FighterActionState =
-  | 'idle'
-  | 'move'
-  | 'sprint'
-  | 'jump'
-  | 'dodge'
-  | 'block'
-  | 'parry_window'
-  | 'attack_windup'
-  | 'attack_active'
-  | 'attack_recovery'
-  | 'hitstun'
-  | 'blockstun'
-  | 'guard_break'
-  | 'parry_stun';
+export type { SurfaceMaterial };
 
-export type AttackKind =
-  | 'light_1'
-  | 'light_2'
-  | 'light_3'
-  | 'heavy'
-  | 'ability'
-  | 'dash_strike'
-  | 'aerial_slam'
-  | 'execution';
-
-export interface FighterInput {
-  moveX: number; // -1 to 1 (World X)
-  moveZ: number; // -1 to 1 (World Z)
-  sprint: boolean;
-  jumpPressed?: boolean;
-  lightPressed: boolean;
-  heavyPressed: boolean;
-  guardHeld: boolean;
-  guardJustPressed: boolean;
-  dodgePressed: boolean;
-  abilityPressed: boolean;
-  executionPressed?: boolean;
+export interface PlayerInputSnapshot {
+  moveX: number; // -1 (left) to +1 (right) strafe
+  moveZ: number; // -1 (forward) to +1 (backward)
+  lookDeltaYaw: number; // radians delta
+  lookDeltaPitch: number; // radians delta
+  sprintHeld: boolean;
+  jumpPressed: boolean;
+  crouchToggled: boolean;
+  crouchHeld?: boolean;
+  slidePressed?: boolean;
+  fireHeld: boolean;
+  fireJustPressed: boolean;
+  adsHeld: boolean;
+  reloadPressed: boolean;
+  selectWeapon?: WeaponId | null;
+  cycleWeaponDelta?: number; // +1 or -1
 }
 
-export interface CombatEvent {
-  type:
-    | 'attack_swing'
-    | 'dodge_dash'
-    | 'hit_light'
-    | 'hit_heavy'
-    | 'hit_ability'
-    | 'execution_hit'
-    | 'blocked'
-    | 'parried'
-    | 'counter_riposte'
-    | 'combo_breaker'
-    | 'guard_break'
-    | 'dodge_evade'
-    | 'ability_cast'
-    | 'decoy_spawn'
-    | 'decoy_shatter'
-    | 'prop_hit'
-    | 'prop_shatter'
-    | 'barrel_explode'
-    | 'tile_crack'
-    | 'tile_shatter'
-    | 'ko'
-    | 'round_end';
-  attackerId?: 'p1' | 'p2';
-  defenderId?: 'p1' | 'p2';
-  attackKind?: AttackKind;
-  facingAngle?: number;
-  x: number;
-  y: number;
-  z: number;
-  damage?: number;
-  label: string;
-  propId?: string;
-  propKind?: 'crate' | 'barrel';
+export interface WeaponAmmoState {
+  mag: number;
+  reserve: number;
 }
 
-export interface DecoyState {
-  active: boolean;
-  ownerId: 'p1' | 'p2';
+export interface PlayerShooterState {
   characterId: CharacterId;
-  x: number;
-  z: number;
-  facingAngle: number;
-  hp: number;
-  remainingMs: number;
-}
-
-export interface PlasmaProjectileState {
-  id: string;
-  ownerId: 'p1' | 'p2';
   x: number;
   y: number;
   z: number;
   vx: number;
   vy: number;
   vz: number;
-  radius: number;
-  damage: number;
-  poiseDamage: number;
-  remainingMs: number;
+  yaw: number; // radians, 0 = looking toward -Z (North)
+  pitch: number; // radians, positive = looking up
+  hp: number;
+  maxHp: number;
+  stamina: number;
+  maxStamina: number;
+  isGrounded: boolean;
+  isCrouching: boolean;
+  isSliding: boolean;
+  slideTimerMs: number;
+  slideCooldownMs: number;
+  slideDirX: number;
+  slideDirZ: number;
+  isSprinting: boolean;
+  isAds: boolean;
+  adsBlend: number; // 0 (hip) to 1 (full ADS)
+  eyeHeight: number;
+  loadoutWeapons: [WeaponId, WeaponId];
+  activeWeapon: WeaponId;
+  previousWeapon?: WeaponId;
+  weapons: Record<WeaponId, WeaponAmmoState>;
+  fireCooldownMs: number;
+  reloadTimerMs: number;
+  isReloading: boolean;
+  weaponSwitchTimerMs: number;
+  weaponSwitchDurationMs?: number;
+  awaitingRespawn?: boolean;
+  recoilKickPitch: number;
+  recoilKickYaw: number;
+  muzzleFlashTimerMs: number;
+  hurtFlashMs: number;
+  walkBobPhase: number;
+  currentSurface: SurfaceMaterial;
+  footstepDistance: number;
+  footstepCount: number;
+  wallObstruction: number;
+  kills: number;
+  deaths: number;
+  headshots: number;
+  shotsFired: number;
+  shotsHit: number;
+  score: number;
+  streak: number;
+}
+
+export type EnemyArchetype = 'assault' | 'rusher' | 'sniper';
+
+export interface EnemyBotState {
+  id: string;
+  name: string;
+  archetype: EnemyArchetype;
+  weaponId: WeaponId;
+  secondaryWeaponId: WeaponId;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vz: number;
+  yaw: number;
+  hp: number;
+  maxHp: number;
+  kills: number;
+  deaths: number;
+  score: number;
+  skirmishTimerMs: number;
+  state: 'patrol' | 'advance' | 'strafe' | 'telegraph' | 'attack' | 'hitstun' | 'ko';
+  stateTimerMs: number;
+  fireCooldownMs: number;
+  telegraphTimerMs: number;
+  hitFlashMs: number;
+  koTimerMs: number;
+  respawnTimerMs: number;
+  muzzleFlashTimerMs: number;
+  attackAnimTimerMs: number;
+  strafeDir: 1 | -1;
+  patrolX: number;
+  patrolZ: number;
+  walkCycle: number;
+}
+
+export interface LeaderboardEntry {
+  id: string;
+  name: string;
+  isPlayer: boolean;
+  kills: number;
+  deaths: number;
+  score: number;
+  weapons: [WeaponId, WeaponId];
+}
+
+export interface BulletTrace {
+  id: number;
+  fromX: number;
+  fromY: number;
+  fromZ: number;
+  toX: number;
+  toY: number;
+  toZ: number;
+  ttlMs: number;
+  maxTtlMs: number;
   colorHex: number;
+  isHeadshot: boolean;
+  isEnemyShot: boolean;
+  weaponId?: WeaponId;
+  hitNormalX: number;
+  hitNormalY: number;
+  hitNormalZ: number;
+  hitKind: 'wall' | 'enemy' | 'headshot' | 'prop' | 'sky';
 }
 
 export interface BreakablePropState {
@@ -126,2038 +169,2152 @@ export interface BreakablePropState {
   hp: number;
   maxHp: number;
   broken: boolean;
+  brokenTimerMs: number;
   hitFlashMs: number;
   explosiveRadius?: number;
   explosiveDamage?: number;
 }
 
-export interface FloorTileState {
-  index: number;
-  ring: number;
-  angle: number;
+export interface MapPickupState {
+  id: string;
   x: number;
   z: number;
-  w: number;
-  d: number;
-  state: 0 | 1 | 2; // 0 = intact, 1 = cracked, 2 = shattered
+  kind: 'ammo' | 'health';
+  active: boolean;
+  respawnTimerMs: number;
 }
 
-export interface FighterState {
-  id: 'p1' | 'p2';
-  characterId: CharacterId;
-  x: number;
-  y: number;
-  z: number;
-  vx: number;
-  vy: number;
-  vz: number;
-  facingAngle: number;
-  hp: number;
-  maxHp: number;
-  ghostHp: number; // Trails behind hp for readable damage drain bar
-  stamina: number;
-  maxStamina: number;
-  poise: number;
-  maxPoise: number;
-  staminaRegenDelayMs: number;
-  action: FighterActionState;
-  actionTimerMs: number;
-  actionDurationMs: number;
-  currentAttack: AttackKind | null;
-  attackHasHit: boolean;
-  queuedAttack: AttackKind | null;
-  comboCount: number;
-  comboDamage: number;
-  comboResetTimerMs: number;
-  abilityCooldownMs: number;
-  invulnerableMs: number;
-  hitFlashMs: number;
-  dodgeDirX: number;
-  dodgeDirZ: number;
-  parriesLanded: number;
-  totalDamageDealt: number;
-  aiDecisionTimerMs: number;
-  aiCurrentOrder: 'advance' | 'strafe_left' | 'strafe_right' | 'retreat' | 'guard' | 'attack';
-  aiAttackCooldownMs?: number;
-  aiComboRolled?: boolean;
-  bufferedInput?: 'light' | 'heavy' | 'dodge' | 'ability' | 'execution' | 'jump' | null;
-  bufferTimerMs?: number;
-  hyperArmorMs: number;
-  counterWindowMs: number;
-  consecutiveHitsTaken?: number;
+export interface CombatEvent {
+  type:
+    | 'shot_fired'
+    | 'hit_body'
+    | 'headshot'
+    | 'enemy_killed'
+    | 'player_hurt'
+    | 'player_respawn'
+    | 'reload_start'
+    | 'reload_done'
+    | 'dry_fire'
+    | 'weapon_switch'
+    | 'slide_start'
+    | 'footstep'
+    | 'barrel_explode'
+    | 'prop_shatter'
+    | 'pickup_collected'
+    | 'wave_clear';
+  actor: 'p1' | 'p2';
+  label: string;
+  weaponId?: WeaponId;
+  surface?: SurfaceMaterial;
+  stepIntensity?: 'walk' | 'sprint' | 'crouch' | 'land';
+  damage?: number;
+  x?: number;
+  y?: number;
+  z?: number;
 }
 
 export interface SimulationState {
   arenaId: ArenaId;
+  player: PlayerShooterState;
+  enemies: EnemyBotState[];
+  traces: BulletTrace[];
+  breakableProps: BreakablePropState[];
+  pickups: MapPickupState[];
+  waveNumber: number;
+  waveKills: number;
+  waveTargetKills: number;
   roundNumber: number;
   roundsToWin: number;
   p1RoundsWon: number;
   p2RoundsWon: number;
-  roundTimerMs: number;
-  maxRoundTimeMs: number;
-  hitstopMs: number;
-  slowMoMs: number;
-  screenShake: number;
+  roundTimerSec: number;
+  maxRoundTimeSec: number;
   roundOver: boolean;
-  roundWinner: 'p1' | 'p2' | 'draw' | null;
   matchOver: boolean;
+  roundWinner: 'p1' | 'p2' | 'draw' | null;
   matchWinner: 'p1' | 'p2' | null;
-  p1: FighterState;
-  p2: FighterState;
-  decoy: DecoyState | null;
-  projectiles: PlasmaProjectileState[];
-  breakableProps: BreakablePropState[];
-  floorTiles: FloorTileState[];
-  events: CombatEvent[];
+  winnerName: string | null;
+  winnerKills: number;
+  hitstopMs: number;
+  cameraShakeTrauma: number;
+  nextTraceId: number;
+  // Backwards-compatible fighter references for existing UI/menus
+  p1: PlayerShooterState;
+  p2: { characterId: CharacterId; hp: number; maxHp: number };
 }
 
-function foundryTileHash(x: number, y: number, z: number): number {
-  const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
-  return s - Math.floor(s);
-}
-
-export function createFloorTiles(): FloorTileState[] {
-  const tiles: FloorTileState[] = [];
-  const gridCols = 12;
-  const gridRows = 8;
-  const TS = 5;
-
-  for (let r = 0; r < gridRows; r++) {
-    for (let c = 0; c < gridCols; c++) {
-      // Skip tiles directly underneath the 20x10m central dais (c in 4..7, r in 3..4)
-      if (c >= 4 && c <= 7 && r >= 3 && r <= 4) continue;
-      const fc = Math.min(c, gridCols - 1 - c);
-      const fr = Math.min(r, gridRows - 1 - r);
-      const v = foundryTileHash(fc * 3.1, fr * 7.7, 5.5);
-      const prot = c >= 3 && c <= 8 && r >= 2 && r <= 5;
-      const initState: 0 | 1 | 2 = prot ? 0 : v > 0.88 ? 2 : v > 0.7 ? 1 : 0;
-
-      const x = (c - gridCols / 2 + 0.5) * TS;
-      const z = (r - gridRows / 2 + 0.5) * TS;
-      tiles.push({
-        ring: c,
-        index: r,
-        angle: Math.atan2(z, x),
-        x,
-        z,
-        w: TS - 0.12,
-        d: TS - 0.12,
-        state: initState,
-      });
-    }
+function createInitialWeaponsMap(): Record<WeaponId, WeaponAmmoState> {
+  const map = {} as Record<WeaponId, WeaponAmmoState>;
+  for (const id of WEAPON_ORDER) {
+    const spec = WEAPON_REGISTRY[id];
+    map[id] = {
+      mag: spec.magSize,
+      reserve: spec.reserveMax,
+    };
   }
-  return tiles;
+  return map;
 }
 
-export function createBreakableProps(arenaId: ArenaId): BreakablePropState[] {
-  const arena = ARENA_REGISTRY[arenaId] || ARENA_REGISTRY.foundry_arena;
-  return arena.breakableProps.map((spec) => ({
-    id: spec.id,
-    kind: spec.kind,
-    x: spec.x,
-    z: spec.z,
-    rotY: spec.rotY,
-    radius: spec.radius,
-    height: spec.height,
-    hp: spec.maxHp,
-    maxHp: spec.maxHp,
-    broken: false,
-    hitFlashMs: 0,
-    explosiveRadius: spec.explosiveRadius,
-    explosiveDamage: spec.explosiveDamage,
-  }));
-}
-
-/**
- * Returns the exact ground elevation (Y) at a given (X, Z) coordinate in the Foundry Arena v4.
- * Central Safe Dais in fracture-foundry-arena-v4.html:
- * - Rectangular dais: width = 20m (|x| <= 10), depth = 10m (|z| <= 5), height = 1.2m
- * - West & East stepped ramps: 10 < |x| <= 11.85 and |z| <= 3.05, ramping from y = 1.2m down to y = 0.0m
- */
-export function getArenaSurfaceHeight(_arenaId: ArenaId, x: number, z: number): number {
-  const ax = Math.abs(x);
-  const az = Math.abs(z);
-  if (ax <= 10.0 && az <= 5.0) {
-    return 1.2;
-  }
-  if (ax > 10.0 && ax <= 11.85 && az <= 3.05) {
-    const t = (ax - 10.0) / 1.85;
-    return Math.max(0, 1.2 * (1 - t));
-  }
-  return 0;
-}
-
-export function createFighterState(
-  id: 'p1' | 'p2',
-  characterId: CharacterId,
-  x: number,
-  z: number,
-  facingAngle: number,
-  arenaId: ArenaId = 'foundry_arena'
-): FighterState {
-  const def = CHARACTER_REGISTRY[characterId];
-  const initialY = getArenaSurfaceHeight(arenaId, x, z);
+export function createPlayerShooterState(
+  characterId: CharacterId = 'volt',
+  startWeapon: WeaponId = 'm4a1',
+  loadoutPair: [WeaponId, WeaponId] = LOADOUT_PAIRS[0].weapons
+): PlayerShooterState {
+  const pair: [WeaponId, WeaponId] =
+    loadoutPair && loadoutPair.length === 2 ? [loadoutPair[0], loadoutPair[1]] : ['m4a1', 'awp'];
+  const initialActive = pair.includes(startWeapon) ? startWeapon : pair[0];
   return {
-    id,
     characterId,
-    x,
-    y: initialY,
-    z,
+    x: 0,
+    y: 0,
+    z: 20, // Spawns in South courtyard facing North (-Z) toward central compound
     vx: 0,
     vy: 0,
     vz: 0,
-    facingAngle,
-    hp: def.stats.maxHp,
-    maxHp: def.stats.maxHp,
-    ghostHp: def.stats.maxHp,
-    stamina: def.stats.maxStamina,
-    maxStamina: def.stats.maxStamina,
-    poise: def.stats.maxPoise,
-    maxPoise: def.stats.maxPoise,
-    staminaRegenDelayMs: 0,
-    action: 'idle',
-    actionTimerMs: 0,
-    actionDurationMs: 0,
-    currentAttack: null,
-    attackHasHit: false,
-    queuedAttack: null,
-    comboCount: 0,
-    comboDamage: 0,
-    comboResetTimerMs: 0,
-    abilityCooldownMs: 0,
-    invulnerableMs: 0,
-    hitFlashMs: 0,
-    dodgeDirX: 0,
-    dodgeDirZ: 0,
-    parriesLanded: 0,
-    totalDamageDealt: 0,
-    aiDecisionTimerMs: 0,
-    aiCurrentOrder: 'advance',
-    aiAttackCooldownMs: 0,
-    aiComboRolled: false,
-    bufferedInput: null,
-    bufferTimerMs: 0,
-    hyperArmorMs: 0,
-    counterWindowMs: 0,
-    consecutiveHitsTaken: 0,
+    yaw: 0, // Facing North (-Z)
+    pitch: 0,
+    hp: 100,
+    maxHp: 100,
+    stamina: 100,
+    maxStamina: 100,
+    isGrounded: true,
+    isCrouching: false,
+    isSliding: false,
+    slideTimerMs: 0,
+    slideCooldownMs: 0,
+    slideDirX: 0,
+    slideDirZ: -1,
+    isSprinting: false,
+    isAds: false,
+    adsBlend: 0,
+    eyeHeight: 1.68,
+    loadoutWeapons: pair,
+    activeWeapon: initialActive,
+    previousWeapon: initialActive,
+    weapons: createInitialWeaponsMap(),
+    fireCooldownMs: 0,
+    reloadTimerMs: 0,
+    isReloading: false,
+    weaponSwitchTimerMs: 0,
+    weaponSwitchDurationMs: 340,
+    awaitingRespawn: false,
+    recoilKickPitch: 0,
+    recoilKickYaw: 0,
+    muzzleFlashTimerMs: 0,
+    hurtFlashMs: 0,
+    walkBobPhase: 0,
+    currentSurface: 'concrete',
+    footstepDistance: 1.5,
+    footstepCount: 0,
+    wallObstruction: 0,
+    kills: 0,
+    deaths: 0,
+    headshots: 0,
+    shotsFired: 0,
+    shotsHit: 0,
+    score: 0,
+    streak: 0,
   };
 }
 
+function createInitialEnemies(arena: ArenaDefinition): EnemyBotState[] {
+  const templates: {
+    id: string;
+    name: string;
+    archetype: EnemyArchetype;
+    weaponId: WeaponId;
+    secondaryWeaponId: WeaponId;
+    spawnIdx: number;
+    hp: number;
+  }[] = [
+    { id: 'bot_1', name: 'Vanguard-1', archetype: 'assault', weaponId: 'm4a1', secondaryWeaponId: 'awp', spawnIdx: 0, hp: 100 },
+    { id: 'bot_2', name: 'Striker-2', archetype: 'rusher', weaponId: 'mp5', secondaryWeaponId: 'deagle', spawnIdx: 1, hp: 90 },
+    { id: 'bot_3', name: 'Breacher-3', archetype: 'rusher', weaponId: 'spas12', secondaryWeaponId: 'ak47', spawnIdx: 2, hp: 95 },
+    { id: 'bot_4', name: 'Overwatch-4', archetype: 'sniper', weaponId: 'awp', secondaryWeaponId: 'm4a1', spawnIdx: 7, hp: 85 },
+    { id: 'bot_5', name: 'Sentinel-5', archetype: 'assault', weaponId: 'ak47', secondaryWeaponId: 'spas12', spawnIdx: 3, hp: 105 },
+    { id: 'bot_6', name: 'Enforcer-6', archetype: 'assault', weaponId: 'm4a1', secondaryWeaponId: 'deagle', spawnIdx: 4, hp: 100 },
+  ];
+
+  return templates.map((t, idx) => {
+    const sp = arena.spawnPoints[t.spawnIdx % arena.spawnPoints.length] || { x: 0, z: -30 };
+    return {
+      id: t.id,
+      name: t.name,
+      archetype: t.archetype,
+      weaponId: t.weaponId,
+      secondaryWeaponId: t.secondaryWeaponId,
+      x: sp.x,
+      y: 0,
+      z: sp.z,
+      vx: 0,
+      vz: 0,
+      yaw: Math.PI, // Facing South (+Z) toward player
+      hp: t.hp,
+      maxHp: t.hp,
+      kills: 0,
+      deaths: 0,
+      score: 0,
+      skirmishTimerMs: 11000 + idx * 3500,
+      state: 'advance',
+      stateTimerMs: 600 + idx * 150,
+      fireCooldownMs: 900 + idx * 220,
+      telegraphTimerMs: 0,
+      hitFlashMs: 0,
+      koTimerMs: 0,
+      respawnTimerMs: 0,
+      muzzleFlashTimerMs: 0,
+      attackAnimTimerMs: 0,
+      strafeDir: idx % 2 === 0 ? 1 : -1,
+      patrolX: sp.x,
+      patrolZ: sp.z,
+      walkCycle: 0,
+    };
+  });
+}
+
+export function getMatchLeaderboard(sim: SimulationState): LeaderboardEntry[] {
+  const entries: LeaderboardEntry[] = [
+    {
+      id: 'player',
+      name: 'YOU (OPERATOR)',
+      isPlayer: true,
+      kills: sim.player.kills,
+      deaths: sim.player.deaths,
+      score: sim.player.score,
+      weapons: sim.player.loadoutWeapons,
+    },
+    ...sim.enemies.map((b) => ({
+      id: b.id,
+      name: b.name,
+      isPlayer: false,
+      kills: b.kills,
+      deaths: b.deaths,
+      score: b.score,
+      weapons: [b.weaponId, b.secondaryWeaponId] as [WeaponId, WeaponId],
+    })),
+  ];
+
+  entries.sort((a, b) => {
+    if (b.kills !== a.kills) return b.kills - a.kills;
+    if (b.score !== a.score) return b.score - a.score;
+    if (a.deaths !== b.deaths) return a.deaths - b.deaths;
+    return a.isPlayer ? -1 : 1;
+  });
+
+  return entries;
+}
+
 export function createSimulationState(
-  p1Char: CharacterId,
-  p2Char: CharacterId,
+  p1Char: CharacterId = 'volt',
+  p2Char: CharacterId = 'rift',
   arenaId: ArenaId = 'foundry_arena',
   roundsToWin = 2,
-  roundTimeSeconds = 90
+  roundTimeSeconds = DEATHMATCH_DURATION_SECONDS,
+  loadoutPair: [WeaponId, WeaponId] = LOADOUT_PAIRS[0].weapons
 ): SimulationState {
-  const maxRoundTimeMs = roundTimeSeconds * 1000;
+  const arena = ARENA_REGISTRY[arenaId] || ARENA_REGISTRY.foundry_arena;
+  const player = createPlayerShooterState(p1Char, loadoutPair[0], loadoutPair);
+  const enemies = createInitialEnemies(arena);
+
+  const breakableProps: BreakablePropState[] = arena.breakableProps.map((p) => ({
+    ...p,
+    hp: p.maxHp,
+    broken: false,
+    brokenTimerMs: 0,
+    hitFlashMs: 0,
+  }));
+
+  const pickups: MapPickupState[] = arena.pickupSpots.map((pk) => ({
+    ...pk,
+    active: true,
+    respawnTimerMs: 0,
+  }));
+
   return {
     arenaId,
+    player,
+    enemies,
+    traces: [],
+    breakableProps,
+    pickups,
+    waveNumber: 1,
+    waveKills: 0,
+    waveTargetKills: 10,
     roundNumber: 1,
     roundsToWin,
     p1RoundsWon: 0,
     p2RoundsWon: 0,
-    roundTimerMs: maxRoundTimeMs,
-    maxRoundTimeMs,
-    hitstopMs: 0,
-    slowMoMs: 0,
-    screenShake: 0,
+    roundTimerSec: roundTimeSeconds,
+    maxRoundTimeSec: roundTimeSeconds,
     roundOver: false,
-    roundWinner: null,
     matchOver: false,
+    roundWinner: null,
     matchWinner: null,
-    // Spawn on the Foundry central dais at (-4.8, 1.2, 0) and (4.8, 1.2, 0)
-    p1: createFighterState('p1', p1Char, -4.8, 0, Math.PI * 0.5, arenaId),
-    p2: createFighterState('p2', p2Char, 4.8, 0, -Math.PI * 0.5, arenaId),
-    decoy: null,
-    projectiles: [],
-    breakableProps: createBreakableProps(arenaId),
-    floorTiles: createFloorTiles(),
-    events: [],
+    winnerName: null,
+    winnerKills: 0,
+    hitstopMs: 0,
+    cameraShakeTrauma: 0,
+    nextTraceId: 1,
+    p1: player,
+    p2: { characterId: p2Char, hp: 100, maxHp: 100 },
   };
 }
 
 export function resetRoundPositions(sim: SimulationState): void {
-  const p1Wins = sim.p1RoundsWon;
-  const p2Wins = sim.p2RoundsWon;
-  const p1TotalDmg = sim.p1.totalDamageDealt;
-  const p2TotalDmg = sim.p2.totalDamageDealt;
-  const p1Parries = sim.p1.parriesLanded;
-  const p2Parries = sim.p2.parriesLanded;
-
-  sim.p1 = createFighterState('p1', sim.p1.characterId, -4.8, 0, Math.PI * 0.5, sim.arenaId);
-  sim.p2 = createFighterState('p2', sim.p2.characterId, 4.8, 0, -Math.PI * 0.5, sim.arenaId);
-  sim.p1.totalDamageDealt = p1TotalDmg;
-  sim.p2.totalDamageDealt = p2TotalDmg;
-  sim.p1.parriesLanded = p1Parries;
-  sim.p2.parriesLanded = p2Parries;
-
-  sim.p1RoundsWon = p1Wins;
-  sim.p2RoundsWon = p2Wins;
-  sim.roundTimerMs = sim.maxRoundTimeMs;
-  sim.hitstopMs = 0;
-  sim.slowMoMs = 0;
-  sim.screenShake = 0;
+  const arena = ARENA_REGISTRY[sim.arenaId] || ARENA_REGISTRY.foundry_arena;
+  const freshPlayer = createPlayerShooterState(
+    sim.player.characterId,
+    sim.player.loadoutWeapons[0],
+    sim.player.loadoutWeapons
+  );
+  Object.assign(sim.player, freshPlayer);
+  sim.enemies = createInitialEnemies(arena);
+  sim.traces = [];
+  sim.breakableProps = arena.breakableProps.map((p) => ({
+    ...p,
+    hp: p.maxHp,
+    broken: false,
+    brokenTimerMs: 0,
+    hitFlashMs: 0,
+  }));
+  sim.pickups = arena.pickupSpots.map((pk) => ({
+    ...pk,
+    active: true,
+    respawnTimerMs: 0,
+  }));
+  sim.waveNumber = 1;
+  sim.waveKills = 0;
+  sim.waveTargetKills = 10;
+  sim.roundTimerSec = sim.maxRoundTimeSec;
   sim.roundOver = false;
+  sim.matchOver = false;
   sim.roundWinner = null;
-  sim.decoy = null;
-  sim.projectiles = [];
-  sim.breakableProps = createBreakableProps(sim.arenaId);
-  sim.floorTiles = createFloorTiles();
-  sim.events = [];
+  sim.matchWinner = null;
+  sim.winnerName = null;
+  sim.winnerKills = 0;
+  sim.hitstopMs = 0;
+  sim.cameraShakeTrauma = 0;
 }
 
-export function normalizeAngle(angle: number): number {
-  let a = angle;
-  while (a > Math.PI) a -= Math.PI * 2;
-  while (a < -Math.PI) a += Math.PI * 2;
-  return a;
-}
-
-export function lerpAngle(current: number, target: number, t: number): number {
-  const diff = normalizeAngle(target - current);
-  return normalizeAngle(current + diff * Math.min(1, Math.max(0, t)));
-}
-
-export function emptyInput(): FighterInput {
-  return {
-    moveX: 0,
-    moveZ: 0,
-    sprint: false,
-    jumpPressed: false,
-    lightPressed: false,
-    heavyPressed: false,
-    guardHeld: false,
-    guardJustPressed: false,
-    dodgePressed: false,
-    abilityPressed: false,
-    executionPressed: false,
-  };
-}
+// ============================================================================
+// COLLISION, SURFACE MATERIAL & RAYCASTING HELPERS
+// ============================================================================
 
 /**
- * Damages or shatters destructible floor tiles around (x, z) within radius.
+ * Determines the floor/ground surface material ('concrete' vs 'metal') at world coordinates (x, z)
+ * within both the Training (Firing Range) and Arena (Deathmatch) environments.
  */
-export function damageArenaFloorAt(
-  sim: SimulationState,
+export function getSurfaceMaterialAt(
+  x: number,
+  z: number,
+  arenaId: ArenaId = 'foundry_arena'
+): SurfaceMaterial {
+  const arena = ARENA_REGISTRY[arenaId] || ARENA_REGISTRY.foundry_arena;
+  if (arena.surfaceZones) {
+    for (const zone of arena.surfaceZones) {
+      if (x >= zone.minX && x <= zone.maxX && z >= zone.minZ && z <= zone.maxZ) {
+        return zone.material;
+      }
+    }
+  }
+  return 'concrete';
+}
+
+function resolveCircleVsBox2D(
+  cx: number,
+  cz: number,
+  radius: number,
+  block: MapBoxBlock
+): { x: number; z: number } {
+  const halfW = block.width * 0.5;
+  const halfD = block.depth * 0.5;
+  const minX = block.x - halfW;
+  const maxX = block.x + halfW;
+  const minZ = block.z - halfD;
+  const maxZ = block.z + halfD;
+
+  const closestX = Math.max(minX, Math.min(maxX, cx));
+  const closestZ = Math.max(minZ, Math.min(maxZ, cz));
+  const dx = cx - closestX;
+  const dz = cz - closestZ;
+  const distSq = dx * dx + dz * dz;
+
+  if (distSq >= radius * radius) {
+    return { x: cx, z: cz };
+  }
+
+  if (distSq > 0.00001) {
+    const dist = Math.sqrt(distSq);
+    const push = radius - dist;
+    return {
+      x: cx + (dx / dist) * push,
+      z: cz + (dz / dist) * push,
+    };
+  }
+
+  // Center is inside AABB: push out along nearest edge
+  const leftPen = Math.abs(cx - minX);
+  const rightPen = Math.abs(maxX - cx);
+  const topPen = Math.abs(cz - minZ);
+  const botPen = Math.abs(maxZ - cz);
+  const minPen = Math.min(leftPen, rightPen, topPen, botPen);
+
+  if (minPen === leftPen) return { x: minX - radius, z: cz };
+  if (minPen === rightPen) return { x: maxX + radius, z: cz };
+  if (minPen === topPen) return { x: cx, z: minZ - radius };
+  return { x: cx, z: maxZ + radius };
+}
+
+export const PLAYER_COLLISION_RADIUS = 0.68;
+export const BOT_COLLISION_RADIUS = 0.62;
+
+export function resolveEntityCollisions(
   x: number,
   z: number,
   radius: number,
-  shatterForce = false
-): void {
-  for (const tile of sim.floorTiles) {
-    if (tile.state >= 2) continue;
-    const dist = Math.hypot(tile.x - x, tile.z - z);
-    if (dist <= radius) {
-      if (shatterForce && dist <= radius * 0.65) {
-        tile.state = 2;
-        sim.events.push({
-          type: 'tile_shatter',
-          x: tile.x,
-          y: 0.05,
-          z: tile.z,
-          label: 'FLOOR SHATTERED',
-        });
-      } else if (tile.state === 0) {
-        tile.state = 1;
-        sim.events.push({
-          type: 'tile_crack',
-          x: tile.x,
-          y: 0.05,
-          z: tile.z,
-          label: 'FLOOR FRACTURED',
-        });
-      } else if (tile.state === 1 && dist <= radius * 0.85) {
-        tile.state = 2;
-        sim.events.push({
-          type: 'tile_shatter',
-          x: tile.x,
-          y: 0.05,
-          z: tile.z,
-          label: 'FLOOR SHATTERED',
-        });
-      }
+  arena: ArenaDefinition,
+  breakableProps: BreakablePropState[]
+): { x: number; z: number } {
+  let nx = x;
+  let nz = z;
+
+  // Run 3 iterative solver passes so corners, adjacent blocks, pillars, and props never allow clipping
+  for (let pass = 0; pass < 3; pass++) {
+    nx = Math.max(arena.bounds.minX + radius, Math.min(arena.bounds.maxX - radius, nx));
+    nz = Math.max(arena.bounds.minZ + radius, Math.min(arena.bounds.maxZ - radius, nz));
+
+    for (const block of arena.blocks) {
+      const res = resolveCircleVsBox2D(nx, nz, radius, block);
+      nx = res.x;
+      nz = res.z;
     }
-  }
-}
 
-/**
- * Triggers an explosive energy barrel detonation, damaging nearby fighters, other props, and floor tiles.
- */
-function triggerBarrelExplosion(
-  sim: SimulationState,
-  barrel: BreakablePropState,
-  attackerId?: 'p1' | 'p2'
-): void {
-  const radius = barrel.explosiveRadius || 4.5;
-  const dmg = barrel.explosiveDamage || 14;
-
-  sim.screenShake = Math.max(sim.screenShake, 0.72);
-  sim.events.push({
-    type: 'barrel_explode',
-    attackerId,
-    x: barrel.x,
-    y: 0.8,
-    z: barrel.z,
-    damage: dmg,
-    label: 'PLASMA BARREL DETONATION!',
-    propId: barrel.id,
-    propKind: 'barrel',
-  });
-
-  damageArenaFloorAt(sim, barrel.x, barrel.z, radius * 0.9, true);
-
-  // Damage nearby fighters
-  for (const fighter of [sim.p1, sim.p2]) {
-    if (fighter.invulnerableMs > 0) continue;
-    const dx = fighter.x - barrel.x;
-    const dz = fighter.z - barrel.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist <= radius) {
-      const falloff = 1 - (dist / radius) * 0.45;
-      const actualDmg = Math.max(4, Math.round(dmg * falloff));
-      fighter.hp = Math.max(0, fighter.hp - actualDmg);
-      fighter.poise = Math.max(0, fighter.poise - 38);
-      fighter.hitFlashMs = 200;
-      fighter.action = 'hitstun';
-      fighter.actionTimerMs = 0;
-      fighter.actionDurationMs = 460;
-      fighter.currentAttack = null;
-      const nx = dist > 0.001 ? dx / dist : 1;
-      const nz = dist > 0.001 ? dz / dist : 0;
-      fighter.vx = nx * 8.5;
-      fighter.vz = nz * 8.5;
-    }
-  }
-}
-
-/**
- * Damages breakable crates and energy barrels within an attack cone or radial blast.
- */
-export function damageBreakablePropsInArc(
-  sim: SimulationState,
-  attacker: FighterState,
-  spec: AttackSpec
-): void {
-  const fwdX = Math.sin(attacker.facingAngle);
-  const fwdZ = Math.cos(attacker.facingAngle);
-
-  for (const prop of sim.breakableProps) {
-    if (prop.broken) continue;
-    const dx = prop.x - attacker.x;
-    const dz = prop.z - attacker.z;
-    const dist = Math.hypot(dx, dz);
-    const effectiveRange = spec.range + prop.radius + 0.55;
-    if (dist > effectiveRange) continue;
-
-    const dirX = dist > 0.0001 ? dx / dist : fwdX;
-    const dirZ = dist > 0.0001 ? dz / dist : fwdZ;
-    const dot = fwdX * dirX + fwdZ * dirZ;
-    if (dot < spec.arcCos && dist > 1.35) continue;
-
-    prop.hp = Math.max(0, prop.hp - spec.damage * 1.35);
-    prop.hitFlashMs = 150;
-
-    if (prop.hp <= 0) {
-      prop.broken = true;
-      sim.screenShake = Math.max(sim.screenShake, 0.35);
-      sim.events.push({
-        type: 'prop_shatter',
-        attackerId: attacker.id,
-        x: prop.x,
-        y: prop.height * 0.5,
-        z: prop.z,
-        label: prop.kind === 'barrel' ? 'BARREL SHATTERED!' : 'CRATE DESTROYED!',
-        propId: prop.id,
-        propKind: prop.kind,
-      });
-
-      if (prop.kind === 'barrel') {
-        triggerBarrelExplosion(sim, prop, attacker.id);
-      }
-    } else {
-      sim.events.push({
-        type: 'prop_hit',
-        attackerId: attacker.id,
-        x: prop.x,
-        y: prop.height * 0.5,
-        z: prop.z,
-        label: 'PROP HIT',
-        propId: prop.id,
-        propKind: prop.kind,
-      });
-    }
-  }
-}
-
-/**
- * Autonomous Bot AI decision engine with 3 distinct difficulty presets
- */
-export function computeBotInput(
-  sim: SimulationState,
-  bot: FighterState,
-  opponent: FighterState,
-  difficulty: BotDifficulty,
-  dtMs: number,
-  trainingConfig?: TrainingConfig
-): FighterInput {
-  const input = emptyInput();
-
-  if (trainingConfig) {
-    if (trainingConfig.dummyBehavior === 'idle') {
-      return input;
-    }
-    if (trainingConfig.dummyBehavior === 'block_all') {
-      input.guardHeld = true;
-      return input;
-    }
-    if (trainingConfig.dummyBehavior === 'counter_hit') {
-      const dist = Math.hypot(opponent.x - bot.x, opponent.z - bot.z);
-      if (
-        opponent.action === 'attack_windup' ||
-        opponent.action === 'attack_active'
-      ) {
-        input.guardHeld = true;
-        if (opponent.actionTimerMs < 90) {
-          input.guardJustPressed = true;
-        }
-      } else if (bot.action === 'blockstun' || (dist < 3.6 && opponent.action === 'attack_recovery')) {
-        input.lightPressed = true;
-      } else {
-        input.guardHeld = true;
-      }
-      return input;
-    }
-  }
-
-  const preset = BOT_DIFFICULTIES[difficulty];
-  const targetX = sim.decoy && sim.decoy.active && sim.decoy.ownerId === opponent.id ? sim.decoy.x : opponent.x;
-  const targetZ = sim.decoy && sim.decoy.active && sim.decoy.ownerId === opponent.id ? sim.decoy.z : opponent.z;
-
-  const dx = targetX - bot.x;
-  const dz = targetZ - bot.z;
-  const dist = Math.hypot(dx, dz) || 0.001;
-  const dirX = dx / dist;
-  const dirZ = dz / dist;
-
-  const strafeX = -dirZ;
-  const strafeZ = dirX;
-
-  bot.aiDecisionTimerMs -= dtMs;
-  bot.aiAttackCooldownMs = Math.max(0, (bot.aiAttackCooldownMs ?? 0) - dtMs);
-
-  const oppAttacking =
-    opponent.action === 'attack_windup' || opponent.action === 'attack_active';
-
-  // Reset per-swing combo roll flag when not in active/recovery
-  if (bot.action !== 'attack_active' && bot.action !== 'attack_recovery') {
-    bot.aiComboRolled = false;
-  }
-
-  // If opponent is staggered / guard_broken and close, execute if off attack cooldown!
-  if (
-    (opponent.action === 'guard_break' || opponent.action === 'parry_stun') &&
-    dist <= 4.3 &&
-    (bot.aiAttackCooldownMs ?? 0) <= 0 &&
-    Math.random() < preset.aggression * 0.7
-  ) {
-    input.executionPressed = true;
-    input.heavyPressed = true;
-    bot.aiAttackCooldownMs = preset.reactionIntervalMs * 3.2;
-    return input;
-  }
-
-  // Immediate defensive reaction if opponent is swinging nearby
-  if (oppAttacking && dist < 4.5 && bot.aiDecisionTimerMs <= preset.reactionIntervalMs * 0.5) {
-    const roll = Math.random();
-    if (roll < preset.parryChance && opponent.action === 'attack_windup') {
-      input.guardHeld = true;
-      input.guardJustPressed = true;
-      bot.aiDecisionTimerMs = preset.reactionIntervalMs;
-      return input;
-    }
-    if (roll < preset.parryChance + preset.dodgeChance && bot.stamina >= 20) {
-      input.dodgePressed = true;
-      input.moveX = strafeX * (Math.random() < 0.5 ? 1 : -1) - dirX * 0.4;
-      input.moveZ = strafeZ * (Math.random() < 0.5 ? 1 : -1) - dirZ * 0.4;
-      bot.aiDecisionTimerMs = preset.reactionIntervalMs;
-      return input;
-    }
-    if (roll < preset.parryChance + preset.dodgeChance + preset.blockChance) {
-      bot.aiCurrentOrder = 'guard';
-      bot.aiDecisionTimerMs = preset.reactionIntervalMs;
-    }
-  }
-
-  // Roll ONCE per swing whether to chain follow-up attack (prevents 60Hz infinite combo spam!)
-  if (
-    (bot.action === 'attack_active' || bot.action === 'attack_recovery') &&
-    bot.currentAttack &&
-    !bot.aiComboRolled &&
-    dist < 4.0
-  ) {
-    bot.aiComboRolled = true;
-    const maxComboSteps = difficulty === 'easy' ? 1 : difficulty === 'normal' ? 2 : 3;
-    const currentStep =
-      bot.currentAttack === 'light_1' || bot.currentAttack === 'dash_strike'
-        ? 1
-        : bot.currentAttack === 'light_2'
-          ? 2
-          : 3;
-
-    if (currentStep < maxComboSteps && Math.random() < preset.comboFollowupChance) {
-      input.lightPressed = true;
-    } else {
-      // Finished combo string! Enforce mandatory post-combo breathing window so player can counter-attack!
-      const baseCooldown =
-        difficulty === 'easy' ? 1350 : difficulty === 'normal' ? 920 : 580;
-      bot.aiAttackCooldownMs = baseCooldown + Math.random() * 350;
-      bot.aiCurrentOrder = Math.random() < 0.5 ? 'strafe_left' : 'strafe_right';
-    }
-  }
-
-  if (bot.aiDecisionTimerMs <= 0) {
-    bot.aiDecisionTimerMs = preset.reactionIntervalMs * (0.85 + Math.random() * 0.4);
-
-    if (bot.stamina < 24 || (bot.aiAttackCooldownMs ?? 0) > 0) {
-      if (dist < 3.4) {
-        bot.aiCurrentOrder = Math.random() < 0.45 ? 'retreat' : 'guard';
-      } else {
-        bot.aiCurrentOrder = Math.random() < 0.5 ? 'strafe_left' : 'strafe_right';
-      }
-    } else if (dist > 4.2) {
-      bot.aiCurrentOrder = 'advance';
-    } else if (dist >= 2.2 && dist <= 4.2) {
-      const r = Math.random();
-      if (r < preset.aggression) {
-        bot.aiCurrentOrder = 'attack';
-      } else if (r < preset.aggression + 0.22) {
-        bot.aiCurrentOrder = 'guard';
-      } else {
-        bot.aiCurrentOrder = Math.random() < 0.5 ? 'strafe_left' : 'strafe_right';
-      }
-    } else {
-      bot.aiCurrentOrder = Math.random() < preset.aggression ? 'attack' : 'strafe_right';
-    }
-  }
-
-  switch (bot.aiCurrentOrder) {
-    case 'advance':
-      input.moveX = dirX;
-      input.moveZ = dirZ;
-      input.sprint = dist > 6.2 && bot.stamina > 45;
-      if (
-        input.sprint &&
-        dist <= 4.8 &&
-        dist >= 3.2 &&
-        (bot.aiAttackCooldownMs ?? 0) <= 0 &&
-        bot.stamina >= 18 &&
-        Math.random() < preset.aggression * 0.28
-      ) {
-        input.lightPressed = true; // Dash strike!
-        bot.aiAttackCooldownMs = preset.reactionIntervalMs * 2.5;
-      } else if (
-        dist < 5.2 &&
-        bot.abilityCooldownMs <= 0 &&
-        (bot.aiAttackCooldownMs ?? 0) <= 0 &&
-        bot.stamina >= 35 &&
-        Math.random() < 0.06
-      ) {
-        input.abilityPressed = true;
-        bot.aiAttackCooldownMs = preset.reactionIntervalMs * 3.0;
-      }
-      break;
-    case 'retreat':
-      input.moveX = -dirX * 0.85 + strafeX * 0.35;
-      input.moveZ = -dirZ * 0.85 + strafeZ * 0.35;
-      if (oppAttacking && dist < 4.0) {
-        input.guardHeld = true;
-      }
-      break;
-    case 'strafe_left':
-      input.moveX = strafeX * 0.85 + dirX * 0.15;
-      input.moveZ = strafeZ * 0.85 + dirZ * 0.15;
-      if (oppAttacking && dist < 3.8 && Math.random() < preset.blockChance) {
-        input.guardHeld = true;
-      }
-      break;
-    case 'strafe_right':
-      input.moveX = -strafeX * 0.85 + dirX * 0.15;
-      input.moveZ = -strafeZ * 0.85 + dirZ * 0.15;
-      if (oppAttacking && dist < 3.8 && Math.random() < preset.blockChance) {
-        input.guardHeld = true;
-      }
-      break;
-    case 'guard':
-      input.guardHeld = true;
-      input.moveX = -strafeX * 0.38;
-      input.moveZ = -strafeZ * 0.38;
-      break;
-    case 'attack':
-      input.moveX = dirX * 0.55;
-      input.moveZ = dirZ * 0.55;
-      if (
-        (bot.action === 'idle' || bot.action === 'move' || bot.action === 'sprint') &&
-        (bot.aiAttackCooldownMs ?? 0) <= 0
-      ) {
-        const roll = Math.random();
-        if (bot.abilityCooldownMs <= 0 && bot.stamina >= 35 && roll < 0.18) {
-          input.abilityPressed = true;
-        } else if (roll < 0.38 && bot.stamina >= 24) {
-          input.heavyPressed = true;
-        } else if (bot.stamina >= 10) {
-          input.lightPressed = true;
-        }
-        const postSwingCooldown =
-          difficulty === 'easy' ? 1250 : difficulty === 'normal' ? 820 : 480;
-        bot.aiAttackCooldownMs = postSwingCooldown;
-        bot.aiDecisionTimerMs = preset.reactionIntervalMs * 1.4;
-      }
-      break;
-  }
-
-  return input;
-}
-
-function startAttack(
-  sim: SimulationState,
-  fighter: FighterState,
-  opponent: FighterState,
-  attackKind: AttackKind,
-  isCounterRiposte = false
-): void {
-  const def = CHARACTER_REGISTRY[fighter.characterId];
-  const spec: AttackSpec = def.attacks[attackKind];
-
-  const effectiveCost = isCounterRiposte ? Math.round(spec.staminaCost * 0.5) : spec.staminaCost;
-  if (fighter.stamina < effectiveCost && attackKind !== 'execution' && !isCounterRiposte) {
-    return;
-  }
-
-  fighter.stamina = Math.max(0, fighter.stamina - effectiveCost);
-  fighter.staminaRegenDelayMs = 480;
-  fighter.action = 'attack_windup';
-  fighter.actionTimerMs = 0;
-  // Counter-ripostes come out 25% faster and grant uninterruptible Hyper-Armor!
-  fighter.actionDurationMs = isCounterRiposte
-    ? Math.round(spec.windupMs * 0.72)
-    : spec.windupMs;
-  fighter.currentAttack = attackKind;
-  fighter.attackHasHit = false;
-  fighter.queuedAttack = null;
-  fighter.bufferedInput = null;
-  fighter.bufferTimerMs = 0;
-  fighter.consecutiveHitsTaken = 0;
-
-  if (
-    isCounterRiposte ||
-    attackKind === 'heavy' ||
-    attackKind === 'ability' ||
-    attackKind === 'aerial_slam' ||
-    attackKind === 'execution'
-  ) {
-    fighter.hyperArmorMs = Math.max(
-      fighter.hyperArmorMs ?? 0,
-      fighter.actionDurationMs + spec.activeMs + (isCounterRiposte ? 120 : 40)
-    );
-    fighter.counterWindowMs = 0;
-  }
-
-  // Snap facing toward opponent (or decoy if active)
-  const targetX =
-    sim.decoy && sim.decoy.active && sim.decoy.ownerId === opponent.id
-      ? sim.decoy.x
-      : opponent.x;
-  const targetZ =
-    sim.decoy && sim.decoy.active && sim.decoy.ownerId === opponent.id
-      ? sim.decoy.z
-      : opponent.z;
-  const dx = targetX - fighter.x;
-  const dz = targetZ - fighter.z;
-  if (Math.hypot(dx, dz) > 0.05) {
-    fighter.facingAngle = lerpAngle(fighter.facingAngle, Math.atan2(dx, dz), 0.82);
-  }
-
-  if (attackKind === 'ability') {
-    fighter.abilityCooldownMs = def.ability.cooldownMs;
-    sim.events.push({
-      type: 'ability_cast',
-      attackerId: fighter.id,
-      attackKind,
-      facingAngle: fighter.facingAngle,
-      x: fighter.x,
-      y: fighter.y + 1.3,
-      z: fighter.z,
-      label: def.ability.name,
-    });
-
-    if (fighter.characterId === 'rift') {
-      // Spawn Phase Decoy at current spot AND launch a real 3D Gravity Plasma Orb projectile!
-      sim.decoy = {
-        active: true,
-        ownerId: fighter.id,
-        characterId: fighter.characterId,
-        x: fighter.x,
-        z: fighter.z,
-        facingAngle: fighter.facingAngle,
-        hp: 15,
-        remainingMs: 3600,
-      };
-      const fwdX = Math.sin(fighter.facingAngle);
-      const fwdZ = Math.cos(fighter.facingAngle);
-      sim.projectiles.push({
-        id: `orb_${Date.now()}_${Math.random()}`,
-        ownerId: fighter.id,
-        x: fighter.x + fwdX * 1.35,
-        y: fighter.y + 1.35,
-        z: fighter.z + fwdZ * 1.35,
-        vx: fwdX * 13.5,
-        vy: 0,
-        vz: fwdZ * 13.5,
-        radius: 0.65,
-        damage: 18,
-        poiseDamage: 42,
-        remainingMs: 1800,
-        colorHex: 0x38bdf8,
-      });
-      fighter.invulnerableMs = 280;
-    }
-  } else {
-    sim.events.push({
-      type: 'attack_swing',
-      attackerId: fighter.id,
-      attackKind,
-      facingAngle: fighter.facingAngle,
-      x: fighter.x,
-      y: fighter.y + 1.2,
-      z: fighter.z,
-      label: spec.name,
-    });
-  }
-}
-
-function updateSingleFighter(
-  sim: SimulationState,
-  fighter: FighterState,
-  opponent: FighterState,
-  input: FighterInput,
-  dtMs: number,
-  trainingConfig?: TrainingConfig
-): void {
-  const dtSec = dtMs / 1000;
-  const def = CHARACTER_REGISTRY[fighter.characterId];
-
-  // Training mode overrides
-  if (trainingConfig && fighter.id === 'p1') {
-    if (trainingConfig.infiniteStamina) {
-      fighter.stamina = fighter.maxStamina;
-    }
-    if (trainingConfig.instantCooldowns) {
-      fighter.abilityCooldownMs = 0;
-    }
-    if (trainingConfig.playerInvulnerable) {
-      fighter.hp = fighter.maxHp;
-      fighter.ghostHp = fighter.maxHp;
-    }
-  }
-  if (trainingConfig && fighter.id === 'p2') {
-    if (fighter.hp < fighter.maxHp && fighter.action === 'idle' && fighter.comboResetTimerMs <= 0) {
-      fighter.hp = Math.min(fighter.maxHp, fighter.hp + 28 * dtSec);
-    }
-  }
-
-  // Smooth ghost HP bar decay
-  if (fighter.ghostHp > fighter.hp) {
-    fighter.ghostHp = Math.max(fighter.hp, fighter.ghostHp - 28 * dtSec);
-  } else {
-    fighter.ghostHp = fighter.hp;
-  }
-
-  // Poise regeneration when not stunned
-  if (
-    fighter.action !== 'hitstun' &&
-    fighter.action !== 'blockstun' &&
-    fighter.action !== 'guard_break' &&
-    fighter.action !== 'parry_stun'
-  ) {
-    fighter.poise = Math.min(fighter.maxPoise, fighter.poise + 14 * dtSec);
-  }
-
-  // Timers
-  if (fighter.abilityCooldownMs > 0) {
-    fighter.abilityCooldownMs = Math.max(0, fighter.abilityCooldownMs - dtMs);
-  }
-  if (fighter.invulnerableMs > 0) {
-    fighter.invulnerableMs = Math.max(0, fighter.invulnerableMs - dtMs);
-  }
-  if (fighter.hitFlashMs > 0) {
-    fighter.hitFlashMs = Math.max(0, fighter.hitFlashMs - dtMs);
-  }
-  if (fighter.staminaRegenDelayMs > 0) {
-    fighter.staminaRegenDelayMs = Math.max(0, fighter.staminaRegenDelayMs - dtMs);
-  }
-  if ((fighter.hyperArmorMs ?? 0) > 0) {
-    fighter.hyperArmorMs = Math.max(0, (fighter.hyperArmorMs ?? 0) - dtMs);
-  }
-  if ((fighter.counterWindowMs ?? 0) > 0) {
-    fighter.counterWindowMs = Math.max(0, (fighter.counterWindowMs ?? 0) - dtMs);
-  }
-  if ((fighter.bufferTimerMs ?? 0) > 0) {
-    fighter.bufferTimerMs = Math.max(0, (fighter.bufferTimerMs ?? 0) - dtMs);
-    if (fighter.bufferTimerMs === 0) {
-      fighter.bufferedInput = null;
-    }
-  }
-  if (fighter.comboResetTimerMs > 0) {
-    fighter.comboResetTimerMs = Math.max(0, fighter.comboResetTimerMs - dtMs);
-    if (fighter.comboResetTimerMs === 0) {
-      fighter.comboCount = 0;
-      fighter.comboDamage = 0;
-    }
-  }
-
-  // Capture any fresh button press into the 280ms Input Buffer so no tap is ever lost during hitstun/recovery!
-  if (input.executionPressed) {
-    fighter.bufferedInput = 'execution';
-    fighter.bufferTimerMs = 280;
-  } else if (input.abilityPressed) {
-    fighter.bufferedInput = 'ability';
-    fighter.bufferTimerMs = 280;
-  } else if (input.dodgePressed) {
-    fighter.bufferedInput = 'dodge';
-    fighter.bufferTimerMs = 280;
-  } else if (input.heavyPressed) {
-    fighter.bufferedInput = 'heavy';
-    fighter.bufferTimerMs = 280;
-  } else if (input.lightPressed) {
-    fighter.bufferedInput = 'light';
-    fighter.bufferTimerMs = 280;
-  } else if (input.jumpPressed) {
-    fighter.bufferedInput = 'jump';
-    fighter.bufferTimerMs = 240;
-  }
-
-  // Merge buffered inputs into effective one-shot checks when ready
-  const wantLight = input.lightPressed || fighter.bufferedInput === 'light';
-  const wantHeavy = input.heavyPressed || fighter.bufferedInput === 'heavy';
-  const wantDodge = input.dodgePressed || fighter.bufferedInput === 'dodge';
-  const wantAbility = input.abilityPressed || fighter.bufferedInput === 'ability';
-  const wantExec = input.executionPressed || fighter.bufferedInput === 'execution';
-  const wantJump = Boolean(input.jumpPressed || fighter.bufferedInput === 'jump');
-
-  // Stamina regeneration: standing (idle), walking (move), running (sprint), and blocking regenerate stamina!
-  // Walking/running NEVER drains stamina — only attacks, dashes/dodges, and special abilities consume stamina.
-  const canRegen =
-    fighter.staminaRegenDelayMs <= 0 &&
-    (fighter.action === 'idle' ||
-      fighter.action === 'move' ||
-      fighter.action === 'sprint' ||
-      fighter.action === 'block');
-  if (canRegen) {
-    const mult = fighter.action === 'block' ? 0.55 : 1.0;
-    fighter.stamina = Math.min(
-      fighter.maxStamina,
-      fighter.stamina + def.stats.staminaRegenPerSec * mult * dtSec
-    );
-  }
-
-  // Queue combo follow-up inputs during attack windup or active frames
-  if (fighter.action === 'attack_windup' || fighter.action === 'attack_active') {
-    if (fighter.currentAttack) {
-      const curSpec = def.attacks[fighter.currentAttack];
-      if (wantLight && curSpec.canChainInto && curSpec.canChainInto !== 'heavy') {
-        fighter.queuedAttack = curSpec.canChainInto;
-      } else if (wantHeavy && curSpec.canChainInto) {
-        fighter.queuedAttack = 'heavy';
-      }
-    }
-  }
-
-  fighter.actionTimerMs += dtMs;
-
-  // Check if opponent is vulnerable to an Execution Finisher
-  const oppVulnerableForExecution =
-    (opponent.action === 'guard_break' ||
-      opponent.action === 'parry_stun' ||
-      opponent.poise <= 5) &&
-    Math.hypot(opponent.x - fighter.x, opponent.z - fighter.z) <= 4.5;
-
-  // State machine transitions
-  switch (fighter.action) {
-    case 'parry_window': {
-      if (fighter.actionTimerMs >= fighter.actionDurationMs) {
-        if (input.guardHeld) {
-          fighter.action = 'block';
-          fighter.actionTimerMs = 0;
-          fighter.actionDurationMs = 0;
+    for (const col of arena.colliders) {
+      const dx = nx - col.x;
+      const dz = nz - col.z;
+      const minDist = radius + col.radius;
+      const dSq = dx * dx + dz * dz;
+      if (dSq < minDist * minDist) {
+        if (dSq > 0.00001) {
+          const d = Math.sqrt(dSq);
+          nx = col.x + (dx / d) * minDist;
+          nz = col.z + (dz / d) * minDist;
         } else {
-          fighter.action = 'idle';
-          fighter.actionTimerMs = 0;
+          nx = col.x + minDist;
         }
       }
-      break;
     }
 
-    case 'dodge': {
-      const progress = Math.min(1, fighter.actionTimerMs / fighter.actionDurationMs);
-      const speedCurve = Math.sin(progress * Math.PI) * 1.45;
-      const baseDodgeSpeed = def.stats.dodgeDistance / (fighter.actionDurationMs / 1000);
-      fighter.vx = fighter.dodgeDirX * baseDodgeSpeed * speedCurve;
-      fighter.vz = fighter.dodgeDirZ * baseDodgeSpeed * speedCurve;
-
-      if (fighter.actionTimerMs >= fighter.actionDurationMs) {
-        fighter.action = 'idle';
-        fighter.actionTimerMs = 0;
-        fighter.vx = 0;
-        fighter.vz = 0;
-      }
-      break;
-    }
-
-    case 'attack_windup': {
-      if (fighter.currentAttack) {
-        const spec = def.attacks[fighter.currentAttack];
-        const fwdX = Math.sin(fighter.facingAngle);
-        const fwdZ = Math.cos(fighter.facingAngle);
-        const lungeVel = (spec.forwardLunge * 0.55) / (spec.windupMs / 1000);
-        fighter.vx = fwdX * lungeVel;
-        fighter.vz = fwdZ * lungeVel;
-
-        // Aerial slam accelerates downward
-        if (fighter.currentAttack === 'aerial_slam') {
-          fighter.vy = Math.min(fighter.vy, -14.0);
+    for (const prop of breakableProps) {
+      if (prop.broken) continue;
+      const dx = nx - prop.x;
+      const dz = nz - prop.z;
+      const minDist = radius + prop.radius;
+      const dSq = dx * dx + dz * dz;
+      if (dSq < minDist * minDist) {
+        if (dSq > 0.00001) {
+          const d = Math.sqrt(dSq);
+          nx = prop.x + (dx / d) * minDist;
+          nz = prop.z + (dz / d) * minDist;
+        } else {
+          nx = prop.x + minDist;
         }
+      }
+    }
+  }
 
-        if (fighter.actionTimerMs >= fighter.actionDurationMs) {
-          fighter.action = 'attack_active';
-          fighter.actionTimerMs = 0;
-          fighter.actionDurationMs = spec.activeMs;
+  return { x: nx, z: nz };
+}
 
-          // Floor fracture on heavy / aerial_slam / execution / ability
-          if (
-            fighter.currentAttack === 'heavy' ||
-            fighter.currentAttack === 'aerial_slam' ||
-            fighter.currentAttack === 'execution' ||
-            fighter.currentAttack === 'ability'
-          ) {
-            const impactX = fighter.x + fwdX * 1.6;
-            const impactZ = fighter.z + fwdZ * 1.6;
-            damageArenaFloorAt(
-              sim,
-              impactX,
-              impactZ,
-              fighter.currentAttack === 'execution' || fighter.currentAttack === 'ability'
-                ? 4.6
-                : 3.4,
-              fighter.currentAttack === 'execution' || fighter.currentAttack === 'heavy'
-            );
+/**
+ * Ray-AABB 3D intersection distance (returns null if no hit in [0, maxDist])
+ */
+export function intersectRayAABB(
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  minX: number,
+  minY: number,
+  minZ: number,
+  maxX: number,
+  maxY: number,
+  maxZ: number,
+  maxDist: number
+): number | null {
+  let tmin = 0;
+  let tmax = maxDist;
+
+  // X slab
+  if (Math.abs(dx) < 1e-6) {
+    if (ox < minX || ox > maxX) return null;
+  } else {
+    const invD = 1 / dx;
+    let t1 = (minX - ox) * invD;
+    let t2 = (maxX - ox) * invD;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    tmin = Math.max(tmin, t1);
+    tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return null;
+  }
+
+  // Y slab
+  if (Math.abs(dy) < 1e-6) {
+    if (oy < minY || oy > maxY) return null;
+  } else {
+    const invD = 1 / dy;
+    let t1 = (minY - oy) * invD;
+    let t2 = (maxY - oy) * invD;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    tmin = Math.max(tmin, t1);
+    tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return null;
+  }
+
+  // Z slab
+  if (Math.abs(dz) < 1e-6) {
+    if (oz < minZ || oz > maxZ) return null;
+  } else {
+    const invD = 1 / dz;
+    let t1 = (minZ - oz) * invD;
+    let t2 = (maxZ - oz) * invD;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    tmin = Math.max(tmin, t1);
+    tmax = Math.min(tmax, t2);
+    if (tmin > tmax) return null;
+  }
+
+  return tmin >= 0 && tmin <= maxDist ? tmin : null;
+}
+
+/**
+ * Ray-Sphere 3D intersection (used for precision headshot detection)
+ */
+export function intersectRaySphere(
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  cx: number,
+  cy: number,
+  cz: number,
+  r: number,
+  maxDist: number
+): number | null {
+  const lx = cx - ox;
+  const ly = cy - oy;
+  const lz = cz - oz;
+  const tca = lx * dx + ly * dy + lz * dz;
+  if (tca < 0) return null;
+  const d2 = lx * lx + ly * ly + lz * lz - tca * tca;
+  const r2 = r * r;
+  if (d2 > r2) return null;
+  const thc = Math.sqrt(r2 - d2);
+  const t0 = tca - thc;
+  const t = t0 >= 0 ? t0 : tca + thc;
+  return t >= 0 && t <= maxDist ? t : null;
+}
+
+/**
+ * Computes forward unit vector from yaw and pitch
+ * Convention: yaw = 0 looks along -Z, yaw = PI/2 looks along -X (right-handed Three.js camera)
+ */
+export function getAimDirection(
+  yaw: number,
+  pitch: number
+): { dx: number; dy: number; dz: number } {
+  const cosPitch = Math.cos(pitch);
+  return {
+    dx: -Math.sin(yaw) * cosPitch,
+    dy: Math.sin(pitch),
+    dz: -Math.cos(yaw) * cosPitch,
+  };
+}
+
+function computeAABBHitNormal(
+  hx: number,
+  hy: number,
+  hz: number,
+  minX: number,
+  minY: number,
+  minZ: number,
+  maxX: number,
+  maxY: number,
+  maxZ: number
+): { nx: number; ny: number; nz: number } {
+  const eps = 0.04;
+  if (Math.abs(hx - minX) < eps) return { nx: -1, ny: 0, nz: 0 };
+  if (Math.abs(hx - maxX) < eps) return { nx: 1, ny: 0, nz: 0 };
+  if (Math.abs(hz - minZ) < eps) return { nx: 0, ny: 0, nz: -1 };
+  if (Math.abs(hz - maxZ) < eps) return { nx: 0, ny: 0, nz: 1 };
+  if (Math.abs(hy - maxY) < eps) return { nx: 0, ny: 1, nz: 0 };
+  return { nx: 0, ny: 1, nz: 0 };
+}
+
+function findClosestWallHitWithNormal(
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
+  maxDist: number,
+  arena: ArenaDefinition,
+  breakableProps?: BreakablePropState[]
+): { dist: number; nx: number; ny: number; nz: number; hitSurface: boolean } {
+  let closest = maxDist;
+  let nx = -dx;
+  let ny = -dy;
+  let nz = -dz;
+  let hitSurface = false;
+
+  // Floor intersection (y = 0)
+  if (dy < -1e-5 && oy > 0) {
+    const tFloor = -oy / dy;
+    if (tFloor > 0 && tFloor < closest) {
+      closest = tFloor;
+      nx = 0;
+      ny = 1;
+      nz = 0;
+      hitSurface = true;
+    }
+  }
+
+  for (const b of arena.blocks) {
+    const hw = b.width * 0.5;
+    const hd = b.depth * 0.5;
+    const minX = b.x - hw;
+    const maxX = b.x + hw;
+    const minZ = b.z - hd;
+    const maxZ = b.z + hd;
+    const t = intersectRayAABB(
+      ox,
+      oy,
+      oz,
+      dx,
+      dy,
+      dz,
+      minX,
+      0,
+      minZ,
+      maxX,
+      b.height,
+      maxZ,
+      closest
+    );
+    if (t !== null && t < closest) {
+      closest = t;
+      const n = computeAABBHitNormal(
+        ox + dx * t,
+        oy + dy * t,
+        oz + dz * t,
+        minX,
+        0,
+        minZ,
+        maxX,
+        b.height,
+        maxZ
+      );
+      nx = n.nx;
+      ny = n.ny;
+      nz = n.nz;
+      hitSurface = true;
+    }
+  }
+
+  for (const c of arena.colliders) {
+    // Exact 3D finite cylinder intersection so bullets never hit invisible AABB corners in mid-air
+    const rox = ox - c.x;
+    const roz = oz - c.z;
+    const a = dx * dx + dz * dz;
+    if (a > 1e-6) {
+      const b = 2 * (rox * dx + roz * dz);
+      const cc = rox * rox + roz * roz - c.radius * c.radius;
+      const disc = b * b - 4 * a * cc;
+      if (disc >= 0) {
+        const sqrtDisc = Math.sqrt(disc);
+        const tCyl = (-b - sqrtDisc) / (2 * a);
+        if (tCyl > 0 && tCyl < closest) {
+          const hitY = oy + dy * tCyl;
+          if (hitY >= 0 && hitY <= c.height) {
+            closest = tCyl;
+            const hx = ox + dx * tCyl;
+            const hz = oz + dz * tCyl;
+            const invR = 1 / Math.max(0.001, c.radius);
+            nx = (hx - c.x) * invR;
+            ny = 0;
+            nz = (hz - c.z) * invR;
+            hitSurface = true;
           }
         }
       }
-      break;
-    }
-
-    case 'attack_active': {
-      if (fighter.currentAttack) {
-        const spec = def.attacks[fighter.currentAttack];
-        const fwdX = Math.sin(fighter.facingAngle);
-        const fwdZ = Math.cos(fighter.facingAngle);
-        const lungeVel = (spec.forwardLunge * 0.45) / (spec.activeMs / 1000);
-        fighter.vx = fwdX * lungeVel;
-        fighter.vz = fwdZ * lungeVel;
-
-        if (!fighter.attackHasHit) {
-          // Check breakable crates & barrels in arc
-          damageBreakablePropsInArc(sim, fighter, spec);
-          // Check opponent / decoy hit
-          resolveAttackHit(sim, fighter, opponent, spec);
-        }
-
-        if (fighter.actionTimerMs >= fighter.actionDurationMs) {
-          fighter.action = 'attack_recovery';
-          fighter.actionTimerMs = 0;
-          fighter.actionDurationMs = spec.recoveryMs;
-        }
-      }
-      break;
-    }
-
-    case 'attack_recovery': {
-      fighter.vx *= Math.pow(0.001, dtSec);
-      fighter.vz *= Math.pow(0.001, dtSec);
-
-      // Early combo chain cancel during recovery
-      if (fighter.currentAttack) {
-        const curSpec = def.attacks[fighter.currentAttack];
-        if (wantLight && curSpec.canChainInto && curSpec.canChainInto !== 'heavy') {
-          fighter.queuedAttack = curSpec.canChainInto;
-        } else if (wantHeavy && curSpec.canChainInto) {
-          fighter.queuedAttack = 'heavy';
-        }
-      }
-
-      if (
-        fighter.queuedAttack &&
-        fighter.actionTimerMs >= fighter.actionDurationMs * 0.16
-      ) {
-        const nextAtk = fighter.queuedAttack;
-        fighter.queuedAttack = null;
-        startAttack(sim, fighter, opponent, nextAtk);
-        break;
-      }
-
-      // Dodge or Guard cancel out of recovery (snappy response!)
-      if (
-        wantDodge &&
-        fighter.actionTimerMs >= fighter.actionDurationMs * 0.22 &&
-        fighter.stamina >= def.stats.dodgeCost
-      ) {
-        fighter.bufferedInput = null;
-        fighter.bufferTimerMs = 0;
-        triggerDodge(sim, fighter, opponent, input, def.stats.dodgeCost);
-        break;
-      }
-
-      if (input.guardJustPressed && fighter.actionTimerMs >= fighter.actionDurationMs * 0.25) {
-        fighter.action = 'parry_window';
-        fighter.actionTimerMs = 0;
-        fighter.actionDurationMs = 210;
-        fighter.currentAttack = null;
-        fighter.queuedAttack = null;
-        break;
-      }
-
-      if (fighter.actionTimerMs >= fighter.actionDurationMs) {
-        fighter.action = 'idle';
-        fighter.actionTimerMs = 0;
-        fighter.currentAttack = null;
-        fighter.queuedAttack = null;
-      }
-      break;
-    }
-
-    case 'hitstun':
-    case 'blockstun':
-    case 'guard_break':
-    case 'parry_stun': {
-      fighter.vx *= Math.pow(0.002, dtSec);
-      fighter.vz *= Math.pow(0.002, dtSec);
-
-      // 1. GUARD RIPOSTE / COUNTER-SLASH:
-      // While blocking (blockstun) or after 120ms of hitstun, pressing Attack triggers an armored Counter-Riposte!
-      const canCounterRiposte =
-        (fighter.action === 'blockstun' && fighter.actionTimerMs >= 65) ||
-        (fighter.action === 'hitstun' &&
-          fighter.actionTimerMs >= Math.min(145, fighter.actionDurationMs * 0.52));
-
-      if (canCounterRiposte && (wantLight || wantHeavy) && fighter.stamina >= 8) {
-        const counterAtk: AttackKind = wantHeavy ? 'heavy' : 'light_1';
-        fighter.poise = Math.max(fighter.poise, fighter.maxPoise * 0.65);
-        startAttack(sim, fighter, opponent, counterAtk, true);
-        break;
-      }
-
-      // 2. DODGE BREAKOUT / EVADE CANCEL out of hitstun or blockstun:
-      const canDodgeEscape =
-        (fighter.action === 'blockstun' && fighter.actionTimerMs >= 50) ||
-        (fighter.action === 'hitstun' && fighter.actionTimerMs >= 110) ||
-        (fighter.action === 'guard_break' && fighter.actionTimerMs >= 380);
-
-      if (canDodgeEscape && wantDodge && fighter.stamina >= def.stats.dodgeCost * 0.75) {
-        fighter.bufferedInput = null;
-        fighter.bufferTimerMs = 0;
-        fighter.consecutiveHitsTaken = 0;
-        triggerDodge(sim, fighter, opponent, input, Math.round(def.stats.dodgeCost * 0.75));
-        break;
-      }
-
-      // 3. TIMED PARRY / GUARD REVERSAL out of hitstun:
-      if (
-        fighter.action === 'hitstun' &&
-        fighter.actionTimerMs >= 115 &&
-        (input.guardJustPressed || input.guardHeld) &&
-        fighter.stamina >= 8
-      ) {
-        fighter.action = input.guardJustPressed ? 'parry_window' : 'block';
-        fighter.actionTimerMs = 0;
-        fighter.actionDurationMs = input.guardJustPressed ? 210 : 0;
-        fighter.consecutiveHitsTaken = 0;
-        break;
-      }
-
-      if (fighter.actionTimerMs >= fighter.actionDurationMs) {
-        if (fighter.action === 'guard_break' || fighter.action === 'parry_stun') {
-          fighter.poise = fighter.maxPoise * 0.8;
-        }
-        fighter.counterWindowMs = 380; // Grant counter-attack window on recovery!
-        fighter.action = 'idle';
-        fighter.actionTimerMs = 0;
-      }
-      break;
-    }
-
-    case 'idle':
-    case 'move':
-    case 'sprint':
-    case 'jump':
-    case 'block': {
-      fighter.consecutiveHitsTaken = 0;
-      const groundSurfaceY = getArenaSurfaceHeight(sim.arenaId, fighter.x, fighter.z);
-      const isAirborne = fighter.y > groundSurfaceY + 0.25 || Math.abs(fighter.vy) > 0.1;
-      const hasCounterBoost = (fighter.counterWindowMs ?? 0) > 0;
-
-      // 1. Execution Finisher (When enemy is staggered/guard-broken or G pressed)
-      if ((wantExec || (wantHeavy && oppVulnerableForExecution)) && oppVulnerableForExecution) {
-        startAttack(sim, fighter, opponent, 'execution', true);
-        break;
-      }
-
-      // 2. Dodge Roll / Jet Thruster Evade
-      if (wantDodge && fighter.stamina >= def.stats.dodgeCost) {
-        fighter.bufferedInput = null;
-        fighter.bufferTimerMs = 0;
-        triggerDodge(sim, fighter, opponent, input, def.stats.dodgeCost);
-        break;
-      }
-
-      // 3. Unique Character Ability
-      if (
-        wantAbility &&
-        fighter.abilityCooldownMs <= 0 &&
-        fighter.stamina >= def.ability.staminaCost
-      ) {
-        startAttack(sim, fighter, opponent, 'ability', hasCounterBoost);
-        break;
-      }
-
-      // 4. Aerial Slam if attacking mid-air!
-      if (
-        isAirborne &&
-        (wantLight || wantHeavy) &&
-        fighter.stamina >= def.attacks.aerial_slam.staminaCost
-      ) {
-        startAttack(sim, fighter, opponent, 'aerial_slam', true);
-        break;
-      }
-
-      // 5. Heavy Attack
-      if (wantHeavy && fighter.stamina >= def.attacks.heavy.staminaCost) {
-        startAttack(sim, fighter, opponent, 'heavy', hasCounterBoost);
-        break;
-      }
-
-      // 6. Sprint Dash-Strike or Light Attack 1
-      if (wantLight) {
-        const moveMagCheck = Math.hypot(input.moveX, input.moveZ);
-        if (
-          input.sprint &&
-          moveMagCheck > 0.5 &&
-          fighter.stamina >= def.attacks.dash_strike.staminaCost
-        ) {
-          startAttack(sim, fighter, opponent, 'dash_strike', hasCounterBoost);
-          break;
-        } else if (fighter.stamina >= def.attacks.light_1.staminaCost * (hasCounterBoost ? 0.5 : 1)) {
-          startAttack(sim, fighter, opponent, 'light_1', hasCounterBoost);
-          break;
-        }
-      }
-
-      // 7. Timed Parry / Guard Hold
-      if (input.guardJustPressed && fighter.stamina >= 6) {
-        fighter.action = 'parry_window';
-        fighter.actionTimerMs = 0;
-        fighter.actionDurationMs = 215; // Generous 215ms precision parry window
-        fighter.vx *= 0.25;
-        fighter.vz *= 0.25;
-        break;
-      }
-
-      if (input.guardHeld && fighter.stamina > 2) {
-        fighter.action = 'block';
-      } else if (fighter.action === 'block') {
-        fighter.action = 'idle';
-      }
-
-      // 8. 360-degree Arena Movement + Vertical Thruster Jump
-      const moveMag = Math.hypot(input.moveX, input.moveZ);
-      const groundY = getArenaSurfaceHeight(sim.arenaId, fighter.x, fighter.z);
-      let isGrounded = fighter.y <= groundY + 0.06 && fighter.vy <= 0;
-
-      if (wantJump && isGrounded && fighter.stamina >= 12) {
-        fighter.bufferedInput = null;
-        fighter.bufferTimerMs = 0;
-        fighter.stamina = Math.max(0, fighter.stamina - 12);
-        fighter.staminaRegenDelayMs = 450;
-        fighter.vy = 9.2; // High-thrust jump easily clears the 1.2m central dais
-        fighter.action = 'jump';
-        fighter.actionTimerMs = 0;
-        fighter.actionDurationMs = 650;
-        isGrounded = false;
-      }
-
-      if (moveMag > 0.04) {
-        const normX = input.moveX / Math.max(1, moveMag);
-        const normZ = input.moveZ / Math.max(1, moveMag);
-        // Sprinting/running never drains stamina — stamina continues to regenerate while moving!
-        const wantsSprint = input.sprint && fighter.action !== 'block';
-
-        let speed = def.stats.walkSpeed;
-        if (fighter.action === 'block') {
-          speed = def.stats.walkSpeed * 0.48;
-        } else if (wantsSprint) {
-          speed = def.stats.sprintSpeed;
-          if (isGrounded) fighter.action = 'sprint';
-        } else if (isGrounded) {
-          fighter.action = 'move';
-        }
-
-        fighter.vx = normX * speed * Math.min(1, moveMag);
-        fighter.vz = normZ * speed * Math.min(1, moveMag);
-
-        if (wantsSprint) {
-          fighter.facingAngle = lerpAngle(
-            fighter.facingAngle,
-            Math.atan2(normX, normZ),
-            14 * dtSec
-          );
-        } else {
-          const toOppX = opponent.x - fighter.x;
-          const toOppZ = opponent.z - fighter.z;
-          if (Math.hypot(toOppX, toOppZ) > 0.1) {
-            fighter.facingAngle = lerpAngle(
-              fighter.facingAngle,
-              Math.atan2(toOppX, toOppZ),
-              11 * dtSec
-            );
-          }
-        }
-      } else {
-        fighter.vx = 0;
-        fighter.vz = 0;
-        if (fighter.action !== 'block' && fighter.action !== 'jump' && isGrounded) {
-          fighter.action = 'idle';
-        }
-        const toOppX = opponent.x - fighter.x;
-        const toOppZ = opponent.z - fighter.z;
-        if (Math.hypot(toOppX, toOppZ) > 0.1) {
-          fighter.facingAngle = lerpAngle(
-            fighter.facingAngle,
-            Math.atan2(toOppX, toOppZ),
-            9 * dtSec
-          );
-        }
-      }
-      break;
     }
   }
 
-  // Integrate horizontal velocity
-  fighter.x += fighter.vx * dtSec;
-  fighter.z += fighter.vz * dtSec;
-
-  // Integrate vertical velocity (gravity + Foundry dais heightfield)
-  const targetGroundY = getArenaSurfaceHeight(sim.arenaId, fighter.x, fighter.z);
-  if (fighter.y > targetGroundY || fighter.vy > 0) {
-    fighter.vy -= 24.0 * dtSec; // Crisp mech gravity
-    fighter.y += fighter.vy * dtSec;
-    if (fighter.y <= targetGroundY) {
-      fighter.y = targetGroundY;
-      fighter.vy = 0;
-      if (fighter.action === 'jump') {
-        fighter.action = 'idle';
+  if (breakableProps) {
+    for (const p of breakableProps) {
+      if (p.broken) continue;
+      const minX = p.x - p.radius;
+      const maxX = p.x + p.radius;
+      const minZ = p.z - p.radius;
+      const maxZ = p.z + p.radius;
+      const t = intersectRayAABB(
+        ox,
+        oy,
+        oz,
+        dx,
+        dy,
+        dz,
+        minX,
+        0,
+        minZ,
+        maxX,
+        p.height,
+        maxZ,
+        closest
+      );
+      if (t !== null && t < closest) {
+        closest = t;
+        nx = -dx;
+        ny = 0.2;
+        nz = -dz;
+        hitSurface = true;
       }
     }
-  } else {
-    // Smoothly step up/down onto the central octagonal dais stairs
-    fighter.y = targetGroundY;
-    fighter.vy = 0;
   }
 
-  // Collide against arena bounds, pillars, pistons, braziers, vents, and intact breakable crates/barrels
-  clampAndCollideArena(sim, fighter);
+  return { dist: closest, nx, ny, nz, hitSurface };
 }
 
-function triggerDodge(
-  sim: SimulationState,
-  fighter: FighterState,
-  opponent: FighterState,
-  input: FighterInput,
-  staminaCost: number
-): void {
-  fighter.stamina = Math.max(0, fighter.stamina - staminaCost);
-  fighter.staminaRegenDelayMs = 520;
-  fighter.action = 'dodge';
-  fighter.actionTimerMs = 0;
-  fighter.actionDurationMs = 340;
-  fighter.invulnerableMs = 240;
-  fighter.currentAttack = null;
-  fighter.queuedAttack = null;
+/**
+ * Multi-ray 3D Line-Of-Sight check (eye-level + chest-level) so enemies NEVER see or fire through walls or 1.3m cover barriers.
+ */
+export function hasClearLineOfSight(
+  botX: number,
+  botY: number,
+  botZ: number,
+  playerX: number,
+  playerY: number,
+  playerZ: number,
+  playerEyeHeight: number,
+  arena: ArenaDefinition,
+  breakableProps?: BreakablePropState[]
+): boolean {
+  // 1. Upper eye-to-eye ray
+  const ox1 = botX;
+  const oy1 = botY + 1.25;
+  const oz1 = botZ;
+  const tx1 = playerX;
+  const ty1 = playerY + Math.max(0.75, playerEyeHeight - 0.16);
+  const tz1 = playerZ;
 
-  const mag = Math.hypot(input.moveX, input.moveZ);
-  if (mag > 0.1) {
-    fighter.dodgeDirX = input.moveX / mag;
-    fighter.dodgeDirZ = input.moveZ / mag;
-  } else {
-    // Default backstep away from opponent
-    const dx = fighter.x - opponent.x;
-    const dz = fighter.z - opponent.z;
-    const d = Math.hypot(dx, dz) || 1;
-    fighter.dodgeDirX = dx / d;
-    fighter.dodgeDirZ = dz / d;
+  const vx1 = tx1 - ox1;
+  const vy1 = ty1 - oy1;
+  const vz1 = tz1 - oz1;
+  const dist1 = Math.hypot(vx1, vy1, vz1);
+  if (dist1 < 0.05) return true;
+
+  const hit1 = findClosestWallHitWithNormal(
+    ox1,
+    oy1,
+    oz1,
+    vx1 / dist1,
+    vy1 / dist1,
+    vz1 / dist1,
+    dist1,
+    arena,
+    breakableProps
+  );
+  if (hit1.dist < dist1 - 0.12) {
+    return false;
   }
-  fighter.facingAngle = Math.atan2(fighter.dodgeDirX, fighter.dodgeDirZ);
 
-  sim.events.push({
-    type: 'dodge_dash',
-    attackerId: fighter.id,
-    facingAngle: fighter.facingAngle,
-    x: fighter.x,
-    y: fighter.y + 0.9,
-    z: fighter.z,
-    label: 'DASH EVADE',
-  });
+  // 2. Chest-to-chest ray (ensures 1.3m tactical cover barriers occlude enemy fire)
+  const oy2 = botY + 1.02;
+  const ty2 = playerY + Math.min(1.05, playerEyeHeight * 0.68);
+  const vy2 = ty2 - oy2;
+  const dist2 = Math.hypot(vx1, vy2, vz1);
+  const hit2 = findClosestWallHitWithNormal(
+    ox1,
+    oy2,
+    oz1,
+    vx1 / dist2,
+    vy2 / dist2,
+    vz1 / dist2,
+    dist2,
+    arena,
+    breakableProps
+  );
+  if (hit2.dist < dist2 - 0.12) {
+    return false;
+  }
+
+  return true;
 }
 
-function resolveAttackHit(
-  sim: SimulationState,
-  attacker: FighterState,
-  defender: FighterState,
-  spec: AttackSpec
-): void {
-  const fwdX = Math.sin(attacker.facingAngle);
-  const fwdZ = Math.cos(attacker.facingAngle);
+/**
+ * Universal 3D Multi-Sensor Weapon Wall-Obstruction Solver.
+ * Casts a 5-ray 3D volumetric sensor fan from the player's eye/shoulder along the weapon's barrel
+ * AND checks 3D barrel-capsule proximity against all walls, cover barriers, pillars, crates, barrels,
+ * and perimeter bounds so the weapon physically touches/braces against walls and NEVER clips inside them.
+ */
+export function computeWeaponWallObstruction(
+  player: PlayerShooterState,
+  arena: ArenaDefinition,
+  breakableProps?: BreakablePropState[]
+): { obstruction: number; contactDist: number } {
+  const wid = player.activeWeapon;
+  const barrelReach =
+    wid === 'awp'
+      ? 1.42
+      : wid === 'spas12'
+      ? 1.26
+      : wid === 'ak47'
+      ? 1.22
+      : wid === 'm4a1'
+      ? 1.18
+      : wid === 'mp5'
+      ? 1.02
+      : 0.90;
+  const minClearance = 0.56;
 
-  // Check if attacker hits an active Rift decoy first
-  if (sim.decoy && sim.decoy.active && sim.decoy.ownerId === defender.id) {
-    const ddx = sim.decoy.x - attacker.x;
-    const ddz = sim.decoy.z - attacker.z;
-    const dDist = Math.hypot(ddx, ddz);
-    if (dDist <= spec.range + 0.5) {
-      const dirX = dDist > 0.001 ? ddx / dDist : fwdX;
-      const dirZ = dDist > 0.001 ? ddz / dDist : fwdZ;
-      const dot = fwdX * dirX + fwdZ * dirZ;
-      if (dot >= spec.arcCos) {
-        sim.decoy.active = false;
-        attacker.attackHasHit = true;
-        sim.hitstopMs = 55;
-        sim.events.push({
-          type: 'decoy_shatter',
-          attackerId: attacker.id,
-          defenderId: defender.id,
-          x: sim.decoy.x,
-          y: 1.2,
-          z: sim.decoy.z,
-          label: 'DECOY SHATTERED',
-        });
-        return;
-      }
-    }
-  }
+  const ox = player.x;
+  const oy = player.y + player.eyeHeight;
+  const oz = player.z;
 
-  const dx = defender.x - attacker.x;
-  const dz = defender.z - attacker.z;
-  const dist = Math.hypot(dx, dz);
+  const { dx, dy, dz } = getAimDirection(player.yaw, player.pitch);
+  const forwardX = -Math.sin(player.yaw);
+  const forwardZ = -Math.cos(player.yaw);
+  const rightX = Math.cos(player.yaw);
+  const rightZ = -Math.sin(player.yaw);
 
-  // Fighter capsule radius is ~0.78m
-  if (dist > spec.range + 0.78) {
-    return;
-  }
+  const hipOffsetX = (1 - player.adsBlend) * 0.23;
+  const hipOffsetY = (1 - player.adsBlend) * 0.16 + 0.06;
 
-  // Vertical proximity check
-  if (Math.abs(defender.y - attacker.y) > 2.2) {
-    return;
-  }
-
-  const dirX = dist > 0.0001 ? dx / dist : fwdX;
-  const dirZ = dist > 0.0001 ? dz / dist : fwdZ;
-  const dot = fwdX * dirX + fwdZ * dirZ;
-
-  if (dot < spec.arcCos && dist > 1.25) {
-    return;
-  }
-
-  attacker.attackHasHit = true;
-
-  // 1. Dodge I-Frames Evasion
-  if (defender.invulnerableMs > 0) {
-    sim.events.push({
-      type: 'dodge_evade',
-      attackerId: attacker.id,
-      defenderId: defender.id,
-      x: defender.x,
-      y: defender.y + 1.1,
-      z: defender.z,
-      label: 'EVADED',
-    });
-    return;
-  }
-
-  // Check if defender is facing the attacker for directional block/parry
-  const defFwdX = Math.sin(defender.facingAngle);
-  const defFwdZ = Math.cos(defender.facingAngle);
-  const toAttackerX = -dirX;
-  const toAttackerZ = -dirZ;
-  const defFacingDot = defFwdX * toAttackerX + defFwdZ * toAttackerZ;
-
-  // 2. Precision Timed Parry!
-  if (defender.action === 'parry_window' && defFacingDot > -0.1) {
-    defender.parriesLanded += 1;
-    defender.stamina = Math.min(defender.maxStamina, defender.stamina + 28);
-    defender.poise = defender.maxPoise;
-    defender.action = 'idle';
-    defender.actionTimerMs = 0;
-
-    attacker.action = 'parry_stun';
-    attacker.actionTimerMs = 0;
-    attacker.actionDurationMs = 950;
-    attacker.currentAttack = null;
-    attacker.poise = 0; // Vulnerable to immediate Execution!
-    attacker.vx = -fwdX * 4.5;
-    attacker.vz = -fwdZ * 4.5;
-
-    sim.hitstopMs = 130;
-    sim.slowMoMs = 340;
-    sim.screenShake = Math.max(sim.screenShake, 0.58);
-
-    sim.events.push({
-      type: 'parried',
-      attackerId: attacker.id,
-      defenderId: defender.id,
-      x: (attacker.x + defender.x) * 0.5,
-      y: Math.max(attacker.y, defender.y) + 1.35,
-      z: (attacker.z + defender.z) * 0.5,
-      label: 'PARRIED! EXECUTE READY!',
-    });
-    return;
-  }
-
-  // 3. Directional Guard / Block
-  if (
-    (defender.action === 'block' || defender.action === 'blockstun') &&
-    defFacingDot > 0.0 &&
-    spec.id !== 'execution'
-  ) {
-    defender.stamina -= spec.guardDamage;
-    defender.poise = Math.max(0, defender.poise - spec.poiseDamage * 0.5);
-    defender.staminaRegenDelayMs = 700;
-    defender.hp = Math.max(1, defender.hp - spec.chipDamage);
-
-    if (defender.stamina <= 0) {
-      // Guard Crush!
-      defender.stamina = 0;
-      defender.poise = 0;
-      defender.action = 'guard_break';
-      defender.actionTimerMs = 0;
-      defender.actionDurationMs = 1150;
-      defender.vx = dirX * spec.knockback * 3.8;
-      defender.vz = dirZ * spec.knockback * 3.8;
-
-      sim.hitstopMs = 115;
-      sim.slowMoMs = 260;
-      sim.screenShake = Math.max(sim.screenShake, 0.65);
-
-      sim.events.push({
-        type: 'guard_break',
-        attackerId: attacker.id,
-        defenderId: defender.id,
-        x: defender.x,
-        y: defender.y + 1.35,
-        z: defender.z,
-        damage: spec.chipDamage,
-        label: 'GUARD CRUSH! EXECUTE!',
-      });
-    } else {
-      defender.action = 'blockstun';
-      defender.actionTimerMs = 0;
-      defender.actionDurationMs = spec.blockstunMs;
-      defender.vx = dirX * spec.knockback * 2.2;
-      defender.vz = dirZ * spec.knockback * 2.2;
-
-      sim.hitstopMs = 45;
-      sim.screenShake = Math.max(sim.screenShake, 0.22);
-
-      sim.events.push({
-        type: 'blocked',
-        attackerId: attacker.id,
-        defenderId: defender.id,
-        x: (attacker.x + defender.x) * 0.5,
-        y: Math.max(attacker.y, defender.y) + 1.25,
-        z: (attacker.z + defender.z) * 0.5,
-        damage: spec.chipDamage,
-        label: 'BLOCKED',
-      });
-    }
-    return;
-  }
-
-  // 4. Clean Direct Hit!
-  const isPunish =
-    defender.action === 'parry_stun' || defender.action === 'guard_break';
-  const defenderHasHyperArmor =
-    (defender.hyperArmorMs ?? 0) > 0 &&
-    (defender.action === 'attack_windup' || defender.action === 'attack_active');
-
-  // Hyper-Armor absorbs 40% of damage and prevents attack interruption!
-  const finalDamage = Math.round(
-    spec.damage * (isPunish ? 1.25 : defenderHasHyperArmor ? 0.6 : 1.0)
+  // Sensor 1: Center eye aim ray
+  const hit1 = findClosestWallHitWithNormal(
+    ox,
+    oy - 0.06,
+    oz,
+    dx,
+    dy,
+    dz,
+    barrelReach,
+    arena,
+    breakableProps
   );
 
-  defender.hp = Math.max(0, defender.hp - finalDamage);
-  defender.hitFlashMs = 175;
+  // Sensor 2: Right-hand weapon bore axis ray
+  const bx = ox + rightX * hipOffsetX;
+  const by = Math.max(0.25, oy - hipOffsetY);
+  const bz = oz + rightZ * hipOffsetX;
+  const hit2 = findClosestWallHitWithNormal(
+    bx,
+    by,
+    bz,
+    dx,
+    dy,
+    dz,
+    barrelReach,
+    arena,
+    breakableProps
+  );
 
-  if (defenderHasHyperArmor && defender.hp > 0 && spec.id !== 'execution') {
-    // Defender powers right through the hit without losing their attack!
-    defender.poise = Math.max(15, defender.poise - spec.poiseDamage * 0.35);
-  } else {
-    defender.poise = Math.max(0, defender.poise - spec.poiseDamage);
-    defender.currentAttack = null;
-    defender.queuedAttack = null;
-    defender.consecutiveHitsTaken = (defender.consecutiveHitsTaken ?? 0) + 1;
+  // Sensor 3: Right-flank barrel guard ray (catches angled walls on right side of gun)
+  const r3Dx = dx + rightX * 0.22;
+  const r3Dy = dy;
+  const r3Dz = dz + rightZ * 0.22;
+  const r3Len = Math.hypot(r3Dx, r3Dy, r3Dz) || 1;
+  const hit3 = findClosestWallHitWithNormal(
+    bx + rightX * 0.08,
+    by,
+    bz + rightZ * 0.08,
+    r3Dx / r3Len,
+    r3Dy / r3Len,
+    r3Dz / r3Len,
+    barrelReach * 0.95,
+    arena,
+    breakableProps
+  );
 
-    // 3-Hit Combo Breaker Protection: prevents any stunlock longer than 3 hits!
-    if ((defender.consecutiveHitsTaken ?? 0) >= 3 && defender.hp > 0) {
-      defender.consecutiveHitsTaken = 0;
-      defender.poise = defender.maxPoise;
-      defender.invulnerableMs = 260;
-      defender.counterWindowMs = 450;
-      defender.action = 'hitstun';
-      defender.actionTimerMs = 0;
-      defender.actionDurationMs = 190;
-      defender.vx = dirX * 7.2;
-      defender.vz = dirZ * 7.2;
-    } else if (
-      defender.poise <= 0 &&
-      (spec.id === 'heavy' || spec.id === 'ability' || spec.id === 'aerial_slam') &&
-      defender.hp > 0
+  // Sensor 4: Left-flank barrel guard ray (catches corners on left side of gun)
+  const r4Dx = dx - rightX * 0.18;
+  const r4Dy = dy;
+  const r4Dz = dz - rightZ * 0.18;
+  const r4Len = Math.hypot(r4Dx, r4Dy, r4Dz) || 1;
+  const hit4 = findClosestWallHitWithNormal(
+    bx - rightX * 0.08,
+    by,
+    bz - rightZ * 0.08,
+    r4Dx / r4Len,
+    r4Dy / r4Len,
+    r4Dz / r4Len,
+    barrelReach * 0.95,
+    arena,
+    breakableProps
+  );
+
+  // Sensor 5: Horizontal chest-forward ray (prevents clipping even when looking straight up/down near a wall)
+  const chestY = Math.max(0.35, player.y + player.eyeHeight * 0.76);
+  const hit5 = findClosestWallHitWithNormal(
+    bx,
+    chestY,
+    bz,
+    forwardX,
+    0,
+    forwardZ,
+    barrelReach * 0.92,
+    arena,
+    breakableProps
+  );
+
+  let closestDist = barrelReach;
+  if (hit1.hitSurface && hit1.dist < closestDist) closestDist = hit1.dist;
+  if (hit2.hitSurface && hit2.dist < closestDist) closestDist = hit2.dist;
+  if (hit3.hitSurface && hit3.dist < closestDist) closestDist = hit3.dist;
+  if (hit4.hitSurface && hit4.dist < closestDist) closestDist = hit4.dist;
+  if (hit5.hitSurface && hit5.dist < closestDist) closestDist = hit5.dist;
+
+  // Sensor 6: 3D Volumetric Barrel Capsule Sample Points vs Blocks, Pillars & Props
+  const sampleFractions = [0.35, 0.62, 0.88];
+  const barrelRadius = 0.22;
+  for (let s = 0; s < sampleFractions.length; s++) {
+    const distAlong = sampleFractions[s] * barrelReach;
+    const sx = bx + dx * distAlong;
+    const sy = by + dy * distAlong;
+    const sz = bz + dz * distAlong;
+
+    // Check arena outer perimeter bounds
+    if (
+      sx - barrelRadius < arena.bounds.minX ||
+      sx + barrelRadius > arena.bounds.maxX ||
+      sz - barrelRadius < arena.bounds.minZ ||
+      sz + barrelRadius > arena.bounds.maxZ
     ) {
-      // Only heavy/ability/aerial strikes can trigger stagger when poise breaks
-      defender.poise = 0;
-      defender.action = 'guard_break';
-      defender.actionTimerMs = 0;
-      defender.actionDurationMs = 680;
-      defender.vx = dirX * spec.knockback * 3.8;
-      defender.vz = dirZ * spec.knockback * 3.8;
-      sim.events.push({
-        type: 'guard_break',
-        attackerId: attacker.id,
-        defenderId: defender.id,
-        x: defender.x,
-        y: defender.y + 1.5,
-        z: defender.z,
-        damage: finalDamage,
-        label: 'STAGGERED! EXECUTE READY!',
-      });
-    } else {
-      defender.action = 'hitstun';
-      defender.actionTimerMs = 0;
-      defender.actionDurationMs = spec.hitstunMs;
-      defender.counterWindowMs = 360;
-      if (spec.id === 'execution' || defender.poise <= 0) {
-        defender.poise = defender.maxPoise * 0.75;
+      closestDist = Math.min(closestDist, distAlong * 0.82);
+    }
+
+    // Check all solid blocks
+    for (const block of arena.blocks) {
+      if (sy > block.height + 0.14) continue;
+      const hw = block.width * 0.5;
+      const hd = block.depth * 0.5;
+      const cx = Math.max(block.x - hw, Math.min(block.x + hw, sx));
+      const cz = Math.max(block.z - hd, Math.min(block.z + hd, sz));
+      const d2 = (sx - cx) ** 2 + (sz - cz) ** 2;
+      if (d2 < barrelRadius * barrelRadius) {
+        closestDist = Math.min(closestDist, distAlong * 0.78);
       }
-      defender.vx = dirX * spec.knockback * 4.2;
-      defender.vz = dirZ * spec.knockback * 4.2;
+    }
+
+    // Check cylindrical pillars
+    for (const col of arena.colliders) {
+      if (sy > col.height + 0.14) continue;
+      const d2 = (sx - col.x) ** 2 + (sz - col.z) ** 2;
+      const minR = col.radius + barrelRadius;
+      if (d2 < minR * minR) {
+        closestDist = Math.min(closestDist, distAlong * 0.78);
+      }
+    }
+
+    // Check unbroken crates & barrels
+    if (breakableProps) {
+      for (const prop of breakableProps) {
+        if (prop.broken || sy > prop.height + 0.14) continue;
+        const d2 = (sx - prop.x) ** 2 + (sz - prop.z) ** 2;
+        const minR = prop.radius + barrelRadius;
+        if (d2 < minR * minR) {
+          closestDist = Math.min(closestDist, distAlong * 0.78);
+        }
+      }
     }
   }
 
-  attacker.totalDamageDealt += finalDamage;
-  attacker.comboCount += 1;
-  attacker.comboDamage += finalDamage;
-  attacker.comboResetTimerMs = 2300;
-
-  const isHeavyImpact =
-    spec.id === 'heavy' ||
-    spec.id === 'light_3' ||
-    spec.id === 'ability' ||
-    spec.id === 'aerial_slam' ||
-    spec.id === 'execution';
-
-  sim.hitstopMs = spec.id === 'execution' ? 140 : isHeavyImpact ? 95 : 55;
-  sim.screenShake = Math.max(
-    sim.screenShake,
-    spec.id === 'execution' ? 0.88 : isHeavyImpact ? 0.58 : 0.28
-  );
-  if (spec.id === 'execution') {
-    sim.slowMoMs = 360;
+  if (closestDist >= barrelReach) {
+    return { obstruction: 0, contactDist: barrelReach };
   }
 
-  if (defender.hp <= 0) {
-    sim.slowMoMs = 680;
-    sim.hitstopMs = 150;
-    sim.screenShake = 0.92;
-  }
-
-  sim.events.push({
-    type:
-      spec.id === 'execution'
-        ? 'execution_hit'
-        : spec.id === 'ability'
-          ? 'hit_ability'
-          : isHeavyImpact
-            ? 'hit_heavy'
-            : 'hit_light',
-    attackerId: attacker.id,
-    defenderId: defender.id,
-    x: (attacker.x + defender.x) * 0.5,
-    y: Math.max(attacker.y, defender.y) + 1.25,
-    z: (attacker.z + defender.z) * 0.5,
-    damage: finalDamage,
-    label:
-      spec.id === 'execution'
-        ? `EXECUTION! -${finalDamage}`
-        : isPunish
-          ? `CRITICAL -${finalDamage}`
-          : `-${finalDamage}`,
-  });
+  const rawObs =
+    (barrelReach - closestDist) / Math.max(0.15, barrelReach - minClearance);
+  const obstruction = Math.max(0, Math.min(1, rawObs));
+  return { obstruction, contactDist: closestDist };
 }
 
-function updateProjectiles(sim: SimulationState, dtMs: number): void {
-  if (sim.projectiles.length === 0) return;
-  const dtSec = dtMs / 1000;
+// ============================================================================
+// WEAPON SWITCHING, SCOPE SENSITIVITY & RELOAD HELPERS
+// ============================================================================
 
-  for (let i = sim.projectiles.length - 1; i >= 0; i--) {
-    const proj = sim.projectiles[i];
-    proj.remainingMs -= dtMs;
-    if (proj.remainingMs <= 0) {
-      sim.projectiles.splice(i, 1);
-      continue;
+/**
+ * Computes the camera & fire-joystick look sensitivity multiplier when scoped in (ADS).
+ * Larger scope magnification (smaller adsFov, e.g. AWP 8x at 22° vs M4A1 2x at 46° vs MP5 at 52°)
+ * yields a proportionally lower sensitivity multiplier for steady precision aiming.
+ */
+export function getScopeSensitivityMultiplier(
+  weaponId: WeaponId,
+  adsBlend: number
+): number {
+  const clampedBlend = Math.max(0, Math.min(1, adsBlend));
+  if (clampedBlend <= 0.001) return 1.0;
+
+  const spec = WEAPON_REGISTRY[weaponId] || WEAPON_REGISTRY.m4a1;
+  const hipFov = 78;
+  const fovRatio = spec.adsFov / hipFov;
+  const fullScopeMultiplier =
+    spec.id === 'awp'
+      ? 0.22
+      : Math.max(0.22, Math.min(0.62, Number((fovRatio * 0.76).toFixed(4))));
+
+  return 1.0 - clampedBlend * (1.0 - fullScopeMultiplier);
+}
+
+export function setPlayerLoadoutPair(
+  player: PlayerShooterState,
+  pair: [WeaponId, WeaponId],
+  events?: CombatEvent[]
+): void {
+  player.loadoutWeapons = [pair[0], pair[1]];
+  if (!player.loadoutWeapons.includes(player.activeWeapon)) {
+    switchPlayerWeapon(player, pair[0], events);
+  }
+}
+
+export function switchPlayerWeapon(
+  player: PlayerShooterState,
+  targetWeapon: WeaponId,
+  events?: CombatEvent[]
+): boolean {
+  if (player.activeWeapon === targetWeapon) return false;
+  if (!WEAPON_REGISTRY[targetWeapon]) return false;
+
+  player.previousWeapon = player.activeWeapon;
+  player.activeWeapon = targetWeapon;
+  player.isReloading = false;
+  player.reloadTimerMs = 0;
+  player.weaponSwitchDurationMs = 340;
+  player.weaponSwitchTimerMs = 340;
+  player.fireCooldownMs = Math.max(player.fireCooldownMs, 220);
+
+  events?.push({
+    type: 'weapon_switch',
+    actor: 'p1',
+    label: WEAPON_REGISTRY[targetWeapon].name,
+    weaponId: targetWeapon,
+  });
+  return true;
+}
+
+export function startPlayerReload(
+  player: PlayerShooterState,
+  events?: CombatEvent[]
+): boolean {
+  if (player.isReloading) return false;
+  const spec = WEAPON_REGISTRY[player.activeWeapon];
+  const ammo = player.weapons[player.activeWeapon];
+  if (ammo.mag >= spec.magSize || ammo.reserve <= 0) return false;
+
+  player.isReloading = true;
+  player.reloadTimerMs = spec.reloadTimeMs;
+  player.isAds = false;
+  events?.push({
+    type: 'reload_start',
+    actor: 'p1',
+    label: 'RELOADING',
+    weaponId: player.activeWeapon,
+  });
+  return true;
+}
+
+/**
+ * Handles tapping one of the 2 Gun Boxes above the Health Bar:
+ * - If tapping the gun ALREADY in hand: triggers a Reload!
+ * - If tapping the other gun in the pair: switches to that gun!
+ */
+export function handleWeaponSlotClick(
+  player: PlayerShooterState,
+  targetWeapon: WeaponId,
+  events?: CombatEvent[]
+): 'reloaded' | 'switched' | 'noop' {
+  if (player.activeWeapon === targetWeapon) {
+    const started = startPlayerReload(player, events);
+    return started ? 'reloaded' : 'noop';
+  }
+  const switched = switchPlayerWeapon(player, targetWeapon, events);
+  return switched ? 'switched' : 'noop';
+}
+
+// ============================================================================
+// PLAYER FIRING & BALLISTIC HITSCAN RESOLUTION
+// ============================================================================
+
+export function firePlayerWeapon(
+  sim: SimulationState,
+  events: CombatEvent[],
+  infiniteAmmo = false
+): boolean {
+  const player = sim.player;
+  const spec = WEAPON_REGISTRY[player.activeWeapon];
+  const ammo = player.weapons[player.activeWeapon];
+
+  if (player.isReloading || player.fireCooldownMs > 0 || player.weaponSwitchTimerMs > 0) {
+    return false;
+  }
+
+  if (ammo.mag <= 0) {
+    player.fireCooldownMs = 220;
+    events.push({
+      type: 'dry_fire',
+      actor: 'p1',
+      label: 'OUT OF AMMO',
+      weaponId: spec.id,
+    });
+    if (ammo.reserve > 0) {
+      startPlayerReload(player, events);
+    }
+    return false;
+  }
+
+  if (!infiniteAmmo) {
+    ammo.mag -= 1;
+  }
+
+  player.fireCooldownMs = spec.fireIntervalMs;
+  player.muzzleFlashTimerMs = 65;
+  player.shotsFired += 1;
+
+  const arena = ARENA_REGISTRY[sim.arenaId] || ARENA_REGISTRY.foundry_arena;
+  const ox = player.x;
+  const oy = player.y + player.eyeHeight;
+  const oz = player.z;
+
+  const spreadDeg =
+    (player.isAds ? spec.adsSpreadDeg : spec.hipSpreadDeg) *
+    (player.isCrouching ? 0.65 : 1.0);
+  const spreadRad = (spreadDeg * Math.PI) / 180;
+
+  let anyHit = false;
+  let anyHeadshot = false;
+  let totalDamageDealt = 0;
+
+  for (let p = 0; p < spec.pellets; p++) {
+    // Deterministic-friendly small spread pattern when p === 0 and ADS, or randomized cone for hipfire/shotgun
+    const randYaw =
+      p === 0 && player.isAds
+        ? 0
+        : (Math.random() - 0.5) * 2 * spreadRad;
+    const randPitch =
+      p === 0 && player.isAds
+        ? 0
+        : (Math.random() - 0.5) * 2 * spreadRad;
+
+    const rayYaw = player.yaw + randYaw;
+    const rayPitch = player.pitch + player.recoilKickPitch * 0.4 + randPitch;
+    const { dx, dy, dz } = getAimDirection(rayYaw, rayPitch);
+
+    const wallHit = findClosestWallHitWithNormal(ox, oy, oz, dx, dy, dz, spec.maxRange, arena);
+    let bestDist = wallHit.dist;
+    let hitEnemy: EnemyBotState | null = null;
+    let hitIsHeadshot = false;
+    let hitProp: BreakablePropState | null = null;
+
+    // Check enemies
+    for (const enemy of sim.enemies) {
+      if (enemy.state === 'ko' || enemy.hp <= 0) continue;
+
+      // 1. Head sphere check (center at y + 1.56, radius 0.30)
+      const headT = intersectRaySphere(
+        ox,
+        oy,
+        oz,
+        dx,
+        dy,
+        dz,
+        enemy.x,
+        enemy.y + 1.56,
+        enemy.z,
+        0.31,
+        bestDist
+      );
+      if (headT !== null && headT < bestDist) {
+        bestDist = headT;
+        hitEnemy = enemy;
+        hitIsHeadshot = true;
+        hitProp = null;
+        continue;
+      }
+
+      // 2. Body AABB check (y from 0.05 to 1.45, half-width 0.44)
+      const bodyT = intersectRayAABB(
+        ox,
+        oy,
+        oz,
+        dx,
+        dy,
+        dz,
+        enemy.x - 0.44,
+        enemy.y + 0.05,
+        enemy.z - 0.44,
+        enemy.x + 0.44,
+        enemy.y + 1.45,
+        enemy.z + 0.44,
+        bestDist
+      );
+      if (bodyT !== null && bodyT < bestDist) {
+        bestDist = bodyT;
+        hitEnemy = enemy;
+        hitIsHeadshot = false;
+        hitProp = null;
+      }
     }
 
-    const target = proj.ownerId === 'p1' ? sim.p2 : sim.p1;
-    const attacker = proj.ownerId === 'p1' ? sim.p1 : sim.p2;
-
-    // Subtle homing toward target
-    const toX = target.x - proj.x;
-    const toZ = target.z - proj.z;
-    const toDist = Math.hypot(toX, toZ) || 1;
-    proj.vx += (toX / toDist) * 18 * dtSec;
-    proj.vz += (toZ / toDist) * 18 * dtSec;
-    const speed = Math.hypot(proj.vx, proj.vz) || 1;
-    if (speed > 14.5) {
-      proj.vx = (proj.vx / speed) * 14.5;
-      proj.vz = (proj.vz / speed) * 14.5;
-    }
-
-    proj.x += proj.vx * dtSec;
-    proj.z += proj.vz * dtSec;
-    proj.y = getArenaSurfaceHeight(sim.arenaId, proj.x, proj.z) + 1.25;
-
-    // Check collision with breakable props
-    let hitSomething = false;
+    // Check breakable crates/barrels
     for (const prop of sim.breakableProps) {
       if (prop.broken) continue;
-      if (Math.hypot(prop.x - proj.x, prop.z - proj.z) <= prop.radius + proj.radius) {
-        prop.hp = 0;
-        prop.broken = true;
-        sim.events.push({
-          type: 'prop_shatter',
-          attackerId: attacker.id,
-          x: prop.x,
-          y: prop.height * 0.5,
-          z: prop.z,
-          label: prop.kind === 'barrel' ? 'BARREL SHATTERED!' : 'CRATE DESTROYED!',
-          propId: prop.id,
-          propKind: prop.kind,
+      const propT = intersectRayAABB(
+        ox,
+        oy,
+        oz,
+        dx,
+        dy,
+        dz,
+        prop.x - prop.radius,
+        0,
+        prop.z - prop.radius,
+        prop.x + prop.radius,
+        prop.height,
+        prop.z + prop.radius,
+        bestDist
+      );
+      if (propT !== null && propT < bestDist) {
+        bestDist = propT;
+        hitProp = prop;
+        hitEnemy = null;
+      }
+    }
+
+    const hitX = ox + dx * bestDist;
+    const hitY = oy + dy * bestDist;
+    const hitZ = oz + dz * bestDist;
+
+    let hitKind: BulletTrace['hitKind'] = wallHit.hitSurface ? 'wall' : 'sky';
+    let hitNormalX = wallHit.nx;
+    let hitNormalY = wallHit.ny;
+    let hitNormalZ = wallHit.nz;
+
+    if (hitEnemy) {
+      hitKind = hitIsHeadshot ? 'headshot' : 'enemy';
+      hitNormalX = -dx;
+      hitNormalY = 0.25;
+      hitNormalZ = -dz;
+    } else if (hitProp) {
+      hitKind = 'prop';
+      hitNormalX = -dx;
+      hitNormalY = 0.3;
+      hitNormalZ = -dz;
+    }
+
+    const rightScale = player.isAds ? 0.015 : 0.22;
+    const rightX = Math.cos(player.yaw) * rightScale;
+    const rightZ = -Math.sin(player.yaw) * rightScale;
+    const downOffset = player.isAds ? 0.06 : 0.14;
+
+    sim.traces.push({
+      id: sim.nextTraceId++,
+      fromX: ox + rightX + dx * 0.88,
+      fromY: oy - downOffset + dy * 0.88,
+      fromZ: oz + rightZ + dz * 0.88,
+      toX: hitX,
+      toY: hitY,
+      toZ: hitZ,
+      ttlMs: 95,
+      maxTtlMs: 95,
+      colorHex: hitIsHeadshot ? 0xfacc15 : 0xfbbf24,
+      isHeadshot: hitIsHeadshot,
+      isEnemyShot: false,
+      weaponId: spec.id,
+      hitNormalX,
+      hitNormalY,
+      hitNormalZ,
+      hitKind,
+    });
+
+    if (hitEnemy) {
+      anyHit = true;
+      const dmg = Math.round(
+        spec.damage * (hitIsHeadshot ? spec.headshotMultiplier : 1.0)
+      );
+      totalDamageDealt += dmg;
+      hitEnemy.hp = Math.max(0, hitEnemy.hp - dmg);
+      hitEnemy.hitFlashMs = 110;
+
+      // Knockback impulse
+      hitEnemy.vx += dx * (hitIsHeadshot ? 4.8 : 2.8);
+      hitEnemy.vz += dz * (hitIsHeadshot ? 4.8 : 2.8);
+
+      if (hitIsHeadshot) {
+        anyHeadshot = true;
+      }
+
+      if (hitEnemy.hp <= 0 && hitEnemy.state !== 'ko') {
+        hitEnemy.state = 'ko';
+        hitEnemy.koTimerMs = 860;
+        hitEnemy.respawnTimerMs = 2600;
+        hitEnemy.deaths += 1;
+        player.kills += 1;
+        player.streak += 1;
+        player.score += hitIsHeadshot ? 150 : 100;
+        if (hitIsHeadshot) {
+          player.headshots += 1;
+        }
+        sim.waveKills += 1;
+        sim.hitstopMs = 35;
+
+        events.push({
+          type: 'enemy_killed',
+          actor: 'p1',
+          label: hitIsHeadshot ? 'HEADSHOT ELIMINATION' : 'HOSTILE ELIMINATED',
+          weaponId: spec.id,
+          damage: dmg,
+          x: hitEnemy.x,
+          y: hitEnemy.y + 1.2,
+          z: hitEnemy.z,
         });
-        if (prop.kind === 'barrel') {
-          triggerBarrelExplosion(sim, prop, attacker.id);
-        }
-        hitSomething = true;
-        break;
       }
-    }
-    if (hitSomething) {
-      damageArenaFloorAt(sim, proj.x, proj.z, 2.8, false);
-      sim.projectiles.splice(i, 1);
-      continue;
-    }
-
-    // Check collision with target fighter
-    const distToTarget = Math.hypot(target.x - proj.x, target.z - proj.z);
-    if (distToTarget <= proj.radius + 0.78) {
-      if (target.invulnerableMs <= 0) {
-        target.hp = Math.max(0, target.hp - proj.damage);
-        target.poise = Math.max(0, target.poise - proj.poiseDamage);
-        target.hitFlashMs = 190;
-        target.action = target.poise <= 0 ? 'guard_break' : 'hitstun';
-        target.actionTimerMs = 0;
-        target.actionDurationMs = target.poise <= 0 ? 1000 : 520;
-        target.vx = (proj.vx / speed) * 6.5;
-        target.vz = (proj.vz / speed) * 6.5;
-        attacker.totalDamageDealt += proj.damage;
-        attacker.comboCount += 1;
-        attacker.comboDamage += proj.damage;
-        attacker.comboResetTimerMs = 2300;
-        sim.hitstopMs = 70;
-        sim.screenShake = Math.max(sim.screenShake, 0.52);
-        damageArenaFloorAt(sim, target.x, target.z, 3.2, false);
-        sim.events.push({
-          type: 'hit_ability',
-          attackerId: attacker.id,
-          defenderId: target.id,
-          x: target.x,
-          y: target.y + 1.25,
-          z: target.z,
-          damage: proj.damage,
-          label: `PLASMA ORB -${proj.damage}`,
-        });
-      }
-      sim.projectiles.splice(i, 1);
-    }
-  }
-}
-
-function clampAndCollideArena(sim: SimulationState, fighter: FighterState): void {
-  const arena = ARENA_REGISTRY[sim.arenaId] || ARENA_REGISTRY.foundry_arena;
-  const fighterRadius = 0.76;
-
-  // 1. Clamp to rectangular perimeter walls
-  if (fighter.x < arena.bounds.minX + fighterRadius) {
-    fighter.x = arena.bounds.minX + fighterRadius;
-    if (fighter.vx < 0) fighter.vx = 0;
-  } else if (fighter.x > arena.bounds.maxX - fighterRadius) {
-    fighter.x = arena.bounds.maxX - fighterRadius;
-    if (fighter.vx > 0) fighter.vx = 0;
-  }
-
-  if (fighter.z < arena.bounds.minZ + fighterRadius) {
-    fighter.z = arena.bounds.minZ + fighterRadius;
-    if (fighter.vz < 0) fighter.vz = 0;
-  } else if (fighter.z > arena.bounds.maxZ - fighterRadius) {
-    fighter.z = arena.bounds.maxZ - fighterRadius;
-    if (fighter.vz > 0) fighter.vz = 0;
-  }
-
-  // 1b. Collide with Central Safe Dais vertical walls when on the lower floor (y < 0.85)
-  // unless walking onto the West/East stepped ramps (|z| <= 3.05)
-  if (fighter.y < 0.85) {
-    const daisHalfW = 10.0 + fighterRadius;
-    const daisHalfD = 5.0 + fighterRadius;
-    const ax = Math.abs(fighter.x);
-    const az = Math.abs(fighter.z);
-    const onSteppedRamp = az <= 3.05 && ax >= 9.6;
-
-    if (!onSteppedRamp && ax < daisHalfW && az < daisHalfD) {
-      const penX = daisHalfW - ax;
-      const penZ = daisHalfD - az;
-      if (penX < penZ) {
-        fighter.x = fighter.x >= 0 ? daisHalfW : -daisHalfW;
-        if ((fighter.x > 0 && fighter.vx < 0) || (fighter.x < 0 && fighter.vx > 0)) {
-          fighter.vx = 0;
-        }
-      } else {
-        fighter.z = fighter.z >= 0 ? daisHalfD : -daisHalfD;
-        if ((fighter.z > 0 && fighter.vz < 0) || (fighter.z < 0 && fighter.vz > 0)) {
-          fighter.vz = 0;
-        }
-      }
-    }
-  }
-
-  // 2. Collide with static architectural colliders (Barricades, Conveyor, Pillars)
-  for (const col of arena.colliders) {
-    // Only collide if fighter is below the top of the obstacle
-    if (fighter.y >= col.height - 0.1) continue;
-
-    const dx = fighter.x - col.x;
-    const dz = fighter.z - col.z;
-    const dist = Math.hypot(dx, dz);
-    const minDist = col.radius + fighterRadius;
-
-    if (dist < minDist) {
-      const nx = dist > 0.0001 ? dx / dist : 1;
-      const nz = dist > 0.0001 ? dz / dist : 0;
-      fighter.x = col.x + nx * minDist;
-      fighter.z = col.z + nz * minDist;
-
-      // Project velocity onto tangent so fighter slides smoothly along pillars without sticking
-      const vn = fighter.vx * nx + fighter.vz * nz;
-      if (vn < 0) {
-        fighter.vx -= vn * nx;
-        fighter.vz -= vn * nz;
-      }
-    }
-  }
-
-  // 3. Collide with intact breakable crates & barrels (Shattering them if sprinting/dodging/knocked into them!)
-  for (const prop of sim.breakableProps) {
-    if (prop.broken) continue;
-    if (fighter.y >= prop.height + 0.15) continue;
-
-    const dx = fighter.x - prop.x;
-    const dz = fighter.z - prop.z;
-    const dist = Math.hypot(dx, dz);
-    const minDist = prop.radius + fighterRadius;
-
-    if (dist < minDist) {
-      const speed = Math.hypot(fighter.vx, fighter.vz);
-      const isHighMomentum =
-        fighter.action === 'dodge' ||
-        fighter.action === 'hitstun' ||
-        fighter.action === 'guard_break' ||
-        (fighter.action === 'sprint' && speed > 8.2);
-
-      if (isHighMomentum) {
-        prop.hp = Math.max(0, prop.hp - 18);
-        prop.hitFlashMs = 140;
-        if (prop.hp <= 0) {
-          prop.broken = true;
-          sim.screenShake = Math.max(sim.screenShake, 0.3);
-          sim.events.push({
-            type: 'prop_shatter',
-            attackerId: fighter.id,
-            x: prop.x,
-            y: prop.height * 0.5,
-            z: prop.z,
-            label: prop.kind === 'barrel' ? 'BARREL SHATTERED!' : 'CRATE SMASHED!',
-            propId: prop.id,
-            propKind: prop.kind,
-          });
-          if (prop.kind === 'barrel') {
-            triggerBarrelExplosion(sim, prop, fighter.id);
+    } else if (hitProp) {
+      anyHit = true;
+      hitProp.hp = Math.max(0, hitProp.hp - spec.damage);
+      hitProp.hitFlashMs = 80;
+      if (hitProp.hp <= 0 && !hitProp.broken) {
+        hitProp.broken = true;
+        hitProp.brokenTimerMs = 9000;
+        if (hitProp.kind === 'barrel' && hitProp.explosiveRadius && hitProp.explosiveDamage) {
+          const radSq = hitProp.explosiveRadius * hitProp.explosiveRadius;
+          for (const enemy of sim.enemies) {
+            if (enemy.state === 'ko' || enemy.hp <= 0) continue;
+            const edx = enemy.x - hitProp.x;
+            const edz = enemy.z - hitProp.z;
+            const dSq = edx * edx + edz * edz;
+            if (dSq <= radSq) {
+              enemy.hp = Math.max(0, enemy.hp - hitProp.explosiveDamage);
+              enemy.hitFlashMs = 120;
+              if (enemy.hp <= 0) {
+                enemy.state = 'ko';
+                enemy.koTimerMs = 450;
+                enemy.respawnTimerMs = 2400;
+                enemy.deaths += 1;
+                player.kills += 1;
+                player.score += 125;
+                sim.waveKills += 1;
+              }
+            }
           }
-          continue; // Immediately pass through broken prop!
+          sim.cameraShakeTrauma = Math.min(1, sim.cameraShakeTrauma + 0.55);
+          events.push({
+            type: 'barrel_explode',
+            actor: 'p1',
+            label: 'EXPLOSIVE BARREL',
+            x: hitProp.x,
+            y: 1.0,
+            z: hitProp.z,
+          });
+        } else {
+          events.push({
+            type: 'prop_shatter',
+            actor: 'p1',
+            label: 'CRATE DESTROYED',
+            x: hitProp.x,
+            y: 0.8,
+            z: hitProp.z,
+          });
         }
-      }
-
-      const nx = dist > 0.0001 ? dx / dist : 1;
-      const nz = dist > 0.0001 ? dz / dist : 0;
-      fighter.x = prop.x + nx * minDist;
-      fighter.z = prop.z + nz * minDist;
-
-      const vn = fighter.vx * nx + fighter.vz * nz;
-      if (vn < 0) {
-        fighter.vx -= vn * nx;
-        fighter.vz -= vn * nz;
       }
     }
   }
+
+  // Apply weapon recoil kick
+  const recoilScale = player.isAds ? 0.68 : 1.0;
+  player.recoilKickPitch = Math.min(
+    0.22,
+    player.recoilKickPitch + ((spec.recoilPitchDeg * Math.PI) / 180) * recoilScale
+  );
+  player.recoilKickYaw +=
+    ((Math.random() - 0.5) * 2 * (spec.recoilYawDeg * Math.PI)) / 180;
+  sim.cameraShakeTrauma = Math.min(
+    1,
+    sim.cameraShakeTrauma + (spec.id === 'awp' || spec.id === 'spas12' ? 0.28 : 0.11)
+  );
+
+  events.push({
+    type: 'shot_fired',
+    actor: 'p1',
+    label: spec.shortName,
+    weaponId: spec.id,
+  });
+
+  if (anyHit) {
+    player.shotsHit += 1;
+    events.push({
+      type: anyHeadshot ? 'headshot' : 'hit_body',
+      actor: 'p1',
+      label: anyHeadshot ? 'HEADSHOT' : 'HIT',
+      damage: totalDamageDealt,
+    });
+  }
+
+  // Auto-reload when magazine hits 0 and reserve ammo is available
+  if (ammo.mag <= 0 && ammo.reserve > 0) {
+    startPlayerReload(player, events);
+  }
+
+  return true;
 }
 
-function resolveFighterToFighterCollision(p1: FighterState, p2: FighterState): void {
-  const minSeparation = 1.48;
-  const dx = p2.x - p1.x;
-  const dz = p2.z - p1.z;
-  const dist = Math.hypot(dx, dz);
-  if (dist < minSeparation) {
-    const overlap = (minSeparation - dist) * 0.5;
-    const nx = dist > 0.0001 ? dx / dist : 1;
-    const nz = dist > 0.0001 ? dz / dist : 0;
-    p1.x -= nx * overlap;
-    p1.z -= nz * overlap;
-    p2.x += nx * overlap;
-    p2.z += nz * overlap;
-  }
-}
+// ============================================================================
+// MAIN SIMULATION STEP (60 FPS CLAMPED DT)
+// ============================================================================
 
 export function stepSimulation(
   sim: SimulationState,
-  p1Input: FighterInput,
-  p2Input: FighterInput,
-  rawDtMs: number,
+  dtSeconds: number,
+  p1Input: PlayerInputSnapshot,
+  botDifficulty: BotDifficulty = 'normal',
   isTraining = false,
   trainingConfig?: TrainingConfig
-): void {
-  sim.events = [];
+): CombatEvent[] {
+  const events: CombatEvent[] = [];
+  const clampedDt = Math.min(Math.max(dtSeconds, 0.001), 0.05);
+  const dtMs = clampedDt * 1000;
 
-  if (sim.roundOver) {
-    return;
-  }
+  // Decay visual timers even during hitstop
+  sim.cameraShakeTrauma = Math.max(0, sim.cameraShakeTrauma - clampedDt * 2.6);
+  const player = sim.player;
+  player.muzzleFlashTimerMs = Math.max(0, player.muzzleFlashTimerMs - dtMs);
+  player.hurtFlashMs = Math.max(0, player.hurtFlashMs - dtMs);
+  player.slideCooldownMs = Math.max(0, player.slideCooldownMs - dtMs);
 
-  // Decay screen shake
-  sim.screenShake = Math.max(0, sim.screenShake - (rawDtMs / 1000) * 2.2);
-
-  // Decay prop hit flash timers
-  for (const prop of sim.breakableProps) {
-    if (prop.hitFlashMs > 0) {
-      prop.hitFlashMs = Math.max(0, prop.hitFlashMs - rawDtMs);
+  for (let i = sim.traces.length - 1; i >= 0; i--) {
+    sim.traces[i].ttlMs -= dtMs;
+    if (sim.traces[i].ttlMs <= 0) {
+      sim.traces.splice(i, 1);
     }
   }
 
-  // Hitstop freeze frames for heavy impact feel
   if (sim.hitstopMs > 0) {
-    sim.hitstopMs = Math.max(0, sim.hitstopMs - rawDtMs);
-    return;
+    sim.hitstopMs = Math.max(0, sim.hitstopMs - dtMs);
+    return events;
   }
 
-  // Slow-motion scaling on parries, executions, and KOs
-  let dtMs = rawDtMs;
-  if (sim.slowMoMs > 0) {
-    sim.slowMoMs = Math.max(0, sim.slowMoMs - rawDtMs);
-    dtMs = rawDtMs * 0.32;
+  if (sim.roundOver || sim.matchOver) {
+    return events;
   }
 
-  // Update active decoy
-  if (sim.decoy && sim.decoy.active) {
-    sim.decoy.remainingMs -= dtMs;
-    if (sim.decoy.remainingMs <= 0) {
-      sim.decoy.active = false;
+  const arena = ARENA_REGISTRY[sim.arenaId] || ARENA_REGISTRY.foundry_arena;
+
+  // 1. Player Look Rotation & Recoil Recovery
+  player.yaw -= p1Input.lookDeltaYaw;
+  player.pitch = Math.max(
+    -1.35,
+    Math.min(1.35, player.pitch - p1Input.lookDeltaPitch)
+  );
+  const recoilDamp = 1 - Math.exp(-14 * clampedDt);
+  player.recoilKickPitch *= 1 - recoilDamp;
+  player.recoilKickYaw *= 1 - recoilDamp;
+
+  // 2. Weapon Switching & Click-Active-Gun-to-Reload
+  if (p1Input.selectWeapon) {
+    handleWeaponSlotClick(player, p1Input.selectWeapon, events);
+  } else if (p1Input.cycleWeaponDelta && p1Input.cycleWeaponDelta !== 0) {
+    const pair = player.loadoutWeapons;
+    const nextWep = player.activeWeapon === pair[0] ? pair[1] : pair[0];
+    switchPlayerWeapon(player, nextWep, events);
+  }
+
+  // 3. Cooldowns & Reloading
+  player.fireCooldownMs = Math.max(0, player.fireCooldownMs - dtMs);
+  player.weaponSwitchTimerMs = Math.max(0, player.weaponSwitchTimerMs - dtMs);
+
+  if (p1Input.reloadPressed) {
+    startPlayerReload(player, events);
+  }
+
+  if (player.isReloading) {
+    player.reloadTimerMs -= dtMs;
+    if (player.reloadTimerMs <= 0) {
+      const spec = WEAPON_REGISTRY[player.activeWeapon];
+      const ammo = player.weapons[player.activeWeapon];
+      const needed = spec.magSize - ammo.mag;
+      const transfer = Math.min(needed, ammo.reserve);
+      ammo.mag += transfer;
+      if (!trainingConfig?.infiniteAmmo) {
+        ammo.reserve -= transfer;
+      }
+      player.isReloading = false;
+      player.reloadTimerMs = 0;
+      events.push({
+        type: 'reload_done',
+        actor: 'p1',
+        label: 'RELOADED',
+        weaponId: player.activeWeapon,
+      });
     }
   }
 
-  // Update दोनों fighters
-  updateSingleFighter(sim, sim.p1, sim.p2, p1Input, dtMs, trainingConfig);
-  updateSingleFighter(sim, sim.p2, sim.p1, p2Input, dtMs, trainingConfig);
-
-  // Update projectiles
-  updateProjectiles(sim, dtMs);
-
-  // Prevent character mesh overlap
-  resolveFighterToFighterCollision(sim.p1, sim.p2);
-  clampAndCollideArena(sim, sim.p1);
-  clampAndCollideArena(sim, sim.p2);
-
-  if (isTraining) {
-    // In training mode, prevent KO so player can practice combos endlessly
-    if (sim.p1.hp <= 1) sim.p1.hp = sim.p1.maxHp;
-    if (sim.p2.hp <= 1) sim.p2.hp = sim.p2.maxHp;
-    return;
+  // 4. Crouch, Tactical Slide, ADS, and Locomotion
+  if (p1Input.crouchToggled) {
+    player.isCrouching = !player.isCrouching;
+    if (player.isCrouching) {
+      player.isSliding = false;
+      player.slideTimerMs = 0;
+    }
+  } else if (typeof p1Input.crouchHeld === 'boolean') {
+    player.isCrouching = p1Input.crouchHeld;
   }
 
-  // Round timer
-  sim.roundTimerMs = Math.max(0, sim.roundTimerMs - dtMs);
+  const weaponSpec = WEAPON_REGISTRY[player.activeWeapon];
+  const inputLen = Math.hypot(p1Input.moveX, p1Input.moveZ);
+  const normMoveX = inputLen > 1 ? p1Input.moveX / inputLen : p1Input.moveX;
+  const normMoveZ = inputLen > 1 ? p1Input.moveZ / inputLen : p1Input.moveZ;
 
-  // Check KO or Time Out
-  if (sim.p1.hp <= 0 || sim.p2.hp <= 0 || sim.roundTimerMs <= 0) {
-    sim.roundOver = true;
+  // Convert local (moveX = right, moveZ = backward) into world XZ using player.yaw
+  const forwardX = -Math.sin(player.yaw);
+  const forwardZ = -Math.cos(player.yaw);
+  const rightX = Math.cos(player.yaw);
+  const rightZ = -Math.sin(player.yaw);
 
-    if (sim.p1.hp <= 0 && sim.p2.hp <= 0) {
-      sim.roundWinner = 'draw';
-    } else if (sim.p2.hp <= 0) {
-      sim.roundWinner = 'p1';
-      sim.p1RoundsWon += 1;
-    } else if (sim.p1.hp <= 0) {
-      sim.roundWinner = 'p2';
-      sim.p2RoundsWon += 1;
-    } else {
-      // Time out: higher HP percentage wins
-      const p1Pct = sim.p1.hp / sim.p1.maxHp;
-      const p2Pct = sim.p2.hp / sim.p2.maxHp;
-      if (Math.abs(p1Pct - p2Pct) < 0.001) {
-        sim.roundWinner = 'draw';
-      } else if (p1Pct > p2Pct) {
-        sim.roundWinner = 'p1';
-        sim.p1RoundsWon += 1;
-      } else {
-        sim.roundWinner = 'p2';
-        sim.p2RoundsWon += 1;
+  // Trigger Tactical Slide:
+  // - If joystick is moving (inputLen > 0.08), slide in joystick movement direction
+  // - If joystick is NOT moving, slide forward in the direction player is facing!
+  if (
+    p1Input.slidePressed &&
+    player.isGrounded &&
+    !player.isSliding &&
+    player.slideCooldownMs <= 0
+  ) {
+    let sdx = forwardX;
+    let sdz = forwardZ;
+    if (inputLen > 0.08) {
+      const worldMoveX = rightX * normMoveX - forwardX * normMoveZ;
+      const worldMoveZ = rightZ * normMoveX - forwardZ * normMoveZ;
+      const wLen = Math.hypot(worldMoveX, worldMoveZ);
+      if (wLen > 0.001) {
+        sdx = worldMoveX / wLen;
+        sdz = worldMoveZ / wLen;
+      }
+    }
+    player.isSliding = true;
+    player.slideTimerMs = 520;
+    player.slideCooldownMs = 760;
+    player.slideDirX = sdx;
+    player.slideDirZ = sdz;
+    player.isCrouching = false;
+    events.push({
+      type: 'slide_start',
+      actor: 'p1',
+      label: 'TACTICAL SLIDE',
+    });
+  }
+
+  if (player.isSliding) {
+    player.slideTimerMs -= dtMs;
+    if (player.slideTimerMs <= 0 || !player.isGrounded) {
+      player.isSliding = false;
+      player.slideTimerMs = 0;
+    }
+  }
+
+  player.isAds = Boolean(p1Input.adsHeld && !player.isReloading);
+  const targetAds = player.isAds ? 1 : 0;
+  player.adsBlend += (targetAds - player.adsBlend) * (1 - Math.exp(-16 * clampedDt));
+
+  const targetEye = player.isSliding ? 0.76 : player.isCrouching ? 1.08 : 1.68;
+  player.eyeHeight += (targetEye - player.eyeHeight) * (1 - Math.exp(-16 * clampedDt));
+
+  player.isSprinting =
+    p1Input.sprintHeld &&
+    !player.isAds &&
+    !player.isCrouching &&
+    !player.isSliding &&
+    normMoveZ < -0.2;
+
+  if (player.isSliding) {
+    const slideDecay = 0.5 + 0.5 * (player.slideTimerMs / 520);
+    const slideSpeed = 14.4 * slideDecay * weaponSpec.moveSpeedMultiplier;
+    player.vx = player.slideDirX * slideSpeed;
+    player.vz = player.slideDirZ * slideSpeed;
+  } else {
+    const baseSpeed = player.isCrouching
+      ? 4.6
+      : player.isAds
+        ? 5.2
+        : player.isSprinting
+          ? 10.6
+          : 7.8;
+    const moveSpeed = baseSpeed * weaponSpec.moveSpeedMultiplier;
+
+    const wishVx = (rightX * normMoveX - forwardX * normMoveZ) * moveSpeed;
+    const wishVz = (rightZ * normMoveX - forwardZ * normMoveZ) * moveSpeed;
+
+    const accel = player.isGrounded ? 18 : 6;
+    const blend = 1 - Math.exp(-accel * clampedDt);
+    player.vx += (wishVx - player.vx) * blend;
+    player.vz += (wishVz - player.vz) * blend;
+  }
+
+  // Jump & Vertical Physics
+  const wasGroundedBeforeStep = player.isGrounded;
+  if (p1Input.jumpPressed && player.isGrounded) {
+    player.vy = 7.8;
+    player.isGrounded = false;
+    player.isCrouching = false;
+    player.isSliding = false;
+    player.slideTimerMs = 0;
+  }
+
+  player.vy -= 21.0 * clampedDt;
+  player.y += player.vy * clampedDt;
+  if (player.y <= 0) {
+    player.y = 0;
+    player.vy = 0;
+    player.isGrounded = true;
+  }
+
+  // Sub-stepped Swept Character Collision Resolution (guarantees player never clips into walls or props at any speed)
+  const stepHalfDt = clampedDt * 0.5;
+  const midPos = resolveEntityCollisions(
+    player.x + player.vx * stepHalfDt,
+    player.z + player.vz * stepHalfDt,
+    PLAYER_COLLISION_RADIUS,
+    arena,
+    sim.breakableProps
+  );
+  const nextPos = resolveEntityCollisions(
+    midPos.x + player.vx * stepHalfDt,
+    midPos.z + player.vz * stepHalfDt,
+    PLAYER_COLLISION_RADIUS,
+    arena,
+    sim.breakableProps
+  );
+
+  // Also prevent player character from walking inside active enemy soldiers
+  let finalPx = nextPos.x;
+  let finalPz = nextPos.z;
+  for (const bot of sim.enemies) {
+    if (bot.state === 'ko' || bot.hp <= 0) continue;
+    const dx = finalPx - bot.x;
+    const dz = finalPz - bot.z;
+    const minDist = PLAYER_COLLISION_RADIUS + BOT_COLLISION_RADIUS * 0.65;
+    const dSq = dx * dx + dz * dz;
+    if (dSq < minDist * minDist && dSq > 0.00001) {
+      const d = Math.sqrt(dSq);
+      finalPx = bot.x + (dx / d) * minDist;
+      finalPz = bot.z + (dz / d) * minDist;
+    }
+  }
+  const clampedFinal = resolveEntityCollisions(
+    finalPx,
+    finalPz,
+    PLAYER_COLLISION_RADIUS,
+    arena,
+    sim.breakableProps
+  );
+  player.x = clampedFinal.x;
+  player.z = clampedFinal.z;
+
+  // Update 3D Weapon Wall-Obstruction State
+  const wallObs = computeWeaponWallObstruction(player, arena, sim.breakableProps);
+  player.wallObstruction = wallObs.obstruction;
+
+  // Dynamic Surface Material Detection & Footstep Cadence
+  const surfaceNow = getSurfaceMaterialAt(player.x, player.z, sim.arenaId);
+  player.currentSurface = surfaceNow;
+
+  if (!wasGroundedBeforeStep && player.isGrounded) {
+    player.footstepCount += 1;
+    player.footstepDistance = 0;
+    events.push({
+      type: 'footstep',
+      actor: 'p1',
+      label: `FOOTSTEP_${surfaceNow.toUpperCase()}`,
+      surface: surfaceNow,
+      stepIntensity: 'land',
+      x: player.x,
+      y: player.y,
+      z: player.z,
+    });
+  }
+
+  const horizSpeed = Math.hypot(player.vx, player.vz);
+  if (player.isGrounded && horizSpeed > 0.4 && !player.isSliding) {
+    player.walkBobPhase += horizSpeed * clampedDt * 1.75;
+    player.footstepDistance += horizSpeed * clampedDt;
+    const strideLen = player.isSprinting
+      ? 2.45
+      : player.isCrouching || player.isAds
+      ? 1.85
+      : 2.15;
+    if (player.footstepDistance >= strideLen) {
+      player.footstepDistance -= strideLen;
+      player.footstepCount += 1;
+      events.push({
+        type: 'footstep',
+        actor: 'p1',
+        label: `FOOTSTEP_${surfaceNow.toUpperCase()}`,
+        surface: surfaceNow,
+        stepIntensity: player.isSprinting
+          ? 'sprint'
+          : player.isCrouching
+          ? 'crouch'
+          : 'walk',
+        x: player.x,
+        y: player.y,
+        z: player.z,
+      });
+    }
+  } else if (horizSpeed <= 0.4) {
+    // Prime footstep distance when stationary so the first step triggers promptly when starting movement
+    player.footstepDistance = Math.max(player.footstepDistance, 1.55);
+  }
+
+  // 5. Firing Weapon
+  const wantsToFire = weaponSpec.autoFire
+    ? p1Input.fireHeld || p1Input.fireJustPressed
+    : p1Input.fireJustPressed;
+  if (wantsToFire) {
+    firePlayerWeapon(sim, events, Boolean(trainingConfig?.infiniteAmmo));
+  }
+
+  // 6. Pickups (Ammo & Medkits)
+  for (const pk of sim.pickups) {
+    if (!pk.active) {
+      pk.respawnTimerMs -= dtMs;
+      if (pk.respawnTimerMs <= 0) {
+        pk.active = true;
+      }
+      continue;
+    }
+
+    const dx = player.x - pk.x;
+    const dz = player.z - pk.z;
+    if (dx * dx + dz * dz <= 2.4 * 2.4) {
+      if (pk.kind === 'health' && player.hp < player.maxHp) {
+        player.hp = Math.min(player.maxHp, player.hp + 45);
+        pk.active = false;
+        pk.respawnTimerMs = 12000;
+        events.push({
+          type: 'pickup_collected',
+          actor: 'p1',
+          label: '+45 HP MEDKIT',
+        });
+      } else if (pk.kind === 'ammo') {
+        for (const wid of WEAPON_ORDER) {
+          const wSpec = WEAPON_REGISTRY[wid];
+          player.weapons[wid].reserve = wSpec.reserveMax;
+        }
+        pk.active = false;
+        pk.respawnTimerMs = 10000;
+        events.push({
+          type: 'pickup_collected',
+          actor: 'p1',
+          label: 'MAX AMMO RESUPPLY',
+        });
+      }
+    }
+  }
+
+  // 7. Enemy Squad AI, Deathmatch Scoring & Respawn Progression
+  const diff = BOT_DIFFICULTIES[botDifficulty] || BOT_DIFFICULTIES.normal;
+  let activeHostilesHpSum = 0;
+
+  for (let i = 0; i < sim.enemies.length; i++) {
+    const bot = sim.enemies[i];
+    bot.hitFlashMs = Math.max(0, bot.hitFlashMs - dtMs);
+    bot.muzzleFlashTimerMs = Math.max(0, bot.muzzleFlashTimerMs - dtMs);
+    bot.attackAnimTimerMs = Math.max(0, bot.attackAnimTimerMs - dtMs);
+
+    if (bot.state === 'ko') {
+      bot.koTimerMs = Math.max(0, bot.koTimerMs - dtMs);
+      bot.respawnTimerMs -= dtMs;
+      if (bot.respawnTimerMs <= 0) {
+        // Respawn enemy at a spawn point farthest from player
+        let bestSp = arena.spawnPoints[0];
+        let bestDistSq = -1;
+        for (const sp of arena.spawnPoints) {
+          const dSq = (sp.x - player.x) ** 2 + (sp.z - player.z) ** 2;
+          if (dSq > bestDistSq) {
+            bestDistSq = dSq;
+            bestSp = sp;
+          }
+        }
+        bot.x = bestSp.x + (i - 2) * 1.5;
+        bot.z = bestSp.z;
+        bot.hp = bot.maxHp;
+        bot.state = 'advance';
+        bot.fireCooldownMs = 1000;
+        bot.telegraphTimerMs = 0;
+      }
+      continue;
+    }
+
+    activeHostilesHpSum += bot.hp;
+
+    // Training dummy idle behavior option
+    if (isTraining && trainingConfig?.dummyBehavior === 'idle') {
+      bot.vx = 0;
+      bot.vz = 0;
+      continue;
+    }
+
+    // Periodic cross-arena bot skirmish kill progression so the 5-minute Deathmatch leaderboard stays competitive
+    if (!isTraining) {
+      bot.skirmishTimerMs -= dtMs;
+      if (bot.skirmishTimerMs <= 0) {
+        bot.skirmishTimerMs = 15000 + ((i * 4700) % 11000);
+        if (Math.random() < 0.42 * diff.accuracy) {
+          bot.kills += 1;
+          bot.score += 100;
+        }
       }
     }
 
-    if (sim.p1RoundsWon >= sim.roundsToWin) {
-      sim.matchOver = true;
-      sim.matchWinner = 'p1';
-    } else if (sim.p2RoundsWon >= sim.roundsToWin) {
-      sim.matchOver = true;
-      sim.matchWinner = 'p2';
+    const toPlayerX = player.x - bot.x;
+    const toPlayerZ = player.z - bot.z;
+    const distToPlayer = Math.max(0.01, Math.hypot(toPlayerX, toPlayerZ));
+    const dirX = toPlayerX / distToPlayer;
+    const dirZ = toPlayerZ / distToPlayer;
+
+    // Smoothly turn bot toward player
+    const desiredYaw = Math.atan2(-dirX, -dirZ);
+    bot.yaw = desiredYaw;
+
+    // Strict 3D multi-ray line of sight check (blocks walls, cover barriers, and unbroken props)
+    const hasLineOfSight = hasClearLineOfSight(
+      bot.x,
+      bot.y,
+      bot.z,
+      player.x,
+      player.y,
+      player.z,
+      player.eyeHeight,
+      arena,
+      sim.breakableProps
+    );
+
+    // 3 Distinct Archetype Movement Policies:
+    let moveVx = 0;
+    let moveVz = 0;
+    const perpX = -dirZ * bot.strafeDir;
+    const perpZ = dirX * bot.strafeDir;
+
+    bot.stateTimerMs -= dtMs;
+    if (bot.stateTimerMs <= 0) {
+      bot.strafeDir = bot.strafeDir === 1 ? -1 : 1;
+      bot.stateTimerMs = 1100 + (i % 3) * 450;
     }
 
-    sim.events.push({
-      type: 'ko',
-      x: 0,
-      y: 2.0,
-      z: 0,
-      label: sim.roundTimerMs <= 0 ? 'TIME OVER' : 'KNOCKOUT',
+    if (bot.archetype === 'rusher') {
+      const rushSpeed = 6.6 * diff.moveSpeedMultiplier;
+      if (!hasLineOfSight) {
+        moveVx = (dirX * 0.45 + perpX * 0.88) * rushSpeed;
+        moveVz = (dirZ * 0.45 + perpZ * 0.88) * rushSpeed;
+      } else if (distToPlayer > 7.5) {
+        moveVx = (dirX * 0.85 + perpX * 0.4) * rushSpeed;
+        moveVz = (dirZ * 0.85 + perpZ * 0.4) * rushSpeed;
+      } else {
+        moveVx = perpX * rushSpeed * 0.9;
+        moveVz = perpZ * rushSpeed * 0.9;
+      }
+    } else if (bot.archetype === 'sniper') {
+      const sniperSpeed = 4.5 * diff.moveSpeedMultiplier;
+      if (distToPlayer < 22) {
+        moveVx = -dirX * sniperSpeed;
+        moveVz = -dirZ * sniperSpeed;
+      } else if (!hasLineOfSight) {
+        moveVx = perpX * sniperSpeed;
+        moveVz = perpZ * sniperSpeed;
+      } else {
+        moveVx = perpX * sniperSpeed * 0.35;
+        moveVz = perpZ * sniperSpeed * 0.35;
+      }
+    } else {
+      // 'assault'
+      const assaultSpeed = 5.4 * diff.moveSpeedMultiplier;
+      if (!hasLineOfSight) {
+        moveVx = (dirX * 0.35 + perpX * 0.92) * assaultSpeed;
+        moveVz = (dirZ * 0.35 + perpZ * 0.92) * assaultSpeed;
+      } else if (distToPlayer > 22) {
+        moveVx = (dirX * 0.75 + perpX * 0.5) * assaultSpeed;
+        moveVz = (dirZ * 0.75 + perpZ * 0.5) * assaultSpeed;
+      } else if (distToPlayer < 10) {
+        moveVx = (-dirX * 0.6 + perpX * 0.7) * assaultSpeed;
+        moveVz = (-dirZ * 0.6 + perpZ * 0.7) * assaultSpeed;
+      } else {
+        moveVx = perpX * assaultSpeed * 0.85;
+        moveVz = perpZ * assaultSpeed * 0.85;
+      }
+    }
+
+    bot.vx += (moveVx - bot.vx) * Math.min(1, clampedDt * 10);
+    bot.vz += (moveVz - bot.vz) * Math.min(1, clampedDt * 10);
+
+    let nextBotX = bot.x + bot.vx * clampedDt;
+    let nextBotZ = bot.z + bot.vz * clampedDt;
+
+    // Prevent enemy bots from clipping into the player or other bots
+    const pDx = nextBotX - player.x;
+    const pDz = nextBotZ - player.z;
+    const minPlayerDist = PLAYER_COLLISION_RADIUS + BOT_COLLISION_RADIUS * 0.65;
+    const pDistSq = pDx * pDx + pDz * pDz;
+    if (pDistSq < minPlayerDist * minPlayerDist && pDistSq > 0.00001) {
+      const d = Math.sqrt(pDistSq);
+      nextBotX = player.x + (pDx / d) * minPlayerDist;
+      nextBotZ = player.z + (pDz / d) * minPlayerDist;
+    }
+
+    for (let j = 0; j < sim.enemies.length; j++) {
+      if (i === j) continue;
+      const other = sim.enemies[j];
+      if (other.state === 'ko' || other.hp <= 0) continue;
+      const bDx = nextBotX - other.x;
+      const bDz = nextBotZ - other.z;
+      const minBotDist = BOT_COLLISION_RADIUS * 1.45;
+      const bDistSq = bDx * bDx + bDz * bDz;
+      if (bDistSq < minBotDist * minBotDist && bDistSq > 0.00001) {
+        const d = Math.sqrt(bDistSq);
+        nextBotX = other.x + (bDx / d) * minBotDist;
+        nextBotZ = other.z + (bDz / d) * minBotDist;
+      }
+    }
+
+    const resolvedBot = resolveEntityCollisions(
+      nextBotX,
+      nextBotZ,
+      BOT_COLLISION_RADIUS,
+      arena,
+      sim.breakableProps
+    );
+    bot.x = resolvedBot.x;
+    bot.z = resolvedBot.z;
+    bot.walkCycle += Math.hypot(bot.vx, bot.vz) * clampedDt * 2.2;
+
+    // Bot Firing & Telegraph Logic (Skip firing if training strafe mode)
+    if (isTraining && trainingConfig?.dummyBehavior === 'strafe') {
+      continue;
+    }
+
+    bot.fireCooldownMs -= dtMs;
+    if (hasLineOfSight && distToPlayer < 68 && bot.fireCooldownMs <= 0) {
+      if (bot.archetype === 'sniper' && bot.telegraphTimerMs <= 0 && bot.state !== 'telegraph') {
+        bot.state = 'telegraph';
+        bot.telegraphTimerMs = 550; // 0.55s laser telegraph before sniper shot
+        continue;
+      }
+
+      if (bot.state === 'telegraph') {
+        bot.telegraphTimerMs -= dtMs;
+        if (bot.telegraphTimerMs > 0) {
+          continue;
+        }
+        bot.state = 'attack';
+      }
+
+      // Bot fires at player: verify exact 3D shot ray against all walls & props so bullets never clip walls
+      const ox = bot.x;
+      const oy = bot.y + 1.28;
+      const oz = bot.z;
+      const aimX = player.x + (Math.random() - 0.5) * 0.45;
+      const aimY = player.y + Math.max(0.65, player.eyeHeight - 0.2);
+      const aimZ = player.z + (Math.random() - 0.5) * 0.45;
+
+      const sVx = aimX - ox;
+      const sVy = aimY - oy;
+      const sVz = aimZ - oz;
+      const sDist = Math.max(0.05, Math.hypot(sVx, sVy, sVz));
+      const sDx = sVx / sDist;
+      const sDy = sVy / sDist;
+      const sDz = sVz / sDist;
+
+      const shotWallHit = findClosestWallHitWithNormal(
+        ox,
+        oy,
+        oz,
+        sDx,
+        sDy,
+        sDz,
+        sDist,
+        arena,
+        sim.breakableProps
+      );
+
+      // If the specific bullet ray hits a wall or cover before reaching the player, clamp trace at wall and deal 0 damage!
+      if (shotWallHit.dist < sDist - 0.15) {
+        bot.fireCooldownMs = 600;
+        bot.muzzleFlashTimerMs = 55;
+        bot.attackAnimTimerMs = 140;
+        sim.traces.push({
+          id: sim.nextTraceId++,
+          fromX: ox,
+          fromY: oy,
+          fromZ: oz,
+          toX: ox + sDx * shotWallHit.dist,
+          toY: oy + sDy * shotWallHit.dist,
+          toZ: oz + sDz * shotWallHit.dist,
+          ttlMs: 100,
+          maxTtlMs: 100,
+          colorHex: 0xf87171,
+          isHeadshot: false,
+          isEnemyShot: true,
+          hitNormalX: shotWallHit.nx,
+          hitNormalY: shotWallHit.ny,
+          hitNormalZ: shotWallHit.nz,
+          hitKind: 'wall',
+        });
+        continue;
+      }
+
+      const botDamage =
+        bot.archetype === 'sniper' ? 18 : bot.archetype === 'rusher' ? 7 : 9;
+      bot.fireCooldownMs =
+        (bot.archetype === 'sniper'
+          ? 2400
+          : bot.archetype === 'rusher'
+            ? 850
+            : 1100) +
+        (1 - diff.accuracy) * 600;
+      bot.muzzleFlashTimerMs = 65;
+      bot.attackAnimTimerMs = 160;
+
+      const hitRoll = Math.random();
+      const hitChance =
+        diff.accuracy *
+        Math.max(0.2, 1 - distToPlayer / 75) *
+        (player.isSliding ? 0.55 : player.isSprinting ? 0.72 : 1.0);
+
+      sim.traces.push({
+        id: sim.nextTraceId++,
+        fromX: ox,
+        fromY: oy,
+        fromZ: oz,
+        toX: aimX,
+        toY: aimY,
+        toZ: aimZ,
+        ttlMs: 110,
+        maxTtlMs: 110,
+        colorHex: 0xf87171,
+        isHeadshot: false,
+        isEnemyShot: true,
+        hitNormalX: -sDx,
+        hitNormalY: 0.2,
+        hitNormalZ: -sDz,
+        hitKind: 'sky',
+      });
+
+      if (hitRoll < hitChance) {
+        player.hp = Math.max(0, player.hp - botDamage);
+        player.hurtFlashMs = 180;
+        sim.cameraShakeTrauma = Math.min(1, sim.cameraShakeTrauma + 0.25);
+        events.push({
+          type: 'player_hurt',
+          actor: 'p2',
+          label: 'TAKING FIRE',
+          damage: botDamage,
+        });
+
+        if (player.hp <= 0) {
+          if (!isTraining) {
+            // In 5-minute Deathmatch: credit killer bot, increment player deaths, and respawn player!
+            bot.kills += 1;
+            bot.score += 100;
+            player.deaths += 1;
+            player.streak = 0;
+            player.hp = player.maxHp;
+            player.isReloading = false;
+            player.reloadTimerMs = 0;
+            for (const wid of player.loadoutWeapons) {
+              const wSpec = WEAPON_REGISTRY[wid];
+              player.weapons[wid] = {
+                mag: wSpec.magSize,
+                reserve: wSpec.reserveMax,
+              };
+            }
+            // Respawn player at south courtyard or safest spawn point and flag awaitingRespawn for Loadout UI
+            player.x = 0;
+            player.y = 0;
+            player.z = 20;
+            player.vx = 0;
+            player.vy = 0;
+            player.vz = 0;
+            player.awaitingRespawn = true;
+            events.push({
+              type: 'player_respawn',
+              actor: 'p1',
+              label: 'RESPAWNED',
+            });
+          } else {
+            player.hp = player.maxHp;
+          }
+        }
+      }
+    } else {
+      bot.telegraphTimerMs = 0;
+      if (bot.state === 'telegraph') bot.state = 'advance';
+    }
+  }
+
+  // Auto-regen in training or slow tactical health recovery out of combat
+  if (trainingConfig?.autoRegenHp && player.hurtFlashMs <= 0 && player.hp < player.maxHp) {
+    player.hp = Math.min(player.maxHp, player.hp + clampedDt * 6);
+  }
+
+  // Wave progression
+  if (sim.waveKills >= sim.waveTargetKills) {
+    sim.waveNumber += 1;
+    sim.waveKills = 0;
+    sim.waveTargetKills += 6;
+    player.hp = Math.min(player.maxHp, player.hp + 35);
+    events.push({
+      type: 'wave_clear',
+      actor: 'p1',
+      label: `WAVE ${sim.waveNumber}`,
     });
   }
+
+  // Update p2 summary HP for any legacy status readers
+  sim.p2.hp = Math.round(activeHostilesHpSum / Math.max(1, sim.enemies.length));
+
+  // 5-Minute Deathmatch Timer Countdown & Winner Evaluation
+  if (!isTraining) {
+    sim.roundTimerSec = Math.max(0, sim.roundTimerSec - clampedDt);
+    if (sim.roundTimerSec <= 0) {
+      sim.roundOver = true;
+      sim.matchOver = true;
+      const leaderboard = getMatchLeaderboard(sim);
+      const topEntry = leaderboard[0];
+      sim.winnerName = topEntry.name;
+      sim.winnerKills = topEntry.kills;
+      if (topEntry.isPlayer) {
+        sim.roundWinner = 'p1';
+        sim.matchWinner = 'p1';
+      } else {
+        sim.roundWinner = 'p2';
+        sim.matchWinner = 'p2';
+      }
+    }
+  }
+
+  return events;
 }

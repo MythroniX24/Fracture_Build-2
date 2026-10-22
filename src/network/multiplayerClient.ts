@@ -1,5 +1,5 @@
 import { ArenaId, CharacterId } from '../game/config.ts';
-import { FighterActionState, FighterInput, SimulationState } from '../game/rules.ts';
+import { PlayerInputSnapshot, SimulationState } from '../game/rules.ts';
 
 export interface LobbyPlayerInfo {
   id: string;
@@ -27,7 +27,7 @@ export interface RemoteFighterSyncPayload {
   facingAngle: number;
   hp: number;
   stamina: number;
-  actionState: FighterActionState;
+  actionState: string;
   actionTimer: number;
   abilityCooldown: number;
   decoyActive: boolean;
@@ -69,7 +69,7 @@ export class MultiplayerClient {
   public localRole: 'host' | 'guest' = 'host';
   public currentRoom: RoomStatePayload | null = null;
   public latencyMs = 0;
-  public latestGuestInput: FighterInput | null = null;
+  public latestGuestInput: PlayerInputSnapshot | null = null;
 
   private listeners = new Set<Listener>();
   private onMatchStartCallback: ((room: RoomStatePayload) => void) | null = null;
@@ -215,7 +215,7 @@ export class MultiplayerClient {
 
       case 'guest_input': {
         if (msg.input && typeof msg.input === 'object') {
-          this.latestGuestInput = msg.input as FighterInput;
+          this.latestGuestInput = msg.input as PlayerInputSnapshot;
         }
         break;
       }
@@ -293,32 +293,28 @@ export class MultiplayerClient {
   public clearGuestOneShots(): void {
     if (this.latestGuestInput) {
       this.latestGuestInput.jumpPressed = false;
-      this.latestGuestInput.lightPressed = false;
-      this.latestGuestInput.heavyPressed = false;
-      this.latestGuestInput.guardJustPressed = false;
-      this.latestGuestInput.dodgePressed = false;
-      this.latestGuestInput.abilityPressed = false;
-      this.latestGuestInput.executionPressed = false;
+      this.latestGuestInput.fireJustPressed = false;
+      this.latestGuestInput.reloadPressed = false;
     }
   }
 
-  public sendGuestInput(input: FighterInput): void {
+  public sendGuestInput(input: PlayerInputSnapshot): void {
     this.send({ type: 'guest_input', input });
   }
 
   public sendHostSnapshot(sim: SimulationState): void {
     this.send({
       type: 'fighter_sync',
-      x: sim.p1.x,
-      z: sim.p1.z,
-      vx: sim.p1.vx,
-      vz: sim.p1.vz,
-      facingAngle: sim.p1.facingAngle,
-      hp: sim.p1.hp,
-      stamina: sim.p1.stamina,
-      actionState: sim.p1.action,
-      actionTimer: sim.p1.actionTimerMs,
-      abilityCooldown: sim.p1.abilityCooldownMs,
+      x: sim.player.x,
+      z: sim.player.z,
+      vx: sim.player.vx,
+      vz: sim.player.vz,
+      facingAngle: sim.player.yaw,
+      hp: sim.player.hp,
+      stamina: sim.player.stamina,
+      actionState: sim.player.isReloading ? 'reloading' : 'ready',
+      actionTimer: sim.player.reloadTimerMs,
+      abilityCooldown: 0,
     });
   }
 

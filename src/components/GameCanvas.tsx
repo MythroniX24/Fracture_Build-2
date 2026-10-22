@@ -1,42 +1,40 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import {
-  ArenaId,
-  BotDifficulty,
-  CHARACTER_REGISTRY,
-  CharacterId,
-  GameMode,
-  GameSettings,
-  ScreenState,
-  TrainingConfig,
+  ARENA_REGISTRY,
+  type ArenaId,
+  type BotDifficulty,
+  type CharacterId,
+  type GameMode,
+  type GameSettings,
+  type ScreenState,
+  type TrainingConfig,
+  WEAPON_ORDER,
+  WEAPON_REGISTRY,
+  type WeaponId,
 } from '../game/config.ts';
 import {
-  CombatEvent,
-  computeBotInput,
-  emptyInput,
-  FighterInput,
-  getArenaSurfaceHeight,
-  lerpAngle,
-  SimulationState,
+  type CombatEvent,
+  PLAYER_COLLISION_RADIUS,
+  type PlayerInputSnapshot,
+  type SimulationState,
+  computeWeaponWallObstruction,
+  getScopeSensitivityMultiplier,
+  resolveEntityCollisions,
   stepSimulation,
 } from '../game/rules.ts';
-import { createMaterialLibrary } from '../three/materials.ts';
 import {
-  ArenaSceneRig,
-  buildArenaScene,
-  syncArenaBreakables,
-  updateArenaScene,
-} from '../three/arenas.ts';
-import {
-  ArticulatedFighterRig,
-  buildFighterRig,
-  updateFighterRigAnimation,
-} from '../three/characters.ts';
+  buildDetailedEnemySoldier,
+  buildDetailedWeaponViewModel,
+  createProceduralTextureSet,
+  type EnemySoldierRig,
+  type WeaponViewModelRig,
+} from '../game/visualModels.ts';
+import type { HudDomRefs, TouchInputState } from './CombatHUD.tsx';
 import { soundEngine } from '../audio/soundEngine.ts';
-import { multiplayerClient } from '../network/multiplayerClient.ts';
-import { HudDomRefs, TouchInputState } from './CombatHUD.tsx';
 
-interface GameCanvasProps {
+export interface GameCanvasProps {
   screenState: ScreenState;
   gameMode: GameMode;
   p1Char: CharacterId;
@@ -44,519 +42,1016 @@ interface GameCanvasProps {
   arenaId: ArenaId;
   botDifficulty: BotDifficulty;
   lockedOn: boolean;
+  firstPersonMode?: boolean;
   settings: GameSettings;
   trainingConfig: TrainingConfig;
   simRef: React.MutableRefObject<SimulationState>;
   hudRefs: HudDomRefs;
   touchInputRef: React.MutableRefObject<TouchInputState>;
   onToggleLockOn: () => void;
+  onToggleFirstPerson?: () => void;
   onCombatEvent: (evt: CombatEvent) => void;
   onRoundFinished: (winner: 'p1' | 'p2' | 'draw') => void;
+  loadoutOverlayOpen?: boolean;
 }
 
-interface SparkParticle {
+interface ShellCasingParticle {
+  mesh: THREE.Mesh;
   active: boolean;
-  x: number;
-  y: number;
-  z: number;
+  ageMs: number;
+  maxAgeMs: number;
   vx: number;
   vy: number;
   vz: number;
-  age: number;
-  maxAge: number;
-  scale: number;
-  color: THREE.Color;
+  rx: number;
+  ry: number;
+  rz: number;
 }
 
-interface ShockwaveRing {
-  active: boolean;
+interface ImpactParticle {
   mesh: THREE.Mesh;
   mat: THREE.MeshBasicMaterial;
-  age: number;
-  maxAge: number;
+  active: boolean;
+  ageMs: number;
+  maxAgeMs: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  gravity: number;
+  baseScale: number;
+}
+
+interface ImpactRingFX {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  active: boolean;
+  ageMs: number;
+  maxAgeMs: number;
   maxScale: number;
+}
+
+interface BulletDecalFX {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  active: boolean;
 }
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({
   screenState,
   gameMode,
-  p1Char,
-  p2Char,
   arenaId,
   botDifficulty,
-  lockedOn,
   settings,
   trainingConfig,
   simRef,
   hudRefs,
   touchInputRef,
-  onToggleLockOn,
   onCombatEvent,
   onRoundFinished,
+  loadoutOverlayOpen = false,
 }) => {
-  const mountRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // Keep latest props accessible inside requestAnimationFrame without re-creating the WebGL context
-  const latestPropsRef = useRef({
-    screenState,
-    gameMode,
-    p1Char,
-    p2Char,
-    arenaId,
-    botDifficulty,
-    lockedOn,
-    settings,
-    trainingConfig,
-    onToggleLockOn,
-    onCombatEvent,
-    onRoundFinished,
-  });
-
-  useEffect(() => {
-    latestPropsRef.current = {
-      screenState,
-      gameMode,
-      p1Char,
-      p2Char,
-      arenaId,
-      botDifficulty,
-      lockedOn,
-      settings,
-      trainingConfig,
-      onToggleLockOn,
-      onCombatEvent,
-      onRoundFinished,
-    };
-  }, [
-    screenState,
-    gameMode,
-    p1Char,
-    p2Char,
-    arenaId,
-    botDifficulty,
-    lockedOn,
-    settings,
-    trainingConfig,
-    onToggleLockOn,
-    onCombatEvent,
-    onRoundFinished,
-  ]);
+  const screenStateRef = useRef(screenState);
+  screenStateRef.current = screenState;
+  const loadoutOverlayOpenRef = useRef(loadoutOverlayOpen);
+  loadoutOverlayOpenRef.current = loadoutOverlayOpen;
+  const gameModeRef = useRef(gameMode);
+  gameModeRef.current = gameMode;
+  const arenaIdRef = useRef(arenaId);
+  arenaIdRef.current = arenaId;
+  const botDifficultyRef = useRef(botDifficulty);
+  botDifficultyRef.current = botDifficulty;
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const trainingConfigRef = useRef(trainingConfig);
+  trainingConfigRef.current = trainingConfig;
+  const onCombatEventRef = useRef(onCombatEvent);
+  onCombatEventRef.current = onCombatEvent;
+  const onRoundFinishedRef = useRef(onRoundFinished);
+  onRoundFinishedRef.current = onRoundFinished;
 
   useEffect(() => {
-    const container = mountRef.current;
+    const container = containerRef.current;
     if (!container) return;
 
-    const isHeadless =
-      typeof navigator !== 'undefined' &&
-      (Boolean(navigator.webdriver) || /HeadlessChrome/i.test(navigator.userAgent));
+    const quality = settingsRef.current.graphicsQuality;
+    let isSoftwareGl = false;
+    try {
+      const testCanvas = document.createElement('canvas');
+      const gl = testCanvas.getContext('webgl2') || testCanvas.getContext('webgl');
+      if (gl) {
+        const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+        const rendererStr = dbg
+          ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
+          : String(gl.getParameter(gl.RENDERER));
+        isSoftwareGl = /SwiftShader|llvmpipe|Software|Microsoft Basic Render/i.test(
+          rendererStr
+        );
+      }
+    } catch {
+      // ignore
+    }
+
+    const isLow = quality === 'low' || isSoftwareGl;
+    const isHigh = quality === 'high' && !isSoftwareGl;
+
+    // 1. WebGLRenderer Setup with ACES Filmic Tone Mapping
     const renderer = new THREE.WebGLRenderer({
-      antialias: !isHeadless && latestPropsRef.current.settings.graphicsQuality !== 'low',
+      antialias: !isLow,
       powerPreference: 'high-performance',
     });
-    const dprCap = isHeadless
-      ? 1
-      : latestPropsRef.current.settings.graphicsQuality === 'high'
-        ? 2
-        : latestPropsRef.current.settings.graphicsQuality === 'medium'
-          ? 1.5
-          : 1;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, dprCap));
+    renderer.setPixelRatio(
+      Math.min(window.devicePixelRatio || 1, isLow ? 1.0 : isHigh ? 2.0 : 1.5)
+    );
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.shadowMap.enabled =
-      !isHeadless && latestPropsRef.current.settings.graphicsQuality !== 'low';
-    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.3;
+    renderer.toneMappingExposure = 1.22;
+    renderer.shadowMap.enabled = !isLow;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
     container.innerHTML = '';
     container.appendChild(renderer.domElement);
 
-    // 2. Initialize Scene & Camera (52° FOV for close Over-The-Shoulder combat presence)
+    const maxAnisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    const texSet = createProceduralTextureSet(maxAnisotropy);
+
+    // 2. Scene, Sky Gradient, IBL Environment & Tactical Lighting
     const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x9fb3c8);
+    scene.fog = new THREE.FogExp2(0x9fb3c8, 0.0055);
+
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const roomEnv = new RoomEnvironment();
+    const envTarget = pmremGenerator.fromScene(roomEnv, 0.04);
+    scene.environment = envTarget.texture;
+    scene.environmentIntensity = 0.72;
+    roomEnv.dispose();
+    pmremGenerator.dispose();
+
+    const hemiLight = new THREE.HemisphereLight(0xe2e8f0, 0x334155, 0.85);
+    hemiLight.position.set(0, 50, 0);
+    scene.add(hemiLight);
+
+    const sunLight = new THREE.DirectionalLight(0xfff7ed, 2.35);
+    sunLight.position.set(42, 68, 36);
+    sunLight.castShadow = !isLow;
+    if (!isLow) {
+      const mapRes = isHigh ? 2048 : 1024;
+      sunLight.shadow.mapSize.set(mapRes, mapRes);
+      sunLight.shadow.camera.near = 5;
+      sunLight.shadow.camera.far = 180;
+      const d = 68;
+      sunLight.shadow.camera.left = -d;
+      sunLight.shadow.camera.right = d;
+      sunLight.shadow.camera.top = d;
+      sunLight.shadow.camera.bottom = -d;
+      sunLight.shadow.bias = -0.0005;
+    }
+    scene.add(sunLight);
+
+    // 3. First-Person Camera & 6-Weapon Viewmodel Rig
     const camera = new THREE.PerspectiveCamera(
-      52,
+      78,
       container.clientWidth / Math.max(1, container.clientHeight),
-      0.1,
-      200
+      0.08,
+      260
     );
-    camera.position.set(-3.6, 3.2, 4.5);
+    camera.rotation.order = 'YXZ';
+    scene.add(camera);
 
-    // 3. PBR Material Library + RoomEnvironment IBL (with Headless Chrome fallback)
-    const matLib = createMaterialLibrary(renderer, isHeadless);
-    if (matLib.envMap) {
-      scene.environment = matLib.envMap;
-      scene.environmentIntensity = 0.68;
+    const viewmodelRig = new THREE.Group();
+    camera.add(viewmodelRig);
+
+    // Dynamic Muzzle Flash PointLight attached to viewmodel
+    const muzzlePointLight = new THREE.PointLight(0xffb732, 0, 11, 1.6);
+    muzzlePointLight.position.set(0.2, -0.1, -1.1);
+    camera.add(muzzlePointLight);
+
+    const weaponModels: Record<WeaponId, WeaponViewModelRig> = {} as Record<
+      WeaponId,
+      WeaponViewModelRig
+    >;
+    for (const wid of WEAPON_ORDER) {
+      const built = buildDetailedWeaponViewModel(wid, texSet.muzzleFlashMap);
+      built.root.visible = wid === 'm4a1';
+      viewmodelRig.add(built.root);
+      weaponModels[wid] = built;
     }
 
-    // 4. Build Exact Foundry Arena v4 Scene
-    let currentArenaId: ArenaId = latestPropsRef.current.arenaId;
-    let arenaRig: ArenaSceneRig = buildArenaScene(currentArenaId, matLib);
-    scene.add(arenaRig.group);
-    scene.fog = new THREE.FogExp2(arenaRig.fogColor.getHex(), arenaRig.fogDensity);
-    scene.background = arenaRig.fogColor;
+    // 4. Tactical Compound Map Builder with Procedural PBR Textures
+    const mapGroup = new THREE.Group();
+    scene.add(mapGroup);
+    let currentBuiltArenaId: ArenaId | null = null;
 
-    // 5. Build Fighter Rigs (P1, P2, and Rift Phase Decoy)
-    let currentP1Char: CharacterId = latestPropsRef.current.p1Char;
-    let currentP2Char: CharacterId = latestPropsRef.current.p2Char;
+    const buildArenaGeometry = (aid: ArenaId) => {
+      while (mapGroup.children.length > 0) {
+        const child = mapGroup.children.pop()!;
+        mapGroup.remove(child);
+      }
 
-    let p1Rig: ArticulatedFighterRig = buildFighterRig(currentP1Char, matLib, false);
-    let p2Rig: ArticulatedFighterRig = buildFighterRig(currentP2Char, matLib, false);
-    const decoyRig: ArticulatedFighterRig = buildFighterRig('rift', matLib, true);
-    decoyRig.root.visible = false;
+      const arenaDef = ARENA_REGISTRY[aid] || ARENA_REGISTRY.foundry_arena;
+      const skyHex =
+        aid === 'foundry_arena' ? 0x8fa6bd : aid === 'iron_fortress' ? 0x64748b : 0x94a3b8;
+      scene.background = new THREE.Color(skyHex);
+      scene.fog = new THREE.FogExp2(skyHex, 0.0042);
+      sunLight.color.setHex(0xfff7ed);
+      sunLight.intensity = 2.65;
+      hemiLight.color.setHex(0xe2e8f0);
+      hemiLight.groundColor.setHex(arenaDef.ambientHex || 0x334155);
 
-    scene.add(p1Rig.root);
-    scene.add(p2Rig.root);
-    scene.add(decoyRig.root);
+      const spanX = (arenaDef.bounds.maxX - arenaDef.bounds.minX) * 1.35;
+      const spanZ = (arenaDef.bounds.maxZ - arenaDef.bounds.minZ) * 1.35;
 
-    // 6. 3D Gravity Plasma Orb Projectile Mesh Pool
-    const orbGroup = new THREE.Group();
-    const orbCoreMat = new THREE.MeshBasicMaterial({ color: 0xe0f2fe });
-    const orbShellMat = new THREE.MeshBasicMaterial({
-      color: 0x38bdf8,
-      wireframe: true,
-      transparent: true,
-      opacity: 0.75,
-    });
-    const orbCoreMesh = new THREE.Mesh(new THREE.SphereGeometry(0.32, 14, 14), orbCoreMat);
-    const orbShellMesh = new THREE.Mesh(new THREE.IcosahedronGeometry(0.58, 1), orbShellMat);
-    const orbLight = new THREE.PointLight(0x38bdf8, 4.0, 7.0, 2.0);
-    orbGroup.add(orbCoreMesh, orbShellMesh, orbLight);
-    orbGroup.visible = false;
-    scene.add(orbGroup);
+      // Textured Asphalt / Concrete Ground Slab
+      const groundMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        map: texSet.groundMap,
+        bumpMap: texSet.groundBump,
+        bumpScale: 0.015,
+        roughness: 0.84,
+        metalness: 0.08,
+      });
+      const groundMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(spanX, spanZ),
+        groundMat
+      );
+      groundMesh.rotation.x = -Math.PI / 2;
+      groundMesh.receiveShadow = true;
+      mapGroup.add(groundMesh);
 
-    // 7. Pre-allocated Instanced Particle Pool for Sparks, Crate Splinters, and Barrel Shards
-    const maxParticles = 220;
-    const sparkGeo = new THREE.BoxGeometry(0.11, 0.11, 0.28);
-    const sparkMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const sparkInstanced = new THREE.InstancedMesh(sparkGeo, sparkMat, maxParticles);
-    sparkInstanced.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    scene.add(sparkInstanced);
+      // Tactical Lane Striping & Heli-Pad / Compound Center Markings
+      const stripeMat = new THREE.MeshBasicMaterial({
+        color: 0xcbd5e1,
+        transparent: true,
+        opacity: 0.22,
+      });
+      const centerRing = new THREE.Mesh(
+        new THREE.RingGeometry(11.5, 12.1, 48),
+        stripeMat
+      );
+      centerRing.rotation.x = -Math.PI / 2;
+      centerRing.position.y = 0.025;
+      mapGroup.add(centerRing);
 
-    const particles: SparkParticle[] = Array.from({ length: maxParticles }, () => ({
-      active: false,
-      x: 0,
-      y: 0,
-      z: 0,
-      vx: 0,
-      vy: 0,
-      vz: 0,
-      age: 0,
-      maxAge: 0.4,
-      scale: 1,
-      color: new THREE.Color(0xf59e0b),
-    }));
+      // Industrial Diamond-Plate / Steel Grating Floor Zones (Metal Footstep Surfaces)
+      const metalDeckMat = new THREE.MeshStandardMaterial({
+        color: 0xb8c4d4,
+        map: texSet.metalDeckMap,
+        bumpMap: texSet.metalDeckBump,
+        bumpScale: 0.022,
+        roughness: 0.34,
+        metalness: 0.78,
+      });
+      const metalBevelMat = new THREE.MeshStandardMaterial({
+        color: 0x334155,
+        roughness: 0.38,
+        metalness: 0.82,
+      });
 
-    const dummyObj = new THREE.Object3D();
-    dummyObj.scale.setScalar(0);
-    dummyObj.updateMatrix();
-    for (let i = 0; i < maxParticles; i++) {
-      sparkInstanced.setMatrixAt(i, dummyObj.matrix);
-      sparkInstanced.setColorAt(i, particles[i].color);
-    }
-    sparkInstanced.instanceMatrix.needsUpdate = true;
-    if (sparkInstanced.instanceColor) sparkInstanced.instanceColor.needsUpdate = true;
+      if (arenaDef.surfaceZones) {
+        for (const sz of arenaDef.surfaceZones) {
+          if (sz.material !== 'metal') continue;
+          const zw = sz.maxX - sz.minX;
+          const zd = sz.maxZ - sz.minZ;
+          const cx = (sz.minX + sz.maxX) * 0.5;
+          const cz = (sz.minZ + sz.maxZ) * 0.5;
 
-    const spawnBurst = (
-      x: number,
-      y: number,
-      z: number,
-      colorHex: number,
-      count: number,
-      speed = 7.5,
-      scaleMult = 1.0
-    ) => {
-      const qual = latestPropsRef.current.settings.particleQuality;
-      const mult = qual === 'low' ? 0.4 : qual === 'medium' ? 0.75 : 1.0;
-      const actualCount = Math.max(3, Math.round(count * mult));
-      let spawned = 0;
+          const deckPlate = new THREE.Mesh(
+            new THREE.BoxGeometry(zw, 0.028, zd),
+            metalDeckMat
+          );
+          deckPlate.position.set(cx, 0.014, cz);
+          deckPlate.receiveShadow = true;
+          mapGroup.add(deckPlate);
 
-      for (let i = 0; i < particles.length && spawned < actualCount; i++) {
-        const p = particles[i];
-        if (!p.active) {
-          p.active = true;
-          p.x = x + (Math.random() - 0.5) * 0.35;
-          p.y = y + (Math.random() - 0.5) * 0.35;
-          p.z = z + (Math.random() - 0.5) * 0.35;
-          const theta = Math.random() * Math.PI * 2;
-          const phi = (Math.random() - 0.22) * Math.PI;
-          const spd = speed * (0.45 + Math.random() * 0.9);
-          p.vx = Math.cos(theta) * Math.cos(phi) * spd;
-          p.vy = Math.abs(Math.sin(phi)) * spd + 2.2;
-          p.vz = Math.sin(theta) * Math.cos(phi) * spd;
-          p.age = 0;
-          p.maxAge = 0.25 + Math.random() * 0.38;
-          p.scale = (0.7 + Math.random() * 0.9) * scaleMult;
-          p.color.setHex(colorHex);
-          spawned++;
+          const deckRim = new THREE.Mesh(
+            new THREE.BoxGeometry(zw + 0.16, 0.018, zd + 0.16),
+            metalBevelMat
+          );
+          deckRim.position.set(cx, 0.009, cz);
+          deckRim.receiveShadow = true;
+          mapGroup.add(deckRim);
         }
       }
+
+      // Shared Architectural Materials
+      const wallMat = new THREE.MeshStandardMaterial({
+        color: 0x64748b,
+        map: texSet.wallMap,
+        bumpMap: texSet.wallMap,
+        bumpScale: 0.012,
+        roughness: 0.65,
+        metalness: 0.18,
+      });
+      const towerMat = new THREE.MeshStandardMaterial({
+        color: 0x475569,
+        map: texSet.wallMap,
+        roughness: 0.58,
+        metalness: 0.28,
+      });
+      const containerMat = new THREE.MeshStandardMaterial({
+        color: 0x3b82f6,
+        map: texSet.containerMap,
+        roughness: 0.5,
+        metalness: 0.42,
+      });
+      const coverMat = new THREE.MeshStandardMaterial({
+        color: 0x94a3b8,
+        map: texSet.wallMap,
+        roughness: 0.56,
+        metalness: 0.24,
+      });
+      const trimMat = new THREE.MeshStandardMaterial({
+        color: 0x1e293b,
+        roughness: 0.42,
+        metalness: 0.62,
+      });
+      const hazardStripeMat = new THREE.MeshStandardMaterial({
+        color: 0xf59e0b,
+        roughness: 0.48,
+        metalness: 0.25,
+      });
+
+      for (const b of arenaDef.blocks) {
+        const bw = b.width;
+        const bh = b.height;
+        const bd = b.depth;
+        const isBuilding = b.kind === 'building';
+        const isTower = b.kind === 'tower';
+        const isContainer = b.kind === 'container';
+        const isPerimeter = b.kind === 'wall';
+
+        const mat = isTower
+          ? towerMat
+          : isContainer
+          ? containerMat
+          : isBuilding || isPerimeter
+          ? wallMat
+          : coverMat;
+
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), mat);
+        mesh.position.set(b.x, bh * 0.5, b.z);
+        mesh.castShadow = !isLow && !isPerimeter;
+        mesh.receiveShadow = true;
+        mapGroup.add(mesh);
+
+        // Reinforced Steel Roof Cap & Base Plinth for visual Crispness
+        if (!isPerimeter) {
+          const cap = new THREE.Mesh(
+            new THREE.BoxGeometry(bw + 0.18, 0.16, bd + 0.18),
+            trimMat
+          );
+          cap.position.set(b.x, bh + 0.04, b.z);
+          mapGroup.add(cap);
+
+          const plinth = new THREE.Mesh(
+            new THREE.BoxGeometry(bw + 0.14, 0.18, bd + 0.14),
+            trimMat
+          );
+          plinth.position.set(b.x, 0.09, b.z);
+          mapGroup.add(plinth);
+
+          // Yellow tactical caution band on waist-high concrete barriers
+          if (b.kind === 'cover' && bh <= 1.6) {
+            const band = new THREE.Mesh(
+              new THREE.BoxGeometry(bw + 0.04, 0.1, bd + 0.04),
+              hazardStripeMat
+            );
+            band.position.set(b.x, bh - 0.18, b.z);
+            mapGroup.add(band);
+          }
+        }
+      }
+
+      // Render cylindrical tactical pillars from arenaDef.colliders
+      for (const col of arenaDef.colliders) {
+        const pillar = new THREE.Mesh(
+          new THREE.CylinderGeometry(col.radius, col.radius * 1.06, col.height, 16),
+          towerMat
+        );
+        pillar.position.set(col.x, col.height * 0.5, col.z);
+        pillar.castShadow = !isLow;
+        pillar.receiveShadow = true;
+        mapGroup.add(pillar);
+      }
+
+      // 4 Corner Floodlight Towers for Horizon Depth & Silhouette Framing
+      const towerCoords = [
+        [-48, -48],
+        [48, -48],
+        [-48, 48],
+        [48, 48],
+      ];
+      const lampMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
+      for (const [tx, tz] of towerCoords) {
+        const pole = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.28, 0.42, 16, 8),
+          trimMat
+        );
+        pole.position.set(tx, 8, tz);
+        const head = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.7, 0.8), trimMat);
+        head.position.set(tx, 16.2, tz);
+        const lamp = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.45, 0.9), lampMat);
+        lamp.position.set(tx, 16.1, tz);
+        mapGroup.add(pole, head, lamp);
+      }
+
+      // Freeze world matrices on static arena architecture to save per-frame CPU traversal
+      mapGroup.updateMatrixWorld(true);
+      mapGroup.traverse((child) => {
+        if (child !== mapGroup) {
+          child.matrixAutoUpdate = false;
+          child.updateMatrix();
+        }
+      });
+
+      currentBuiltArenaId = aid;
     };
 
-    // 8. Pre-allocated Shockwave Rings Pool
-    const shockwaves: ShockwaveRing[] = Array.from({ length: 8 }, () => {
-      const geo = new THREE.RingGeometry(0.35, 0.72, 32);
-      geo.rotateX(-Math.PI / 2);
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0xf59e0b,
-        transparent: true,
-        opacity: 0,
-        side: THREE.DoubleSide,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.visible = false;
-      scene.add(mesh);
-      return {
-        active: false,
-        mesh,
-        mat,
-        age: 0,
-        maxAge: 0.42,
-        maxScale: 5.5,
-      };
+    buildArenaGeometry(arenaIdRef.current);
+
+    // 5. Breakable Props (Explosive Red Hazard Barrels & Wooden Tactical Crates)
+    const propsGroup = new THREE.Group();
+    scene.add(propsGroup);
+    const propMeshes = new Map<string, THREE.Object3D>();
+
+    const barrelMat = new THREE.MeshStandardMaterial({
+      color: 0xdc2626,
+      roughness: 0.36,
+      metalness: 0.48,
+    });
+    const barrelStripeMat = new THREE.MeshStandardMaterial({
+      color: 0xfacc15,
+      roughness: 0.42,
+      metalness: 0.25,
+    });
+    const crateMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: texSet.crateMap,
+      roughness: 0.76,
+      metalness: 0.12,
     });
 
-    const spawnShockwave = (
+    const syncBreakableProps = (sim: SimulationState) => {
+      for (const p of sim.breakableProps) {
+        let obj = propMeshes.get(p.id);
+        if (!obj) {
+          if (p.kind === 'barrel') {
+            const grp = new THREE.Group();
+            const cyl = new THREE.Mesh(
+              new THREE.CylinderGeometry(p.radius, p.radius, p.height, 16),
+              barrelMat.clone()
+            );
+            cyl.position.y = p.height * 0.5;
+            cyl.castShadow = !isLow;
+            cyl.receiveShadow = true;
+
+            const ringTop = new THREE.Mesh(
+              new THREE.CylinderGeometry(p.radius * 1.04, p.radius * 1.04, 0.12, 16),
+              barrelStripeMat
+            );
+            ringTop.position.y = p.height * 0.74;
+
+            const ringBot = new THREE.Mesh(
+              new THREE.CylinderGeometry(p.radius * 1.04, p.radius * 1.04, 0.12, 16),
+              barrelStripeMat
+            );
+            ringBot.position.y = p.height * 0.26;
+
+            grp.add(cyl, ringTop, ringBot);
+            obj = grp;
+          } else {
+            const box = new THREE.Mesh(
+              new THREE.BoxGeometry(p.radius * 1.85, p.height, p.radius * 1.85),
+              crateMat.clone()
+            );
+            box.position.y = p.height * 0.5;
+            box.castShadow = !isLow;
+            box.receiveShadow = true;
+            obj = box;
+          }
+          propsGroup.add(obj);
+          propMeshes.set(p.id, obj);
+        }
+        obj.visible = !p.broken;
+        obj.position.set(p.x, 0, p.z);
+      }
+    };
+
+    // 6. Articulated 16-Part Enemy Bot Rigs & 3D Animated Supply Pickups
+    const enemyGroup = new THREE.Group();
+    scene.add(enemyGroup);
+    const enemyRigs = new Map<string, EnemySoldierRig>();
+
+    const pickupGroup = new THREE.Group();
+    scene.add(pickupGroup);
+    const pickupMeshes = new Map<string, { group: THREE.Group; ring: THREE.Mesh }>();
+
+    // 7. Zero-GC Pooled Ballistic VFX Systems
+    const vfxGroup = new THREE.Group();
+    scene.add(vfxGroup);
+
+    // 7A. Dual-Layer Bullet Tracer Pool (Bright Core + Additive Outer Glow)
+    const TRACER_POOL_SIZE = 24;
+    const tracerPool: {
+      group: THREE.Group;
+      coreMat: THREE.MeshBasicMaterial;
+      glowMat: THREE.MeshBasicMaterial;
+    }[] = [];
+    const coreGeo = new THREE.CylinderGeometry(0.007, 0.003, 1, 6);
+    coreGeo.rotateX(Math.PI / 2);
+    const glowGeo = new THREE.CylinderGeometry(0.022, 0.01, 1, 6);
+    glowGeo.rotateX(Math.PI / 2);
+
+    for (let i = 0; i < TRACER_POOL_SIZE; i++) {
+      const coreMat = new THREE.MeshBasicMaterial({
+        color: 0xfef08a,
+        transparent: true,
+        opacity: 0.95,
+      });
+      const glowMat = new THREE.MeshBasicMaterial({
+        color: 0xfbbf24,
+        transparent: true,
+        opacity: 0.55,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      });
+      const coreMesh = new THREE.Mesh(coreGeo, coreMat);
+      const glowMesh = new THREE.Mesh(glowGeo, glowMat);
+      const grp = new THREE.Group();
+      grp.add(coreMesh, glowMesh);
+      grp.visible = false;
+      vfxGroup.add(grp);
+      tracerPool.push({ group: grp, coreMat, glowMat });
+    }
+
+    // 7B. Spinning Brass Shell Casing Pool (24 casings)
+    const CASING_POOL_SIZE = 24;
+    const casingPool: ShellCasingParticle[] = [];
+    const casingGeo = new THREE.CylinderGeometry(0.006, 0.006, 0.028, 8);
+    const casingMat = new THREE.MeshStandardMaterial({
+      color: 0xfacc15,
+      roughness: 0.22,
+      metalness: 0.92,
+    });
+    for (let i = 0; i < CASING_POOL_SIZE; i++) {
+      const mesh = new THREE.Mesh(casingGeo, casingMat);
+      mesh.visible = false;
+      vfxGroup.add(mesh);
+      casingPool.push({
+        mesh,
+        active: false,
+        ageMs: 0,
+        maxAgeMs: 950,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        rx: 0,
+        ry: 0,
+        rz: 0,
+      });
+    }
+    let casingCursor = 0;
+
+    const spawnShellCasing = () => {
+      const c = casingPool[casingCursor];
+      casingCursor = (casingCursor + 1) % CASING_POOL_SIZE;
+      const activeRig = weaponModels[simRef.current.player.activeWeapon];
+      if (!activeRig) return;
+
+      const worldPos = activeRig.ejectionPortLocal.clone();
+      activeRig.gunGroup.localToWorld(worldPos);
+      c.mesh.position.copy(worldPos);
+
+      // Eject up and to the right in camera space
+      const rightDir = new THREE.Vector3(1, 0.45, -0.15)
+        .applyQuaternion(camera.quaternion)
+        .normalize();
+      const speed = 2.2 + Math.random() * 1.1;
+      c.vx = rightDir.x * speed;
+      c.vy = rightDir.y * speed + 1.4;
+      c.vz = rightDir.z * speed;
+      c.rx = (Math.random() - 0.5) * 28;
+      c.ry = (Math.random() - 0.5) * 28;
+      c.rz = (Math.random() - 0.5) * 28;
+      c.ageMs = 0;
+      c.maxAgeMs = 900;
+      c.active = true;
+      c.mesh.visible = true;
+    };
+
+    // 7C. 3D Impact Sparks, Concrete Dust, Blood & Explosion Particle Pool (96 particles)
+    const PARTICLE_POOL_SIZE = 96;
+    const particlePool: ImpactParticle[] = [];
+    const sparkGeo = new THREE.BoxGeometry(0.045, 0.045, 0.14);
+    for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xfbbf24,
+        transparent: true,
+        opacity: 1,
+      });
+      const mesh = new THREE.Mesh(sparkGeo, mat);
+      mesh.visible = false;
+      vfxGroup.add(mesh);
+      particlePool.push({
+        mesh,
+        mat,
+        active: false,
+        ageMs: 0,
+        maxAgeMs: 360,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        gravity: 14,
+        baseScale: 1,
+      });
+    }
+    let particleCursor = 0;
+
+    const spawnImpactBurst = (
       x: number,
       y: number,
       z: number,
+      nx: number,
+      ny: number,
+      nz: number,
       colorHex: number,
-      maxScale = 5.5,
-      duration = 0.42
+      count: number,
+      speedScale = 1,
+      scaleMul = 1
     ) => {
-      const ring = shockwaves.find((r) => !r.active) || shockwaves[0];
-      ring.active = true;
-      ring.age = 0;
-      ring.maxAge = duration;
-      ring.maxScale = maxScale;
-      ring.mat.color.setHex(colorHex);
-      ring.mat.opacity = 0.9;
-      ring.mesh.position.set(x, y + 0.08, z);
-      ring.mesh.scale.setScalar(0.2);
-      ring.mesh.visible = true;
+      for (let i = 0; i < count; i++) {
+        const p = particlePool[particleCursor];
+        particleCursor = (particleCursor + 1) % PARTICLE_POOL_SIZE;
+        p.active = true;
+        p.ageMs = 0;
+        p.maxAgeMs = 240 + Math.random() * 240;
+        p.mesh.position.set(x + nx * 0.04, y + ny * 0.04, z + nz * 0.04);
+        p.mat.color.setHex(colorHex);
+        p.mat.opacity = 1;
+        p.baseScale = scaleMul * (0.7 + Math.random() * 0.7);
+        p.mesh.scale.setScalar(p.baseScale);
+
+        const spd = (3.5 + Math.random() * 6.5) * speedScale;
+        p.vx = (nx * 0.75 + (Math.random() - 0.5) * 1.1) * spd;
+        p.vy = (ny * 0.75 + Math.random() * 0.9) * spd;
+        p.vz = (nz * 0.75 + (Math.random() - 0.5) * 1.1) * spd;
+        p.gravity = 15;
+        p.mesh.visible = true;
+      }
     };
 
-    // 8b. 3D Glowing Crescent Weapon Slash Arc Pool (Zero runtime allocation)
-    const slashArcGeo = new THREE.RingGeometry(1.05, 2.25, 24, 1, -Math.PI * 0.58, Math.PI * 1.16);
-    slashArcGeo.rotateX(-Math.PI / 2);
-    const slashArcs = Array.from({ length: 8 }, () => {
+    // 7D. Expanding Surface Impact Shock Rings (20 rings)
+    const RING_POOL_SIZE = 20;
+    const ringPool: ImpactRingFX[] = [];
+    const ringGeo = new THREE.RingGeometry(0.06, 0.12, 16);
+    for (let i = 0; i < RING_POOL_SIZE; i++) {
       const mat = new THREE.MeshBasicMaterial({
-        color: 0x38bdf8,
+        color: 0xfde047,
         transparent: true,
-        opacity: 0,
+        opacity: 0.9,
+        blending: THREE.AdditiveBlending,
         side: THREE.DoubleSide,
         depthWrite: false,
-        blending: THREE.AdditiveBlending,
       });
-      const mesh = new THREE.Mesh(slashArcGeo, mat);
+      const mesh = new THREE.Mesh(ringGeo, mat);
       mesh.visible = false;
-      scene.add(mesh);
-      return {
-        active: false,
+      vfxGroup.add(mesh);
+      ringPool.push({
         mesh,
         mat,
-        age: 0,
-        maxAge: 0.24,
-        startYaw: 0,
-        spinSpeed: 8.5,
-        baseScale: 1.0,
-      };
-    });
+        active: false,
+        ageMs: 0,
+        maxAgeMs: 220,
+        maxScale: 2.6,
+      });
+    }
+    let ringCursor = 0;
 
-    const spawnSlashArc = (
+    // 7E. Surface-Aligned Weapon-Specific Bullet Decals & Blood Splatters (48 decals)
+    const DECAL_POOL_SIZE = 48;
+    const decalPool: BulletDecalFX[] = [];
+    const decalGeo = new THREE.PlaneGeometry(0.22, 0.22);
+    for (let i = 0; i < DECAL_POOL_SIZE; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        map: texSet.bulletHoleRifleMap,
+        transparent: true,
+        opacity: 0.92,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+      });
+      const mesh = new THREE.Mesh(decalGeo, mat);
+      mesh.visible = false;
+      vfxGroup.add(mesh);
+      decalPool.push({ mesh, mat, active: false });
+    }
+    let decalCursor = 0;
+
+    let highestProcessedTraceId = 0;
+    const normalVec = new THREE.Vector3();
+    const defaultForward = new THREE.Vector3(0, 0, 1);
+    const decalRaycaster = new THREE.Raycaster();
+    const rayOriginVec = new THREE.Vector3();
+    const rayDirVec = new THREE.Vector3();
+
+    const getWeaponDecalTextureAndScale = (weaponId?: WeaponId) => {
+      if (weaponId === 'awp') {
+        return { map: texSet.bulletHoleSniperMap, scale: 1.45 };
+      }
+      if (weaponId === 'spas12') {
+        return { map: texSet.bulletHoleShotgunMap, scale: 1.38 };
+      }
+      if (weaponId === 'mp5' || weaponId === 'deagle') {
+        return { map: texSet.bulletHoleSmgMap, scale: 0.82 };
+      }
+      return { map: texSet.bulletHoleRifleMap, scale: 1.05 };
+    };
+
+    const spawnTraceImpactVFX = (
+      fromX: number,
+      fromY: number,
+      fromZ: number,
       x: number,
       y: number,
       z: number,
-      facingAngle: number,
-      colorHex: number,
-      tiltZ = 0,
-      spinDir = 1,
-      baseScale = 1.0,
-      duration = 0.22
+      nx: number,
+      ny: number,
+      nz: number,
+      hitKind: 'wall' | 'enemy' | 'headshot' | 'prop' | 'sky',
+      weaponId?: WeaponId,
+      isEnemyShot?: boolean
     ) => {
-      const arc = slashArcs.find((a) => !a.active) || slashArcs[0];
-      arc.active = true;
-      arc.age = 0;
-      arc.maxAge = duration;
-      arc.baseScale = baseScale;
-      arc.startYaw = facingAngle - Math.PI * 0.5 - spinDir * 0.55;
-      arc.spinSpeed = spinDir * 10.5;
-      arc.mat.color.setHex(colorHex);
-      arc.mat.opacity = 0.95;
-      arc.mesh.position.set(x, y, z);
-      arc.mesh.rotation.set(0, arc.startYaw, tiltZ);
-      arc.mesh.scale.setScalar(baseScale * 0.72);
-      arc.mesh.visible = true;
+      if (hitKind === 'sky') return;
+
+      normalVec.set(nx, ny, nz).normalize();
+
+      // 1. Expanding Shockwave / Blood Mist Ring at Impact Point
+      const ring = ringPool[ringCursor];
+      ringCursor = (ringCursor + 1) % RING_POOL_SIZE;
+      ring.active = true;
+      ring.ageMs = 0;
+      ring.maxAgeMs =
+        hitKind === 'headshot' ? 320 : hitKind === 'enemy' ? 260 : 190;
+      ring.maxScale =
+        hitKind === 'headshot' ? 4.2 : hitKind === 'enemy' ? 3.1 : 2.3;
+      ring.mat.color.setHex(
+        hitKind === 'headshot'
+          ? 0xdc2626
+          : hitKind === 'enemy'
+          ? 0xb91c1c
+          : 0xfde047
+      );
+      ring.mesh.position.set(x + nx * 0.03, y + ny * 0.03, z + nz * 0.03);
+      ring.mesh.quaternion.setFromUnitVectors(defaultForward, normalVec);
+      ring.mesh.scale.setScalar(0.35);
+      ring.mesh.visible = true;
+
+      // 2. Directional Sparks / Realistic Blood Burst / Surface-Verified Bullet Decals
+      if (hitKind === 'wall' || hitKind === 'prop') {
+        spawnImpactBurst(x, y, z, nx, ny, nz, 0xfbbf24, isLow ? 4 : 8, 1.0, 0.9);
+        spawnImpactBurst(x, y, z, nx, ny, nz, 0x94a3b8, isLow ? 2 : 4, 0.55, 1.2);
+
+        // Place weapon-specific bullet mark ONLY on verified visible static 3D map meshes (NEVER in air or on breakable props)
+        if (hitKind === 'wall' && !isEnemyShot) {
+          rayOriginVec.set(fromX, fromY, fromZ);
+          rayDirVec.set(x - fromX, y - fromY, z - fromZ);
+          const rayLen = rayDirVec.length();
+          if (rayLen > 0.05) {
+            rayDirVec.divideScalar(rayLen);
+            decalRaycaster.near = 0.01;
+            decalRaycaster.far = rayLen + 1.5;
+            decalRaycaster.set(rayOriginVec, rayDirVec);
+            const hits = decalRaycaster.intersectObjects(mapGroup.children, true);
+            const validHit = hits.find(
+              (h) => h.face && h.distance <= rayLen + 0.65 && h.object.visible
+            );
+            if (validHit && validHit.face) {
+              const surfNormal = validHit.face.normal
+                .clone()
+                .transformDirection(validHit.object.matrixWorld)
+                .normalize();
+              const dec = decalPool[decalCursor];
+              decalCursor = (decalCursor + 1) % DECAL_POOL_SIZE;
+              const { map, scale } = getWeaponDecalTextureAndScale(weaponId);
+              dec.mat.map = map;
+              dec.mat.opacity = 0.94;
+              dec.mat.needsUpdate = true;
+              dec.active = true;
+              dec.mesh.position
+                .copy(validHit.point)
+                .addScaledVector(surfNormal, 0.008);
+              dec.mesh.quaternion.setFromUnitVectors(defaultForward, surfNormal);
+              dec.mesh.rotateZ(Math.random() * Math.PI * 2);
+              dec.mesh.scale.setScalar(scale * (0.9 + Math.random() * 0.2));
+              dec.mesh.visible = true;
+            }
+          }
+        }
+      } else if (hitKind === 'headshot' || hitKind === 'enemy') {
+        const isHs = hitKind === 'headshot';
+        // High-density multi-shade 3D blood splatter & mist burst
+        spawnImpactBurst(
+          x,
+          y,
+          z,
+          nx,
+          ny,
+          nz,
+          0xdc2626,
+          isLow ? 8 : isHs ? 18 : 12,
+          isHs ? 1.25 : 0.95,
+          isHs ? 1.35 : 1.1
+        );
+        spawnImpactBurst(
+          x,
+          y,
+          z,
+          nx * 0.5,
+          ny + 0.35,
+          nz * 0.5,
+          0x7f1d1d,
+          isLow ? 5 : isHs ? 12 : 8,
+          0.7,
+          1.45
+        );
+        if (isHs) {
+          spawnImpactBurst(x, y, z, nx, ny, nz, 0xfef08a, isLow ? 4 : 7, 1.3, 0.95);
+        }
+
+        // Project a realistic crimson blood splatter decal onto the arena floor beneath the hit
+        const dec = decalPool[decalCursor];
+        decalCursor = (decalCursor + 1) % DECAL_POOL_SIZE;
+        dec.mat.map = texSet.bloodSplatterMap;
+        dec.mat.opacity = 0.88;
+        dec.mat.needsUpdate = true;
+        dec.active = true;
+        dec.mesh.position.set(
+          x + (Math.random() - 0.5) * 0.35,
+          0.012,
+          z + (Math.random() - 0.5) * 0.35
+        );
+        normalVec.set(0, 1, 0);
+        dec.mesh.quaternion.setFromUnitVectors(defaultForward, normalVec);
+        dec.mesh.rotateZ(Math.random() * Math.PI * 2);
+        dec.mesh.scale.setScalar((isHs ? 2.4 : 1.75) * (0.85 + Math.random() * 0.3));
+        dec.mesh.visible = true;
+      }
     };
 
-    // 9. Keyboard & Mouse Input Listeners (Smooth Zoomed-Out Behind-Player Camera Controls)
+    // 8. Keyboard & Mouse Desktop Input Listeners
     const keysDown = new Set<string>();
-    const oneShotInput = {
-      jump: false,
-      light: false,
-      heavy: false,
-      guardJustPressed: false,
-      dodge: false,
-      ability: false,
-      execution: false,
-    };
-    let mouseGuardHeld = false;
-    let camYaw = Math.PI * 0.5; // Starts directly behind P1 looking at P2 (+X)
-    let camPitch = 0.22;
-    let shoulderSide: 1 | -1 = 1;
-    let currentShoulderOffset = 0.42;
-    let lastMouseX: number | null = null;
-    let lastMouseY: number | null = null;
+    let mouseLookDeltaX = 0;
+    let mouseLookDeltaY = 0;
+    let mouseFireHeld = false;
+    let mouseFireJustPressed = false;
+    let mouseAdsHeld = false;
+    let jumpQueued = false;
+    let crouchToggleQueued = false;
+    let slideQueued = false;
+    let reloadQueued = false;
+    let queuedWeaponSelect: WeaponId | null = null;
+    let queuedWeaponCycle = 0;
+    let hitMarkerTimerMs = 0;
+
+    // Weapon viewmodel spring sway, smooth locomotion blend, wall contact & micro-animation state
+    let swayYaw = 0;
+    let swayPitch = 0;
+    let swayRoll = 0;
+    let strafeRoll = 0;
+    let landDipY = 0;
+    let landRollImpulse = 0;
+    let jumpImpulseY = 0;
+    let airborneLift = 0;
+    let airbornePitch = 0;
+    let wasGrounded = true;
+    let sprintBlend = 0;
+    let slideBlend = 0;
+    let moveBobBlend = 0;
+    let wallObstructionBlend = 0;
+    let wallTouchImpulse = 0;
+    let triggerPullBlend = 0;
+    let inspectBreathPhase = 0;
+
+    // Pre-allocated scratch vectors for 60fps tracer loop (zero GC churn)
+    const tracerStartVec = new THREE.Vector3();
+    const tracerEndVec = new THREE.Vector3();
+    const tracerMidVec = new THREE.Vector3();
+
+    // HUD dirty-check cache to prevent redundant DOM style/text writes at 60fps
+    let lastHpPctStr = '';
+    let lastHpTextStr = '';
+    let lastSlot1Text = '';
+    let lastSlot2Text = '';
+    let lastKillsText = '';
+    let lastBotKillsText = '';
+    let lastTimerText = '';
+    let lastScopeOpacityStr = '';
+    let lastChOpacityStr = '';
+    let lastSlideOpacityStr = '';
+    let lastHitMarkerOpacityStr = '';
+    let lastHurtOpacityStr = '';
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat) return;
+      if (screenStateRef.current !== 'combat') return;
       keysDown.add(e.code);
-      soundEngine.unlock();
 
-      const props = latestPropsRef.current;
-      if (props.screenState !== 'combat') return;
+      const kb = settingsRef.current.keybindings;
+      if (e.code === kb.jump) jumpQueued = true;
+      if (e.code === kb.crouch || e.code === 'KeyC') crouchToggleQueued = true;
+      if (e.code === kb.slide || e.code === 'KeyV') slideQueued = true;
+      if (e.code === kb.reload || e.code === 'KeyR') reloadQueued = true;
+      if (e.code === kb.nextWeapon || e.code === 'KeyQ') queuedWeaponCycle = 1;
 
-      const kb = props.settings.keybindings;
-      if (e.code === kb.lockOn) {
-        e.preventDefault();
-        props.onToggleLockOn();
-        soundEngine.play('ui_click');
-      } else if (e.code === 'Space') {
-        e.preventDefault();
-        oneShotInput.jump = true;
-      } else if (e.code === 'KeyV') {
-        shoulderSide = shoulderSide === 1 ? -1 : 1;
-        soundEngine.play('ui_click');
-      } else if (e.code === 'KeyG') {
-        oneShotInput.execution = true;
-      } else if (e.code === kb.lightAttack) {
-        oneShotInput.light = true;
-      } else if (e.code === kb.heavyAttack || e.code === 'KeyF') {
-        oneShotInput.heavy = true;
-      } else if (e.code === kb.guard) {
-        oneShotInput.guardJustPressed = true;
-      } else if (e.code === kb.dodge || e.code === 'KeyQ' || e.code === 'KeyC') {
-        oneShotInput.dodge = true;
-      } else if (e.code === kb.ability || e.code === 'KeyU' || e.code === 'KeyE') {
-        oneShotInput.ability = true;
-      }
+      const pair = simRef.current.player.loadoutWeapons;
+      if (e.code === 'Digit1') queuedWeaponSelect = pair[0];
+      if (e.code === 'Digit2') queuedWeaponSelect = pair[1];
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
       keysDown.delete(e.code);
     };
 
-    const onMouseDown = (e: MouseEvent) => {
-      soundEngine.unlock();
-      const props = latestPropsRef.current;
-      if (props.screenState !== 'combat') return;
+    let mouseLookDragHeld = false;
+    let lastMousePos: { x: number; y: number } | null = null;
 
-      const target = e.target as HTMLElement;
-      if (target && target.closest('button, input, select, label, [role="dialog"]')) {
+    const onMouseDown = (e: MouseEvent) => {
+      if (screenStateRef.current !== 'combat' || loadoutOverlayOpenRef.current) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        target.closest('button, input, label, [role="button"], [role="dialog"], [data-ui-interactive="true"]')
+      ) {
         return;
       }
 
-      if (
-        renderer.domElement.requestPointerLock &&
-        document.pointerLockElement !== renderer.domElement
-      ) {
-        try {
-          renderer.domElement.requestPointerLock();
-        } catch {
-          // Fallback to non-locked mouse tracking inside iframes
-        }
-      }
+      lastMousePos = { x: e.clientX, y: e.clientY };
+      mouseLookDragHeld = true;
 
-      if (e.button === 0) {
-        oneShotInput.light = true;
-      } else if (e.button === 2) {
-        mouseGuardHeld = true;
-        oneShotInput.guardJustPressed = true;
+      if (e.button === 2) {
+        mouseAdsHeld = true;
       }
     };
 
     const onMouseUp = (e: MouseEvent) => {
-      if (e.button === 2) {
-        mouseGuardHeld = false;
+      if (e.button === 0) mouseFireHeld = false;
+      if (e.button === 2) mouseAdsHeld = false;
+      if (e.buttons === 0) {
+        mouseLookDragHeld = false;
+        lastMousePos = null;
       }
     };
 
     const onMouseMove = (e: MouseEvent) => {
-      const props = latestPropsRef.current;
-      if (props.screenState !== 'combat') return;
-
-      let dx = e.movementX || 0;
-      let dy = e.movementY || 0;
-
-      if (document.pointerLockElement !== renderer.domElement) {
-        if (lastMouseX !== null && lastMouseY !== null && (e.buttons === 1 || !props.lockedOn)) {
-          dx = e.clientX - lastMouseX;
-          dy = e.clientY - lastMouseY;
+      if (screenStateRef.current !== 'combat' || loadoutOverlayOpenRef.current) return;
+      if (document.pointerLockElement === renderer.domElement) {
+        mouseLookDeltaX += e.movementX;
+        mouseLookDeltaY += e.movementY;
+      } else if (mouseLookDragHeld || mouseFireHeld || e.buttons > 0) {
+        // Avoid double-applying delta when CombatHUD window pointer tracking is already active
+        const touch = touchInputRef.current;
+        if (touch.cameraDeltaX === 0 && touch.cameraDeltaY === 0) {
+          if (lastMousePos) {
+            let dx = e.clientX - lastMousePos.x;
+            let dy = e.clientY - lastMousePos.y;
+            if (dx === 0 && typeof e.movementX === 'number' && Math.abs(e.movementX) > 0) {
+              dx = e.movementX;
+            }
+            if (dy === 0 && typeof e.movementY === 'number' && Math.abs(e.movementY) > 0) {
+              dy = e.movementY;
+            }
+            mouseLookDeltaX += dx * 1.35;
+            mouseLookDeltaY += dy * 1.35;
+          } else {
+            mouseLookDeltaX += e.movementX * 1.35;
+            mouseLookDeltaY += e.movementY * 1.35;
+          }
         }
-        lastMouseX = e.clientX;
-        lastMouseY = e.clientY;
-      }
-
-      camYaw -= dx * 0.0034;
-      camPitch = Math.max(-0.15, Math.min(0.65, camPitch + dy * 0.0026));
-    };
-
-    // Touch drag on right half of viewport rotates camera smoothly
-    let cameraTouchId: number | null = null;
-    let lastTouchX = 0;
-    let lastTouchY = 0;
-
-    const onTouchStart = (e: TouchEvent) => {
-      soundEngine.unlock();
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-        const el = document.elementFromPoint(t.clientX, t.clientY);
-        if (el && el.closest('button, [aria-label="Movement Analog Joystick"]')) {
-          continue;
-        }
-        if (t.clientX > window.innerWidth * 0.42 && cameraTouchId === null) {
-          cameraTouchId = t.identifier;
-          lastTouchX = t.clientX;
-          lastTouchY = t.clientY;
-        }
+        lastMousePos = { x: e.clientX, y: e.clientY };
+      } else {
+        lastMousePos = { x: e.clientX, y: e.clientY };
       }
     };
 
-    const onTouchMove = (e: TouchEvent) => {
-      if (cameraTouchId === null) return;
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-        if (t.identifier === cameraTouchId) {
-          const dx = t.clientX - lastTouchX;
-          const dy = t.clientY - lastTouchY;
-          lastTouchX = t.clientX;
-          lastTouchY = t.clientY;
-          camYaw -= dx * 0.0052;
-          camPitch = Math.max(-0.15, Math.min(0.65, camPitch + dy * 0.0038));
-        }
+    const onWheel = (e: WheelEvent) => {
+      if (screenStateRef.current !== 'combat') return;
+      if (Math.abs(e.deltaY) > 4) {
+        queuedWeaponCycle = e.deltaY > 0 ? 1 : -1;
       }
     };
 
-    const onTouchEnd = (e: TouchEvent) => {
-      if (cameraTouchId === null) return;
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        if (e.changedTouches[i].identifier === cameraTouchId) {
-          cameraTouchId = null;
-        }
+    const onContextMenu = (e: MouseEvent) => {
+      if (screenStateRef.current === 'combat') {
+        e.preventDefault();
       }
     };
 
-    const clearAllInputsOnBlur = () => {
-      keysDown.clear();
-      mouseGuardHeld = false;
-      cameraTouchId = null;
-      lastMouseX = null;
-      lastMouseY = null;
-      oneShotInput.jump = false;
-      oneShotInput.light = false;
-      oneShotInput.heavy = false;
-      oneShotInput.guardJustPressed = false;
-      oneShotInput.dodge = false;
-      oneShotInput.ability = false;
-      oneShotInput.execution = false;
+    const onResize = () => {
+      if (!container) return;
+      camera.aspect = container.clientWidth / Math.max(1, container.clientHeight);
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
     };
 
     window.addEventListener('keydown', onKeyDown);
@@ -564,791 +1059,1038 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     window.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('touchstart', onTouchStart, { passive: true });
-    window.addEventListener('touchmove', onTouchMove, { passive: true });
-    window.addEventListener('touchend', onTouchEnd, { passive: true });
-    window.addEventListener('touchcancel', onTouchEnd, { passive: true });
-    window.addEventListener('blur', clearAllInputsOnBlur);
+    window.addEventListener('wheel', onWheel, { passive: true });
+    window.addEventListener('contextmenu', onContextMenu);
+    window.addEventListener('resize', onResize);
 
-    // 10. ResizeObserver for 16:9 / Responsive Viewport
-    const onResize = () => {
-      if (!container) return;
-      const w = container.clientWidth || window.innerWidth;
-      const h = container.clientHeight || window.innerHeight;
-      camera.aspect = w / Math.max(1, h);
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    };
-    const resizeObserver = new ResizeObserver(onResize);
-    resizeObserver.observe(container);
-
-    // 11. Main Animation & Fixed-Timestep Simulation Loop
+    // 9. Main 60fps Game Loop
     let rafId = 0;
     let lastTime = performance.now();
-    let elapsedSec = 0;
-    let roundFinishedNotified = false;
-    let hitMarkerFadeTimer = 0;
-
-    const currentCamPos = new THREE.Vector3(-9.6, 3.3, 0.45);
-    const currentLookAt = new THREE.Vector3(2.5, 1.65, 0.2);
-    const desiredCamPos = new THREE.Vector3();
-    const desiredLookAt = new THREE.Vector3();
-    const lockWorldPos = new THREE.Vector3();
-
-    const processCombatEvents = (events: CombatEvent[]) => {
-      const sim = simRef.current;
-      for (const evt of events) {
-        latestPropsRef.current.onCombatEvent(evt);
-        const attacker = evt.attackerId === 'p2' ? sim.p2 : sim.p1;
-        const isVolt = attacker.characterId === 'volt';
-        const primaryBladeColor = isVolt ? 0x38bdf8 : 0xa855f7;
-        const heavyBladeColor = isVolt ? 0xf59e0b : 0xf43f5e;
-        const fAngle = evt.facingAngle ?? attacker.facingAngle;
-
-        switch (evt.type) {
-          case 'attack_swing': {
-            soundEngine.play('swing_light');
-            const kind = evt.attackKind || 'light_1';
-            if (kind === 'light_1') {
-              spawnSlashArc(attacker.x, attacker.y + 1.18, attacker.z, fAngle, primaryBladeColor, -0.16, 1, 1.05, 0.21);
-              spawnBurst(evt.x, evt.y, evt.z, primaryBladeColor, 6, 4.5, 0.85);
-            } else if (kind === 'light_2') {
-              spawnSlashArc(attacker.x, attacker.y + 1.22, attacker.z, fAngle, primaryBladeColor, 0.22, -1, 1.15, 0.22);
-              spawnBurst(evt.x, evt.y, evt.z, primaryBladeColor, 8, 5.2, 0.9);
-            } else if (kind === 'light_3') {
-              spawnSlashArc(attacker.x, attacker.y + 1.25, attacker.z, fAngle, primaryBladeColor, -0.52, 1, 1.32, 0.26);
-              spawnSlashArc(attacker.x, attacker.y + 1.25, attacker.z, fAngle, heavyBladeColor, 0.52, -1, 1.28, 0.26);
-              spawnBurst(evt.x, evt.y, evt.z, heavyBladeColor, 14, 7.2, 1.1);
-            } else if (kind === 'heavy') {
-              spawnSlashArc(attacker.x, attacker.y + 1.35, attacker.z, fAngle, heavyBladeColor, Math.PI * 0.44, 1, 1.48, 0.28);
-              spawnShockwave(evt.x, getArenaSurfaceHeight(sim.arenaId, evt.x, evt.z), evt.z, heavyBladeColor, 3.8, 0.32);
-              spawnBurst(evt.x, evt.y, evt.z, heavyBladeColor, 16, 8.0, 1.15);
-            } else if (kind === 'execution') {
-              spawnSlashArc(attacker.x, attacker.y + 1.3, attacker.z, fAngle, 0xff3300, -0.62, 1, 1.68, 0.32);
-              spawnSlashArc(attacker.x, attacker.y + 1.3, attacker.z, fAngle, primaryBladeColor, 0.62, -1, 1.68, 0.32);
-            }
-            break;
-          }
-          case 'dodge_dash':
-            soundEngine.play('swing_light');
-            spawnShockwave(evt.x, getArenaSurfaceHeight(sim.arenaId, evt.x, evt.z), evt.z, primaryBladeColor, 2.8, 0.26);
-            spawnBurst(evt.x, evt.y, evt.z, primaryBladeColor, 12, 6.2, 0.95);
-            break;
-          case 'hit_light':
-            soundEngine.play('hit_light');
-            spawnBurst(evt.x, evt.y, evt.z, 0xf59e0b, 18, 8.0, 1.05);
-            spawnShockwave(evt.x, evt.y, evt.z, primaryBladeColor, 2.4, 0.22);
-            hitMarkerFadeTimer = 0.18;
-            break;
-          case 'hit_heavy':
-            soundEngine.play('hit_heavy');
-            spawnBurst(evt.x, evt.y, evt.z, 0xf43f5e, 34, 11.0, 1.3);
-            spawnShockwave(evt.x, getArenaSurfaceHeight(sim.arenaId, evt.x, evt.z), evt.z, 0xf59e0b, 5.4, 0.42);
-            hitMarkerFadeTimer = 0.26;
-            break;
-          case 'execution_hit':
-            soundEngine.play('hit_heavy');
-            soundEngine.play('guard_break');
-            spawnBurst(evt.x, evt.y, evt.z, 0xff3300, 48, 13.0, 1.5);
-            spawnBurst(evt.x, evt.y + 0.4, evt.z, 0x38bdf8, 28, 11.0, 1.3);
-            spawnShockwave(evt.x, getArenaSurfaceHeight(sim.arenaId, evt.x, evt.z), evt.z, 0xef4444, 8.2, 0.55);
-            hitMarkerFadeTimer = 0.35;
-            break;
-          case 'hit_ability':
-            soundEngine.play('hit_heavy');
-            spawnBurst(evt.x, evt.y, evt.z, 0x38bdf8, 34, 11.0, 1.2);
-            spawnShockwave(evt.x, getArenaSurfaceHeight(sim.arenaId, evt.x, evt.z), evt.z, 0x38bdf8, 6.8, 0.48);
-            hitMarkerFadeTimer = 0.26;
-            break;
-          case 'blocked':
-            soundEngine.play('block');
-            spawnBurst(evt.x, evt.y, evt.z, 0x93c5fd, 14, 6.0);
-            spawnShockwave(evt.x, evt.y, evt.z, 0x93c5fd, 2.2, 0.2);
-            break;
-          case 'parried':
-            soundEngine.play('parry');
-            spawnBurst(evt.x, evt.y, evt.z, 0x38bdf8, 36, 11.5, 1.3);
-            spawnShockwave(evt.x, evt.y - 0.8, evt.z, 0x38bdf8, 6.2, 0.45);
-            break;
-          case 'counter_riposte':
-            soundEngine.play('parry');
-            soundEngine.play('swing_light');
-            spawnSlashArc(attacker.x, attacker.y + 1.22, attacker.z, fAngle, 0xfbbf24, -0.25, 1, 1.4, 0.26);
-            spawnBurst(evt.x, evt.y, evt.z, 0xfbbf24, 24, 9.5, 1.2);
-            spawnShockwave(evt.x, getArenaSurfaceHeight(sim.arenaId, evt.x, evt.z), evt.z, 0xfbbf24, 4.4, 0.34);
-            break;
-          case 'combo_breaker':
-            soundEngine.play('parry');
-            spawnBurst(evt.x, evt.y, evt.z, 0x38bdf8, 28, 10.0, 1.25);
-            spawnShockwave(evt.x, getArenaSurfaceHeight(sim.arenaId, evt.x, evt.z), evt.z, 0x38bdf8, 5.2, 0.38);
-            break;
-          case 'guard_break':
-            soundEngine.play('guard_break');
-            spawnBurst(evt.x, evt.y, evt.z, 0xef4444, 34, 10.5, 1.25);
-            spawnShockwave(evt.x, getArenaSurfaceHeight(sim.arenaId, evt.x, evt.z), evt.z, 0xef4444, 5.8, 0.48);
-            break;
-          case 'ability_cast':
-            soundEngine.play(
-              evt.attackerId === 'p1' && latestPropsRef.current.p1Char === 'volt'
-                ? 'ability_volt'
-                : 'ability_rift'
-            );
-            spawnSlashArc(attacker.x, attacker.y + 1.25, attacker.z, fAngle, primaryBladeColor, 0, 1, 1.55, 0.28);
-            spawnShockwave(evt.x, getArenaSurfaceHeight(sim.arenaId, evt.x, evt.z), evt.z, primaryBladeColor, 5.8, 0.42);
-            spawnBurst(evt.x, evt.y + 1.0, evt.z, primaryBladeColor, 22, 9.0, 1.2);
-            break;
-          case 'prop_hit':
-            soundEngine.play('block');
-            spawnBurst(evt.x, evt.y, evt.z, evt.propKind === 'barrel' ? 0x38bdf8 : 0xd97706, 10, 5.5);
-            break;
-          case 'prop_shatter':
-            soundEngine.play('guard_break');
-            spawnBurst(
-              evt.x,
-              evt.y,
-              evt.z,
-              evt.propKind === 'barrel' ? 0x38bdf8 : 0xb45309,
-              32,
-              9.5,
-              1.4
-            );
-            spawnBurst(evt.x, evt.y + 0.2, evt.z, 0xf59e0b, 18, 8.0, 1.1);
-            spawnShockwave(evt.x, 0.08, evt.z, evt.propKind === 'barrel' ? 0x38bdf8 : 0xd97706, 3.8, 0.35);
-            break;
-          case 'barrel_explode':
-            soundEngine.play('hit_heavy');
-            spawnBurst(evt.x, evt.y + 0.3, evt.z, 0xff5500, 46, 13.5, 1.6);
-            spawnBurst(evt.x, evt.y + 0.5, evt.z, 0x38bdf8, 28, 11.5, 1.3);
-            spawnShockwave(evt.x, 0.1, evt.z, 0xff4400, 6.8, 0.52);
-            break;
-          case 'tile_crack':
-            spawnBurst(evt.x, 0.15, evt.z, 0xff6600, 10, 5.0, 0.9);
-            break;
-          case 'tile_shatter':
-            soundEngine.play('hit_heavy');
-            spawnBurst(evt.x, 0.2, evt.z, 0xff4400, 22, 8.5, 1.3);
-            spawnShockwave(evt.x, 0.06, evt.z, 0xff4400, 3.4, 0.36);
-            break;
-          case 'decoy_shatter':
-            soundEngine.play('block');
-            spawnBurst(evt.x, evt.y, evt.z, 0x38bdf8, 22, 8.0);
-            break;
-          case 'ko':
-            soundEngine.play('ko_slowmo');
-            break;
-        }
-      }
-    };
-
-    const buildLocalPlayerInput = (
-      camForwardX: number,
-      camForwardZ: number,
-      camRightX: number,
-      camRightZ: number
-    ): FighterInput => {
-      const kb = latestPropsRef.current.settings.keybindings;
-      const touch = touchInputRef.current;
-
-      let localRight = 0;
-      let localForward = 0;
-
-      if (keysDown.has('KeyD') || keysDown.has('ArrowRight')) localRight += 1;
-      if (keysDown.has('KeyA') || keysDown.has('ArrowLeft')) localRight -= 1;
-      if (keysDown.has('KeyW') || keysDown.has('ArrowUp')) localForward += 1;
-      if (keysDown.has('KeyS') || keysDown.has('ArrowDown')) localForward -= 1;
-
-      if (Math.hypot(touch.moveX, touch.moveZ) > 0.05) {
-        localRight = touch.moveX;
-        localForward = -touch.moveZ;
-      }
-
-      // Pure horizontal camera-yaw relative XZ movement (prevents any lock-on movement lock or feedback glitch)
-      let worldX = camRightX * localRight + camForwardX * localForward;
-      let worldZ = camRightZ * localRight + camForwardZ * localForward;
-      const mag = Math.hypot(worldX, worldZ);
-      if (mag > 1) {
-        worldX /= mag;
-        worldZ /= mag;
-      }
-
-      const sprintHeld =
-        keysDown.has(kb.sprint) || keysDown.has('ShiftRight') || touch.sprint;
-      const guardHeld = keysDown.has(kb.guard) || mouseGuardHeld || touch.guardHeld;
-
-      if (touch.shoulderTogglePressed) {
-        shoulderSide = shoulderSide === 1 ? -1 : 1;
-        touch.shoulderTogglePressed = false;
-      }
-
-      const input: FighterInput = {
-        moveX: worldX,
-        moveZ: worldZ,
-        sprint: sprintHeld,
-        jumpPressed: oneShotInput.jump || Boolean(touch.jumpPressed),
-        lightPressed: oneShotInput.light || touch.lightPressed,
-        heavyPressed: oneShotInput.heavy || touch.heavyPressed,
-        guardHeld,
-        guardJustPressed: oneShotInput.guardJustPressed || touch.guardJustPressed,
-        dodgePressed: oneShotInput.dodge || touch.dodgePressed,
-        abilityPressed: oneShotInput.ability || touch.abilityPressed,
-        executionPressed: oneShotInput.execution,
-      };
-
-      // Reset one-shot triggers
-      oneShotInput.jump = false;
-      oneShotInput.light = false;
-      oneShotInput.heavy = false;
-      oneShotInput.guardJustPressed = false;
-      oneShotInput.dodge = false;
-      oneShotInput.ability = false;
-      oneShotInput.execution = false;
-      touch.jumpPressed = false;
-      touch.lightPressed = false;
-      touch.heavyPressed = false;
-      touch.guardJustPressed = false;
-      touch.dodgePressed = false;
-      touch.abilityPressed = false;
-
-      return input;
-    };
-
-    const updateHudDomDirectly = (sim: SimulationState) => {
-      const refs = hudRefs;
-      const p1Pct = Math.max(0, Math.min(100, (sim.p1.hp / sim.p1.maxHp) * 100));
-      const p1GhostPct = Math.max(0, Math.min(100, (sim.p1.ghostHp / sim.p1.maxHp) * 100));
-      const p1StamPct = Math.max(0, Math.min(100, (sim.p1.stamina / sim.p1.maxStamina) * 100));
-
-      const p2Pct = Math.max(0, Math.min(100, (sim.p2.hp / sim.p2.maxHp) * 100));
-      const p2GhostPct = Math.max(0, Math.min(100, (sim.p2.ghostHp / sim.p2.maxHp) * 100));
-      const p2StamPct = Math.max(0, Math.min(100, (sim.p2.stamina / sim.p2.maxStamina) * 100));
-
-      if (refs.p1HpFill.current) refs.p1HpFill.current.style.width = `${p1Pct}%`;
-      if (refs.p1HpGhost.current) refs.p1HpGhost.current.style.width = `${p1GhostPct}%`;
-      if (refs.p1HpText.current) {
-        refs.p1HpText.current.textContent = `${Math.ceil(sim.p1.hp)}`;
-      }
-      if (refs.p1StaminaFill.current) refs.p1StaminaFill.current.style.width = `${p1StamPct}%`;
-      if (refs.p1StaminaText.current) {
-        refs.p1StaminaText.current.textContent = `${Math.floor(sim.p1.stamina)}`;
-      }
-      if (refs.p1StateBadge.current) {
-        const label =
-          sim.p1.action === 'attack_active' && sim.p1.currentAttack === 'execution'
-            ? 'EXECUTING!'
-            : sim.p1.hyperArmorMs > 0
-              ? 'HYPER ARMOR!'
-              : sim.p1.counterWindowMs > 0
-                ? 'COUNTER READY!'
-                : sim.p1.action.replace('_', ' ').toUpperCase();
-        refs.p1StateBadge.current.textContent = label;
-      }
-
-      if (refs.p2HpFill.current) refs.p2HpFill.current.style.width = `${p2Pct}%`;
-      if (refs.p2HpGhost.current) refs.p2HpGhost.current.style.width = `${p2GhostPct}%`;
-      if (refs.p2HpText.current) {
-        refs.p2HpText.current.textContent = `${Math.ceil(sim.p2.hp)}`;
-      }
-      if (refs.p2StaminaFill.current) refs.p2StaminaFill.current.style.width = `${p2StamPct}%`;
-      if (refs.p2StaminaText.current) {
-        refs.p2StaminaText.current.textContent = `${Math.floor(sim.p2.stamina)}`;
-      }
-      if (refs.p2StateBadge.current) {
-        const isExecVulnerable =
-          sim.p2.action === 'guard_break' || sim.p2.action === 'parry_stun' || sim.p2.poise <= 5;
-        refs.p2StateBadge.current.textContent = isExecVulnerable
-          ? 'STAGGERED'
-          : sim.p2.action.replace('_', ' ').toUpperCase();
-      }
-
-      if (refs.timerText.current) {
-        if (latestPropsRef.current.gameMode === 'training') {
-          refs.timerText.current.textContent = '∞';
-        } else {
-          refs.timerText.current.textContent = `${Math.ceil(sim.roundTimerMs / 1000)}`;
-        }
-      }
-
-      if (refs.aiStateBadge.current) {
-        refs.aiStateBadge.current.textContent = sim.p2.aiCurrentOrder
-          .replace('_', ' ')
-          .toUpperCase();
-      }
-
-      // Ability cooldown bar & mobile button overlay
-      const p1Def = CHARACTER_REGISTRY[sim.p1.characterId];
-      const cdRatio = Math.max(
-        0,
-        Math.min(1, 1 - sim.p1.abilityCooldownMs / p1Def.ability.cooldownMs)
-      );
-      if (refs.p1AbilityFill.current) {
-        refs.p1AbilityFill.current.style.width = `${cdRatio * 100}%`;
-      }
-      if (refs.p1AbilityText.current) {
-        refs.p1AbilityText.current.textContent =
-          sim.p1.abilityCooldownMs <= 0
-            ? 'READY'
-            : `${(sim.p1.abilityCooldownMs / 1000).toFixed(1)}s`;
-      }
-      if (refs.mobileAbilityOverlay.current) {
-        refs.mobileAbilityOverlay.current.style.height = `${(1 - cdRatio) * 100}%`;
-      }
-      if (refs.mobileAbilityTimer.current) {
-        refs.mobileAbilityTimer.current.textContent =
-          sim.p1.abilityCooldownMs <= 0
-            ? ''
-            : `${(sim.p1.abilityCooldownMs / 1000).toFixed(1)}s`;
-      }
-
-      // Combo Boxes
-      if (refs.p1ComboBox.current) {
-        if (sim.p1.comboCount >= 2) {
-          refs.p1ComboBox.current.style.opacity = '1';
-          if (refs.p1ComboHits.current) {
-            refs.p1ComboHits.current.textContent = `${sim.p1.comboCount} HIT`;
-          }
-          if (refs.p1ComboDmg.current) {
-            refs.p1ComboDmg.current.textContent = `${sim.p1.comboDamage} DMG`;
-          }
-        } else {
-          refs.p1ComboBox.current.style.opacity = '0';
-        }
-      }
-
-      if (refs.p2ComboBox.current) {
-        if (sim.p2.comboCount >= 2) {
-          refs.p2ComboBox.current.style.opacity = '1';
-          if (refs.p2ComboHits.current) {
-            refs.p2ComboHits.current.textContent = `${sim.p2.comboCount} HIT`;
-          }
-          if (refs.p2ComboDmg.current) {
-            refs.p2ComboDmg.current.textContent = `${sim.p2.comboDamage} DMG`;
-          }
-        } else {
-          refs.p2ComboBox.current.style.opacity = '0';
-        }
-      }
-
-      // Project 3D Target Lock-on Reticle onto Opponent's Chest
-      if (refs.lockReticle.current) {
-        if (
-          latestPropsRef.current.screenState === 'combat' &&
-          latestPropsRef.current.lockedOn
-        ) {
-          lockWorldPos.set(sim.p2.x, sim.p2.y + 1.35, sim.p2.z);
-          lockWorldPos.project(camera);
-          if (lockWorldPos.z < 1) {
-            const xPx = (lockWorldPos.x * 0.5 + 0.5) * window.innerWidth;
-            const yPx = (-lockWorldPos.y * 0.5 + 0.5) * window.innerHeight;
-            refs.lockReticle.current.style.transform = `translate3d(${xPx}px, ${yPx}px, 0) translate(-50%, -50%)`;
-            refs.lockReticle.current.style.opacity = '0.92';
-          } else {
-            refs.lockReticle.current.style.opacity = '0';
-          }
-        } else {
-          refs.lockReticle.current.style.opacity = '0';
-        }
-      }
-
-      // Dynamic Over-The-Shoulder Crosshair & Hit Marker Feedback
-      if (refs.crosshairRef?.current) {
-        const isAiming = sim.p1.action === 'block' || sim.p1.action === 'parry_window';
-        const isSprinting = sim.p1.action === 'sprint';
-        const scale = isAiming ? 0.72 : isSprinting ? 1.25 : 1.0;
-        refs.crosshairRef.current.style.transform = `translate(-50%, -50%) scale(${scale})`;
-      }
-      if (refs.hitMarkerRef?.current) {
-        refs.hitMarkerRef.current.style.opacity = hitMarkerFadeTimer > 0 ? '1' : '0';
-      }
-    };
-
-    const camDir = new THREE.Vector3();
-    const camRight = new THREE.Vector3();
-    let rollingFrameMs = 16.6;
-    let currentDynamicDpr = Math.min(window.devicePixelRatio || 1, dprCap);
-    let dprCheckTimer = 0;
 
     const animate = (now: number) => {
       rafId = requestAnimationFrame(animate);
-      const frameDelta = Math.max(1, now - lastTime);
-      const rawDtMs = Math.min(50, frameDelta);
+      const rawDt = (now - lastTime) / 1000;
       lastTime = now;
-      const dtSec = rawDtMs / 1000;
-      elapsedSec += dtSec;
+      const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
+      const dtMs = dt * 1000;
 
-      // Auto-60FPS Dynamic Resolution Scaler (DRS) for lower-end mobile devices
-      if (!isHeadless && frameDelta < 120) {
-        rollingFrameMs = rollingFrameMs * 0.9 + frameDelta * 0.1;
-        dprCheckTimer += dtSec;
-        if (dprCheckTimer > 0.75) {
-          dprCheckTimer = 0;
-          const maxTargetDpr = Math.min(
-            window.devicePixelRatio || 1,
-            latestPropsRef.current.settings.graphicsQuality === 'high'
-              ? 1.75
-              : latestPropsRef.current.settings.graphicsQuality === 'medium'
-                ? 1.35
-                : 1.0
-          );
-          if (rollingFrameMs > 20.5 && currentDynamicDpr > 0.8) {
-            currentDynamicDpr = Math.max(0.8, +(currentDynamicDpr - 0.15).toFixed(2));
-            renderer.setPixelRatio(currentDynamicDpr);
-          } else if (rollingFrameMs < 14.5 && currentDynamicDpr < maxTargetDpr) {
-            currentDynamicDpr = Math.min(maxTargetDpr, +(currentDynamicDpr + 0.1).toFixed(2));
-            renderer.setPixelRatio(currentDynamicDpr);
-          }
-        }
-      }
-
-      if (hitMarkerFadeTimer > 0) {
-        hitMarkerFadeTimer = Math.max(0, hitMarkerFadeTimer - dtSec);
-      }
-
-      const props = latestPropsRef.current;
       const sim = simRef.current;
 
-      // Rebuild Arena if ArenaId changed
-      if (props.arenaId !== currentArenaId) {
-        scene.remove(arenaRig.group);
-        currentArenaId = props.arenaId;
-        arenaRig = buildArenaScene(currentArenaId, matLib);
-        scene.add(arenaRig.group);
-        scene.fog = new THREE.FogExp2(arenaRig.fogColor.getHex(), arenaRig.fogDensity);
-        scene.background = arenaRig.fogColor;
+      if (currentBuiltArenaId !== arenaIdRef.current) {
+        buildArenaGeometry(arenaIdRef.current);
+        propMeshes.forEach((m) => propsGroup.remove(m));
+        propMeshes.clear();
       }
 
-      // Rebuild P1 or P2 Fighter Rig if character selection changed
-      if (props.p1Char !== currentP1Char) {
-        scene.remove(p1Rig.root);
-        currentP1Char = props.p1Char;
-        p1Rig = buildFighterRig(currentP1Char, matLib, false);
-        scene.add(p1Rig.root);
-      }
-      if (props.p2Char !== currentP2Char) {
-        scene.remove(p2Rig.root);
-        currentP2Char = props.p2Char;
-        p2Rig = buildFighterRig(currentP2Char, matLib, false);
-        scene.add(p2Rig.root);
-      }
+      if (screenStateRef.current === 'combat' && !loadoutOverlayOpenRef.current) {
+        const kb = settingsRef.current.keybindings;
+        const touch = touchInputRef.current;
 
-      // Use stable horizontal camYaw basis for movement so lookAt tilt or screenShake never twists player movement
-      camDir.set(Math.sin(camYaw), 0, Math.cos(camYaw)).normalize();
-      camRight.set(-camDir.z, 0, camDir.x).normalize();
+        let moveX = touch.moveX;
+        let moveZ = touch.moveZ;
+        if (keysDown.has('KeyA') || keysDown.has('ArrowLeft')) moveX -= 1;
+        if (keysDown.has('KeyD') || keysDown.has('ArrowRight')) moveX += 1;
+        if (keysDown.has('KeyW') || keysDown.has('ArrowUp')) moveZ -= 1;
+        if (keysDown.has('KeyS') || keysDown.has('ArrowDown')) moveZ += 1;
+        moveX = Math.max(-1, Math.min(1, moveX));
+        moveZ = Math.max(-1, Math.min(1, moveZ));
 
-      // Advance Combat Simulation when in active combat
-      const isPortraitPaused = Boolean(touchInputRef.current.portraitOverlayActive);
+        const sprintHeld =
+          keysDown.has(kb.sprint) || keysDown.has('ShiftLeft') || touch.sprint;
 
-      if (props.screenState === 'combat' && !isPortraitPaused) {
-        if (!sim.roundOver) {
-          roundFinishedNotified = false;
-        }
-
-        const localInput = buildLocalPlayerInput(
-          camDir.x,
-          camDir.z,
-          camRight.x,
-          camRight.z
+        const sensMult = settingsRef.current.touchSensitivity ?? 1.0;
+        const fireSensMult = settingsRef.current.fireSensitivity ?? 0.45;
+        const activeSpec = WEAPON_REGISTRY[sim.player.activeWeapon];
+        const adsSensFactor = getScopeSensitivityMultiplier(
+          sim.player.activeWeapon,
+          sim.player.adsBlend
         );
 
-        if (props.gameMode === 'multiplayer') {
-          if (multiplayerClient.localRole === 'host') {
-            const guestIn = multiplayerClient.latestGuestInput || emptyInput();
-            stepSimulation(sim, localInput, guestIn, rawDtMs, false);
-            multiplayerClient.clearGuestOneShots();
-            multiplayerClient.sendHostSnapshot(sim);
-          } else {
-            multiplayerClient.sendGuestInput(localInput);
-            stepSimulation(sim, emptyInput(), localInput, rawDtMs, false);
+        // Separate Camera Free-Look Sensitivity vs Fire-Button Joystick Aim Sensitivity
+        // Both scale down smoothly when scoped in based on optic magnification (adsSensFactor)
+        const mouseSens = 0.0026 * sensMult * adsSensFactor;
+        const touchSens = 0.0056 * sensMult * adsSensFactor;
+        const fireSens = 0.0024 * fireSensMult * adsSensFactor;
+
+        const lookYawDelta =
+          mouseLookDeltaX * mouseSens +
+          (touch.cameraDeltaX || 0) * touchSens +
+          (touch.attackDragX || 0) * fireSens;
+        const lookPitchDelta =
+          mouseLookDeltaY * mouseSens +
+          (touch.cameraDeltaY || 0) * touchSens +
+          (touch.attackDragY || 0) * fireSens;
+
+        mouseLookDeltaX = 0;
+        mouseLookDeltaY = 0;
+        touch.attackDragX = 0;
+        touch.attackDragY = 0;
+        touch.cameraDeltaX = 0;
+        touch.cameraDeltaY = 0;
+
+        // Accumulate smooth weapon rotational sway & axial wrist roll inertia
+        const weightFactor =
+          sim.player.activeWeapon === 'awp' || sim.player.activeWeapon === 'spas12'
+            ? 1.25
+            : sim.player.activeWeapon === 'mp5' || sim.player.activeWeapon === 'deagle'
+            ? 0.82
+            : 1.0;
+        swayYaw = THREE.MathUtils.clamp(
+          swayYaw + lookYawDelta * 0.48 * weightFactor,
+          -0.15,
+          0.15
+        );
+        swayPitch = THREE.MathUtils.clamp(
+          swayPitch + lookPitchDelta * 0.48 * weightFactor,
+          -0.13,
+          0.13
+        );
+        swayRoll = THREE.MathUtils.clamp(
+          swayRoll - lookYawDelta * 0.62 * weightFactor,
+          -0.18,
+          0.18
+        );
+
+        const fireJustPressed = mouseFireJustPressed || touch.lightPressed;
+        const fireHeld = mouseFireHeld || touch.lightHeld;
+        const adsHeld =
+          mouseAdsHeld || keysDown.has(kb.ads) || Boolean(touch.aimHeld);
+        const jumpPressed = jumpQueued || touch.jumpPressed;
+        const reloadPressed = reloadQueued || touch.heavyPressed;
+        const crouchToggled = crouchToggleQueued || touch.dodgePressed;
+        const slidePressed = slideQueued || Boolean(touch.slidePressed);
+
+        if (touch.selectedWeapon) {
+          queuedWeaponSelect = touch.selectedWeapon;
+          touch.selectedWeapon = undefined;
+        }
+
+        mouseFireJustPressed = false;
+        jumpQueued = false;
+        reloadQueued = false;
+        crouchToggleQueued = false;
+        slideQueued = false;
+        touch.lightPressed = false;
+        touch.jumpPressed = false;
+        touch.heavyPressed = false;
+        touch.dodgePressed = false;
+        touch.slidePressed = false;
+
+        const inputSnap: PlayerInputSnapshot = {
+          moveX,
+          moveZ,
+          lookDeltaYaw: lookYawDelta,
+          lookDeltaPitch: lookPitchDelta,
+          sprintHeld,
+          jumpPressed,
+          crouchToggled,
+          slidePressed,
+          fireHeld,
+          fireJustPressed,
+          adsHeld,
+          reloadPressed,
+          selectWeapon: queuedWeaponSelect,
+          cycleWeaponDelta: queuedWeaponCycle,
+        };
+        queuedWeaponSelect = null;
+        queuedWeaponCycle = 0;
+
+        const prevRoundOver = sim.roundOver;
+        const events = stepSimulation(
+          sim,
+          dt,
+          inputSnap,
+          botDifficultyRef.current,
+          gameModeRef.current === 'training',
+          trainingConfigRef.current
+        );
+
+        for (const evt of events) {
+          if (evt.type === 'shot_fired') {
+            const wSpec = WEAPON_REGISTRY[evt.weaponId || sim.player.activeWeapon];
+            soundEngine.play(wSpec ? wSpec.soundId : 'shot_m4a1');
+            spawnShellCasing();
+          } else if (evt.type === 'headshot') {
+            soundEngine.play('headshot');
+            hitMarkerTimerMs = 190;
+            onCombatEventRef.current(evt);
+          } else if (evt.type === 'hit_body') {
+            soundEngine.play('hit_marker');
+            hitMarkerTimerMs = 130;
+          } else if (evt.type === 'enemy_killed') {
+            soundEngine.play('ko');
+            onCombatEventRef.current(evt);
+          } else if (evt.type === 'wave_clear' || evt.type === 'player_respawn') {
+            soundEngine.play('ui_confirm');
+            onCombatEventRef.current(evt);
+          } else if (evt.type === 'footstep') {
+            soundEngine.playFootstep(
+              evt.surface || sim.player.currentSurface,
+              evt.stepIntensity || 'walk',
+              sim.player.footstepCount
+            );
+          } else if (evt.type === 'slide_start') {
+            soundEngine.play('ui_click');
+          } else if (evt.type === 'barrel_explode') {
+            soundEngine.play('ko');
+            if (evt.x !== undefined && evt.z !== undefined) {
+              spawnImpactBurst(evt.x, 1.0, evt.z, 0, 1, 0, 0xf97316, 22, 1.8, 2.2);
+              spawnImpactBurst(evt.x, 1.0, evt.z, 0, 1, 0, 0xfef08a, 14, 1.4, 1.8);
+            }
+            onCombatEventRef.current(evt);
+          } else if (evt.type === 'reload_start') {
+            soundEngine.play('reload_start');
+          } else if (evt.type === 'reload_done') {
+            soundEngine.play('reload_done');
+          } else if (evt.type === 'player_hurt') {
+            soundEngine.play('hit_heavy');
           }
-        } else if (props.gameMode === 'training') {
-          const botIn = computeBotInput(
-            sim,
-            sim.p2,
-            sim.p1,
-            props.trainingConfig.botDifficulty,
-            rawDtMs,
-            props.trainingConfig
-          );
-          stepSimulation(sim, localInput, botIn, rawDtMs, true, props.trainingConfig);
+        }
+
+        if (!prevRoundOver && sim.roundOver && sim.roundWinner) {
+          onRoundFinishedRef.current(sim.roundWinner);
+        }
+
+        // Spawn 3D surface impact VFX for any newly created bullet traces
+        for (const tr of sim.traces) {
+          if (tr.id > highestProcessedTraceId) {
+            highestProcessedTraceId = tr.id;
+            spawnTraceImpactVFX(
+              tr.fromX,
+              tr.fromY,
+              tr.fromZ,
+              tr.toX,
+              tr.toY,
+              tr.toZ,
+              tr.hitNormalX,
+              tr.hitNormalY,
+              tr.hitNormalZ,
+              tr.hitKind,
+              tr.weaponId,
+              tr.isEnemyShot
+            );
+          }
+        }
+
+        // Update Camera Position, FOV Zoom (ADS + Slide Surge), Jump/Landing Weight & Trauma Shake
+        const p = sim.player;
+        if (wasGrounded && !p.isGrounded && p.vy > 1.0) {
+          // Jump takeoff push-off dip
+          jumpImpulseY = -0.032;
+          landRollImpulse = 0.035;
+        } else if (!wasGrounded && p.isGrounded) {
+          // Heavy two-stage shock-absorber landing dip & wrist roll bounce
+          landDipY = -0.068;
+          landRollImpulse = -0.055;
+        }
+        wasGrounded = p.isGrounded;
+        landDipY *= Math.exp(-13 * dt);
+        jumpImpulseY *= Math.exp(-15 * dt);
+        landRollImpulse *= Math.exp(-11 * dt);
+
+        const targetAirLift = !p.isGrounded
+          ? THREE.MathUtils.clamp(p.vy * 0.0042, -0.026, 0.026)
+          : 0;
+        const targetAirPitch = !p.isGrounded
+          ? THREE.MathUtils.clamp(-p.vy * 0.016, -0.11, 0.11)
+          : 0;
+        airborneLift += (targetAirLift - airborneLift) * Math.min(1, dt * 12);
+        airbornePitch += (targetAirPitch - airbornePitch) * Math.min(1, dt * 12);
+
+        const baseFov = p.isSliding ? 84 : 78;
+        const targetFov = THREE.MathUtils.lerp(baseFov, activeSpec.adsFov, p.adsBlend);
+        if (Math.abs(camera.fov - targetFov) > 0.05) {
+          camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 18);
+          camera.updateProjectionMatrix();
+        }
+
+        const moveSpeed = Math.hypot(p.vx, p.vz);
+        const targetMoveBob =
+          p.isGrounded && !p.isSliding ? Math.min(1, moveSpeed / 5.2) : 0;
+        moveBobBlend += (targetMoveBob - moveBobBlend) * Math.min(1, dt * 11);
+
+        inspectBreathPhase += dt * (p.isSprinting ? 4.2 : 1.85);
+        const idleBreathX =
+          Math.cos(inspectBreathPhase * 0.9) * 0.0028 * (1 - p.adsBlend * 0.85);
+        const idleBreathY =
+          (Math.sin(inspectBreathPhase * 1.6) * 0.0042 +
+            Math.sin(inspectBreathPhase * 3.2) * 0.0009) *
+          (1 - p.adsBlend * 0.85);
+
+        const bobX =
+          Math.cos(p.walkBobPhase * 0.5) *
+            0.032 *
+            moveBobBlend *
+            (1 - p.adsBlend * 0.75) +
+          idleBreathX * (1 - moveBobBlend);
+        const bobY =
+          Math.sin(p.walkBobPhase) *
+            0.042 *
+            moveBobBlend *
+            (1 - p.adsBlend * 0.75) +
+          idleBreathY * (1 - moveBobBlend);
+
+        // Reload camera micro-nods synchronized with mag drop, mag slam & bolt rack
+        let reloadCamPitch = 0;
+        let reloadCamRoll = 0;
+        if (p.isReloading) {
+          const rTotal = WEAPON_REGISTRY[p.activeWeapon].reloadTimeMs;
+          const rProg = 1 - p.reloadTimerMs / Math.max(1, rTotal);
+          if (rProg < 0.34) {
+            const s = Math.sin((rProg / 0.34) * Math.PI);
+            reloadCamPitch = -0.018 * s;
+            reloadCamRoll = 0.015 * s;
+          } else if (rProg < 0.72) {
+            const t = (rProg - 0.34) / 0.38;
+            if (t > 0.72) {
+              const slam = Math.sin(((t - 0.72) / 0.28) * Math.PI);
+              reloadCamPitch = 0.026 * slam;
+              reloadCamRoll = -0.018 * slam;
+            }
+          } else {
+            const t = (rProg - 0.72) / 0.28;
+            const rack = Math.sin(t * Math.PI);
+            reloadCamPitch = -0.016 * rack;
+            reloadCamRoll = -0.022 * rack;
+          }
+        }
+
+        const shakeMag = sim.cameraShakeTrauma * sim.cameraShakeTrauma * 0.12;
+        const shakeYaw = (Math.random() - 0.5) * shakeMag;
+        const shakePitch = (Math.random() - 0.5) * shakeMag;
+
+        // Apply bobX along camera's local right axis and clamp camera outside all walls
+        const camRightX = Math.cos(p.yaw);
+        const camRightZ = -Math.sin(p.yaw);
+        const arenaDefNow =
+          ARENA_REGISTRY[sim.arenaId] || ARENA_REGISTRY.foundry_arena;
+        const safeCamXZ = resolveEntityCollisions(
+          p.x + camRightX * bobX,
+          p.z + camRightZ * bobX,
+          PLAYER_COLLISION_RADIUS,
+          arenaDefNow,
+          sim.breakableProps
+        );
+
+        camera.position.set(
+          safeCamXZ.x,
+          p.y + p.eyeHeight + bobY + landDipY + jumpImpulseY,
+          safeCamXZ.z
+        );
+        camera.rotation.y = p.yaw + p.recoilKickYaw + shakeYaw;
+        camera.rotation.x = THREE.MathUtils.clamp(
+          p.pitch + p.recoilKickPitch + shakePitch + reloadCamPitch,
+          -1.42,
+          1.42
+        );
+
+        // Decay weapon sway, axial roll inertia & strafe/slide banking
+        swayYaw *= Math.exp(-10 * dt);
+        swayPitch *= Math.exp(-10 * dt);
+        swayRoll *= Math.exp(-12 * dt);
+        const slideRollTarget = p.isSliding ? 0.14 : 0;
+        const targetStrafeRoll =
+          moveX * 0.055 * (1 - p.adsBlend * 0.65) + slideRollTarget;
+        strafeRoll += (targetStrafeRoll - strafeRoll) * Math.min(1, dt * 12);
+        camera.rotation.z =
+          -strafeRoll * 0.45 + reloadCamRoll + landRollImpulse * 0.4;
+
+        // Update First-Person Weapon Viewmodel Kinematics & Smooth Two-Stage Swap + Reload Animations
+        const swapTotalMs = p.weaponSwitchDurationMs || 340;
+        const swapHalfMs = swapTotalMs * 0.5;
+        const isFirstHalfSwap =
+          p.weaponSwitchTimerMs > swapHalfMs &&
+          p.previousWeapon &&
+          p.previousWeapon !== p.activeWeapon;
+        const displayedWeaponId: WeaponId = isFirstHalfSwap
+          ? (p.previousWeapon as WeaponId)
+          : p.activeWeapon;
+
+        for (const wid of WEAPON_ORDER) {
+          const vm = weaponModels[wid];
+          const isDisplayed = wid === displayedWeaponId;
+          // Hide viewmodel when deeply scoped so circular optical reticle overlay has unobstructed view
+          vm.root.visible = isDisplayed && p.adsBlend < 0.72;
+
+          if (isDisplayed) {
+            const hipX = 0.23;
+            const hipY = -0.21;
+            const hipZ = -0.42;
+            const adsX = 0.0;
+            const adsY = wid === 'ak47' ? -0.115 : -0.122;
+            const adsZ = -0.31;
+
+            // Smooth Two-Stage Weapon Swap Kinematics (1: Holster Outgoing -> 2: Draw Incoming)
+            let switchOffsetX = 0;
+            let switchDrop = 0;
+            let switchOffsetZ = 0;
+            let switchRotX = 0;
+            let switchRotY = 0;
+            let switchRotZ = 0;
+
+            if (p.weaponSwitchTimerMs > 0) {
+              if (isFirstHalfSwap) {
+                // Stage 1: Lower & tilt outgoing weapon smoothly down-left
+                const t = 1 - (p.weaponSwitchTimerMs - swapHalfMs) / swapHalfMs;
+                const ease = t * t * (3 - 2 * t);
+                switchOffsetX = -0.09 * ease;
+                switchDrop = -0.29 * ease;
+                switchOffsetZ = 0.08 * ease;
+                switchRotX = -0.62 * ease;
+                switchRotY = 0.34 * ease;
+                switchRotZ = 0.42 * ease;
+              } else {
+                // Stage 2: Draw incoming weapon up from right hip with damped spring arc
+                const t = p.weaponSwitchTimerMs / swapHalfMs;
+                const ease = t * t;
+                const flourish = Math.sin((1 - t) * Math.PI);
+                switchOffsetX = 0.08 * ease;
+                switchDrop = -0.28 * ease + 0.018 * flourish;
+                switchOffsetZ = 0.09 * ease;
+                switchRotX = -0.58 * ease + 0.08 * flourish;
+                switchRotY = -0.28 * ease;
+                switchRotZ = -0.46 * ease + 0.12 * flourish;
+              }
+            }
+
+            // Multi-Phase Realistic Reload Animation (1: Tilt & Drop Mag -> 2: Slam New Mag -> 3: Rack Bolt)
+            let reloadOffsetX = 0;
+            let reloadOffsetY = 0;
+            let reloadRotX = 0;
+            let reloadRotY = 0;
+            let reloadRotZ = 0;
+            let reloadBoltPull = 0;
+
+            if (p.isReloading) {
+              const reloadTotal = WEAPON_REGISTRY[wid].reloadTimeMs;
+              const progress = 1 - p.reloadTimerMs / Math.max(1, reloadTotal);
+
+              if (progress < 0.34) {
+                // Phase 1: Tilt rifle & drop spent magazine out of magwell
+                const t = progress / 0.34;
+                const ease = Math.sin(t * (Math.PI * 0.5));
+                reloadOffsetX = -0.05 * ease;
+                reloadOffsetY = -0.06 * ease;
+                reloadRotX = 0.28 * ease;
+                reloadRotY = 0.22 * ease;
+                reloadRotZ = 0.48 * ease;
+                vm.magazine.position.set(
+                  vm.magBasePos.x - 0.02 * ease,
+                  vm.magBasePos.y - 0.24 * t * t,
+                  vm.magBasePos.z + 0.03 * ease
+                );
+              } else if (progress < 0.72) {
+                // Phase 2: Insert fresh magazine & slam upward into receiver
+                const t = (progress - 0.34) / 0.38;
+                const slamImpulse = t > 0.75 ? Math.sin(((t - 0.75) / 0.25) * Math.PI) * 0.035 : 0;
+                reloadOffsetX = -0.05;
+                reloadOffsetY = -0.06 + slamImpulse;
+                reloadRotX = 0.28 - slamImpulse * 2.2;
+                reloadRotY = 0.22;
+                reloadRotZ = 0.48;
+                const magLift = (1 - Math.min(1, t / 0.78)) * -0.24;
+                vm.magazine.position.set(
+                  vm.magBasePos.x,
+                  vm.magBasePos.y + magLift,
+                  vm.magBasePos.z
+                );
+              } else {
+                // Phase 3: Rack bolt carrier / charging handle and settle back to shoulder
+                const t = (progress - 0.72) / 0.28;
+                const returnEase = 1 - t;
+                const rackWave = Math.sin(t * Math.PI);
+                reloadOffsetX = -0.05 * returnEase;
+                reloadOffsetY = -0.06 * returnEase - 0.02 * rackWave;
+                reloadRotX = 0.28 * returnEase + 0.14 * rackWave;
+                reloadRotY = 0.22 * returnEase - 0.12 * rackWave;
+                reloadRotZ = 0.48 * returnEase - 0.18 * rackWave;
+                reloadBoltPull = rackWave * 0.065;
+                vm.magazine.position.copy(vm.magBasePos);
+              }
+            } else {
+              vm.magazine.position.copy(vm.magBasePos);
+            }
+
+            // Smooth Interpolated Tactical Sprint & Slide Canted Poses (eliminates instant snap/teleport)
+            const isSprintingPose =
+              p.isSprinting &&
+              moveSpeed > 5.2 &&
+              !p.isAds &&
+              !p.isSliding &&
+              p.fireCooldownMs <= 0 &&
+              !p.isReloading &&
+              p.weaponSwitchTimerMs <= 0;
+            const targetSprint = isSprintingPose ? 1 : 0;
+            const targetSlide = p.isSliding && !p.isAds ? 1 : 0;
+            // Smooth exponential damping into and out of running & sliding stances
+            sprintBlend += (targetSprint - sprintBlend) * Math.min(1, dt * 10.5);
+            slideBlend += (targetSlide - slideBlend) * Math.min(1, dt * 12.0);
+
+            const sprintEase = sprintBlend * sprintBlend * (3 - 2 * sprintBlend);
+            const slideEase = slideBlend * slideBlend * (3 - 2 * slideBlend);
+
+            // Subtle rhythmic chest-carry stride oscillation while running
+            const sprintSwingX = Math.cos(p.walkBobPhase * 0.5) * 0.022 * sprintEase;
+            const sprintSwingY = Math.abs(Math.sin(p.walkBobPhase * 0.5)) * -0.018 * sprintEase;
+            const sprintSwingRotY = Math.cos(p.walkBobPhase * 0.5) * 0.055 * sprintEase;
+            const sprintSwingRotZ = Math.sin(p.walkBobPhase * 0.5) * 0.04 * sprintEase;
+
+            // Universal 3D Weapon Wall-Obstruction & Physical Wall-Brace Kinematics
+            const liveWallObs = computeWeaponWallObstruction(
+              p,
+              arenaDefNow,
+              sim.breakableProps
+            ).obstruction;
+            const prevWallBlend = wallObstructionBlend;
+            wallObstructionBlend +=
+              (liveWallObs - wallObstructionBlend) * Math.min(1, dt * 16.0);
+            if (prevWallBlend < 0.08 && wallObstructionBlend >= 0.08) {
+              // Tactile barrel-to-wall contact bump micro-impulse
+              wallTouchImpulse = 1.0;
+            }
+            wallTouchImpulse *= Math.exp(-14 * dt);
+
+            const wallEase =
+              wallObstructionBlend *
+              wallObstructionBlend *
+              (3 - 2 * wallObstructionBlend);
+            const wallBrace =
+              wallObstructionBlend > 0.32
+                ? (wallObstructionBlend - 0.32) / 0.68
+                : 0;
+            const wallBumpWave = Math.sin(wallTouchImpulse * Math.PI) * 0.022;
+
+            // Retract weapon backward into shoulder on initial contact, then pivot into Tactical High-Port Wall Brace
+            const wallShiftX = -wallEase * 0.08 * (1 - p.adsBlend * 0.6);
+            const wallLiftY =
+              (wallEase * 0.055 + wallBrace * 0.045) * (1 - p.adsBlend * 0.65);
+            const wallRetractZ = wallEase * 0.34 + wallBumpWave;
+            const wallRotX =
+              (wallBrace * 0.62 + wallBumpWave * 1.8) * (1 - p.adsBlend * 0.65);
+            const wallRotY =
+              (wallEase * 0.22 + wallBrace * 0.38) * (1 - p.adsBlend * 0.65);
+            const wallRotZ = -wallBrace * 0.26 * (1 - p.adsBlend * 0.65);
+
+            const recoilBack = Math.min(0.085, p.recoilKickPitch * 0.42);
+            const posX =
+              THREE.MathUtils.lerp(hipX, adsX, p.adsBlend) +
+              switchOffsetX +
+              reloadOffsetX -
+              swayYaw * 0.45 -
+              sprintEase * 0.06 +
+              sprintSwingX -
+              slideEase * 0.05 +
+              bobX * 0.32 +
+              wallShiftX;
+            const posY =
+              THREE.MathUtils.lerp(hipY, adsY, p.adsBlend) +
+              switchDrop +
+              reloadOffsetY +
+              (landDipY + jumpImpulseY) * 0.68 +
+              airborneLift +
+              swayPitch * 0.35 -
+              sprintEase * 0.05 +
+              sprintSwingY -
+              slideEase * 0.04 +
+              bobY * 0.48 +
+              wallLiftY;
+            const posZ =
+              THREE.MathUtils.lerp(hipZ, adsZ, p.adsBlend) +
+              switchOffsetZ +
+              recoilBack -
+              sprintEase * 0.025 +
+              wallRetractZ;
+
+            vm.root.position.set(posX, posY, posZ);
+            vm.root.rotation.set(
+              p.recoilKickPitch * 0.68 +
+                reloadRotX +
+                switchRotX +
+                swayPitch +
+                airbornePitch -
+                sprintEase * 0.22 +
+                slideEase * 0.12 +
+                wallRotX,
+              reloadRotY +
+                switchRotY -
+                swayYaw +
+                sprintEase * 0.48 +
+                sprintSwingRotY +
+                slideEase * 0.18 +
+                wallRotY,
+              reloadRotZ +
+                switchRotZ -
+                strafeRoll +
+                swayRoll +
+                landRollImpulse +
+                sprintEase * 0.18 +
+                sprintSwingRotZ +
+                slideEase * 0.52 +
+                wallRotZ
+            );
+
+            // Articulated Trigger Squeeze Micro-Animation on Every Shot
+            const targetTrigger =
+              fireHeld || p.muzzleFlashTimerMs > 0 ? 1.0 : 0.0;
+            triggerPullBlend +=
+              (targetTrigger - triggerPullBlend) * Math.min(1, dt * 28);
+            vm.triggerBlade.position.z =
+              vm.triggerBaseZ + triggerPullBlend * 0.0075;
+            vm.triggerBlade.rotation.x = 0.35 + triggerPullBlend * 0.36;
+
+            // Articulated Fire-Selector Switch Flick during Weapon Draw
+            const drawSelectorFlick =
+              p.weaponSwitchTimerMs > 0 && !isFirstHalfSwap
+                ? Math.sin((p.weaponSwitchTimerMs / swapHalfMs) * Math.PI) * 0.65
+                : 0;
+            vm.fireSelector.rotation.x =
+              (WEAPON_REGISTRY[wid].autoFire ? 0.45 : 0.0) - drawSelectorFlick;
+
+            // Reciprocating Slide / Bolt Kickback on Every Shot + Last-Round Bolt Lock + Reload Bolt Rack
+            const ammoState = p.weapons[wid];
+            const emptyLockBack =
+              ammoState && ammoState.mag === 0 && !p.isReloading ? 0.036 : 0;
+            const shotKick =
+              p.muzzleFlashTimerMs > 0
+                ? 0.048
+                : Math.min(0.038, p.recoilKickPitch * 0.25);
+            vm.slideOrBolt.position.z =
+              vm.slideBaseZ + Math.max(shotKick, reloadBoltPull, emptyLockBack);
+
+            // SPAS-12 Pump-Action Foregrip Rack Animation
+            if (vm.pumpGrip && wid === 'spas12') {
+              const cdRatio = p.fireCooldownMs / Math.max(1, WEAPON_REGISTRY.spas12.fireIntervalMs);
+              const pumpShift =
+                cdRatio > 0.25 && cdRatio < 0.85
+                  ? Math.sin(((cdRatio - 0.25) / 0.6) * Math.PI) * 0.075
+                  : reloadBoltPull;
+              vm.pumpGrip.position.z = vm.pumpBaseZ + pumpShift;
+            }
+
+            // 3-Axis Muzzle Flash & Dynamic Muzzle PointLight
+            const showFlash = p.muzzleFlashTimerMs > 0;
+            vm.muzzleFlashGroup.visible = showFlash;
+            if (showFlash) {
+              vm.muzzleFlashGroup.rotation.z = Math.random() * Math.PI * 2;
+              const fScale = 0.85 + Math.random() * 0.45;
+              vm.muzzleFlashGroup.scale.setScalar(fScale);
+              muzzlePointLight.intensity = 4.2;
+            } else {
+              muzzlePointLight.intensity = Math.max(
+                0,
+                muzzlePointLight.intensity - dt * 38
+              );
+            }
+          }
+        }
+      } else {
+        // Cinematic Orbit Camera on Menu / Lobby Screens
+        const orbitAngle = now * 0.00022;
+        camera.position.set(
+          Math.cos(orbitAngle) * 34,
+          14.5,
+          Math.sin(orbitAngle) * 34
+        );
+        camera.lookAt(0, 2.2, 0);
+        viewmodelRig.visible = false;
+        muzzlePointLight.intensity = 0;
+      }
+
+      if (screenStateRef.current === 'combat') {
+        viewmodelRig.visible = true;
+      }
+
+      // 10. Sync Breakable Props & Articulated 16-Part Enemy Soldiers
+      syncBreakableProps(sim);
+
+      for (const bot of sim.enemies) {
+        let rig = enemyRigs.get(bot.id);
+        if (!rig) {
+          rig = buildDetailedEnemySoldier(bot.archetype, texSet.muzzleFlashMap);
+          enemyGroup.add(rig.group);
+          enemyRigs.set(bot.id, rig);
+        }
+
+        if (bot.state === 'ko' && bot.koTimerMs <= 0) {
+          rig.group.visible = false;
+          continue;
+        }
+
+        rig.group.visible = true;
+        const speed = Math.hypot(bot.vx, bot.vz);
+        const stride = Math.sin(bot.walkCycle * 1.45);
+        const gaitBounce =
+          bot.state === 'ko' ? 0 : Math.abs(Math.cos(bot.walkCycle * 1.45)) * Math.min(1, speed * 0.25) * 0.06;
+
+        rig.group.position.set(bot.x, bot.y + gaitBounce, bot.z);
+        rig.group.rotation.y = Math.PI / 2 - bot.yaw;
+
+        if (bot.state === 'ko') {
+          // Multi-Stage Articulated 3D Killing / Death Collapse Animation
+          const fallProgress = Math.min(1, 1 - Math.max(0, bot.koTimerMs) / 860);
+          if (fallProgress < 0.32) {
+            // Stage 1: Fatal Impact Stagger & Head/Arm Recoil Snap
+            const s = fallProgress / 0.32;
+            const snap = Math.sin(s * (Math.PI * 0.5));
+            rig.bodyPivot.rotation.x = -0.28 * snap;
+            rig.bodyPivot.rotation.z = 0.22 * snap * bot.strafeDir;
+            rig.bodyPivot.position.y = -0.08 * snap;
+            rig.headGroup.rotation.x = -0.55 * snap;
+            rig.leftArmPivot.rotation.z = -0.65 * snap;
+            rig.rightArmPivot.rotation.x = -0.35 * snap;
+            rig.leftLegPivot.rotation.x = 0.35 * snap;
+            rig.rightLegPivot.rotation.x = 0.25 * snap;
+          } else {
+            // Stage 2: Full Ragdoll Collapse onto the Arena Floor
+            const c = (fallProgress - 0.32) / 0.68;
+            const ease = c * c * (3 - 2 * c);
+            rig.bodyPivot.rotation.x = -0.28 - ease * (Math.PI * 0.48 - 0.28);
+            rig.bodyPivot.rotation.z = (0.22 + ease * 0.18) * bot.strafeDir;
+            rig.bodyPivot.position.y = -0.08 - ease * 0.68;
+            rig.headGroup.rotation.x = -0.55 + ease * 0.25;
+            rig.leftArmPivot.rotation.z = -0.65 - ease * 0.45;
+            rig.rightArmPivot.rotation.x = -0.35 + ease * 0.85;
+            rig.leftLegPivot.rotation.x = 0.35 * (1 - ease);
+            rig.rightLegPivot.rotation.x = -0.22 * ease;
+          }
+          rig.hpBarBg.visible = false;
+          rig.hpBarFill.visible = false;
+          rig.sniperLaser.visible = false;
+          rig.muzzleFlash.visible = false;
         } else {
-          // Single-Player vs Bot
-          const botIn = computeBotInput(
-            sim,
-            sim.p2,
-            sim.p1,
-            props.botDifficulty,
-            rawDtMs
+          rig.bodyPivot.position.y = 0;
+          const legAmp = Math.min(0.65, speed * 0.11);
+          rig.leftLegPivot.rotation.x = stride * legAmp;
+          rig.rightLegPivot.rotation.x = -stride * legAmp;
+
+          // Rich Enemy Micro-Animations: Strafe Banking, Hit-Flinch Twist, Head Scan & Recoil Kick
+          const hitFlinchRatio = Math.min(1, bot.hitFlashMs / 110);
+          const hitFlinchPitch = -0.22 * hitFlinchRatio;
+          const hitFlinchTwist = 0.18 * hitFlinchRatio * bot.strafeDir;
+          const fireRecoilRatio = Math.min(1, bot.attackAnimTimerMs / 160);
+          const fireRecoil = -0.16 * fireRecoilRatio;
+          const strafeLean =
+            Math.min(1, speed * 0.16) * 0.08 * bot.strafeDir;
+
+          rig.bodyPivot.rotation.x = hitFlinchPitch + fireRecoil * 0.42 + Math.min(0.08, speed * 0.012);
+          rig.bodyPivot.rotation.y = stride * legAmp * 0.16 + hitFlinchTwist;
+          rig.bodyPivot.rotation.z = strafeLean;
+          rig.headGroup.rotation.x = -hitFlinchPitch * 0.65;
+          rig.headGroup.rotation.y = Math.sin(now * 0.0025 + bot.walkCycle * 0.4) * 0.12;
+          rig.leftArmPivot.rotation.z = -0.06 - Math.abs(stride) * 0.05;
+          rig.rightArmPivot.rotation.x = fireRecoil - Math.abs(stride) * 0.04;
+
+          rig.muzzleFlash.visible = bot.muzzleFlashTimerMs > 0;
+          if (bot.muzzleFlashTimerMs > 0) {
+            rig.muzzleFlash.rotation.z = Math.random() * Math.PI * 2;
+          }
+
+          rig.hpBarBg.visible = true;
+          rig.hpBarFill.visible = true;
+          rig.hpBarBg.lookAt(camera.position);
+          rig.hpBarFill.lookAt(camera.position);
+
+          const hpRatio = Math.max(0, Math.min(1, bot.hp / Math.max(1, bot.maxHp)));
+          rig.hpBarFill.scale.x = Math.max(0.001, hpRatio);
+
+          const visorMat = rig.visorMesh.material as THREE.MeshBasicMaterial;
+          if (bot.hitFlashMs > 0) {
+            visorMat.color.setHex(0xffffff);
+          } else {
+            visorMat.color.setHex(
+              bot.archetype === 'rusher'
+                ? 0xf97316
+                : bot.archetype === 'sniper'
+                ? 0xa855f7
+                : 0xef4444
+            );
+          }
+
+          if (bot.archetype === 'sniper' && bot.state === 'telegraph') {
+            rig.sniperLaser.visible = true;
+          } else {
+            rig.sniperLaser.visible = false;
+          }
+        }
+      }
+
+      // 10B. Sync 3D Floating & Rotating Arena Supply Pickups (Medkits & Ammo Crates)
+      for (const pk of sim.pickups) {
+        let pEntry = pickupMeshes.get(pk.id);
+        if (!pEntry) {
+          const grp = new THREE.Group();
+          const isHp = pk.kind === 'health';
+          const boxMat = new THREE.MeshStandardMaterial({
+            color: isHp ? 0x10b981 : 0xf59e0b,
+            roughness: 0.3,
+            metalness: 0.55,
+          });
+          const trimM = new THREE.MeshStandardMaterial({
+            color: 0xf8fafc,
+            roughness: 0.25,
+            metalness: 0.2,
+          });
+          const caseMesh = new THREE.Mesh(
+            new THREE.BoxGeometry(0.56, 0.34, 0.42),
+            boxMat
           );
-          stepSimulation(sim, localInput, botIn, rawDtMs, false);
+          caseMesh.position.y = 0.38;
+          const stripe = new THREE.Mesh(
+            new THREE.BoxGeometry(0.58, 0.08, 0.44),
+            trimM
+          );
+          stripe.position.y = 0.38;
+          const ring = new THREE.Mesh(
+            new THREE.RingGeometry(0.45, 0.55, 24),
+            new THREE.MeshBasicMaterial({
+              color: isHp ? 0x34d399 : 0xfbbf24,
+              transparent: true,
+              opacity: 0.65,
+              side: THREE.DoubleSide,
+            })
+          );
+          ring.rotation.x = -Math.PI / 2;
+          ring.position.y = 0.03;
+          grp.add(caseMesh, stripe, ring);
+          pickupGroup.add(grp);
+          pEntry = { group: grp, ring };
+          pickupMeshes.set(pk.id, pEntry);
         }
-
-        if (sim.events.length > 0) {
-          processCombatEvents(sim.events);
-        }
-
-        if (sim.roundOver && !roundFinishedNotified && sim.roundWinner) {
-          roundFinishedNotified = true;
-          props.onRoundFinished(sim.roundWinner);
+        pEntry.group.visible = pk.active;
+        if (pk.active) {
+          const hoverY = Math.sin(now * 0.0035 + pk.x) * 0.08;
+          pEntry.group.position.set(pk.x, hoverY, pk.z);
+          pEntry.group.rotation.y = now * 0.0014;
+          const pulse = 0.92 + Math.sin(now * 0.006) * 0.14;
+          pEntry.ring.scale.setScalar(pulse);
         }
       }
 
-      // Sync 3D Breakable Crates, Energy Barrels, and Destructible Floor Tiles with SimulationState
-      syncArenaBreakables(arenaRig, sim);
-
-      // Update fighter 3D skeletal rigs & ground-height-aware contact shadows
-      const p1GroundY = getArenaSurfaceHeight(sim.arenaId, sim.p1.x, sim.p1.z);
-      const p2GroundY = getArenaSurfaceHeight(sim.arenaId, sim.p2.x, sim.p2.z);
-      updateFighterRigAnimation(
-        p1Rig,
-        sim.p1,
-        dtSec,
-        elapsedSec,
-        p1GroundY,
-        (x, y, z, scale = 1, colorHex = 0xd9c9a8) =>
-          spawnBurst(x, y, z, colorHex, 2, 1.1 * scale)
-      );
-      updateFighterRigAnimation(
-        p2Rig,
-        sim.p2,
-        dtSec,
-        elapsedSec,
-        p2GroundY,
-        (x, y, z, scale = 1, colorHex = 0xd9c9a8) =>
-          spawnBurst(x, y, z, colorHex, 2, 1.1 * scale)
-      );
-
-      if (sim.decoy && sim.decoy.active) {
-        decoyRig.root.visible = true;
-        const decoyGroundY = getArenaSurfaceHeight(sim.arenaId, sim.decoy.x, sim.decoy.z);
-        decoyRig.root.position.set(sim.decoy.x, decoyGroundY, sim.decoy.z);
-        decoyRig.root.rotation.y = sim.decoy.facingAngle;
-      } else {
-        decoyRig.root.visible = false;
+      // 11. Update Pooled Ballistic VFX (Tracers, Shell Casings, Sparks, Rings)
+      for (let i = 0; i < TRACER_POOL_SIZE; i++) {
+        const item = tracerPool[i];
+        const trace = sim.traces[i];
+        if (!trace) {
+          if (item.group.visible) item.group.visible = false;
+          continue;
+        }
+        tracerStartVec.set(trace.fromX, trace.fromY, trace.fromZ);
+        tracerEndVec.set(trace.toX, trace.toY, trace.toZ);
+        const dist = tracerStartVec.distanceTo(tracerEndVec);
+        if (dist < 0.05) {
+          if (item.group.visible) item.group.visible = false;
+          continue;
+        }
+        tracerMidVec.addVectors(tracerStartVec, tracerEndVec).multiplyScalar(0.5);
+        item.group.position.copy(tracerMidVec);
+        item.group.scale.set(1, 1, dist);
+        item.group.lookAt(tracerEndVec);
+        const alpha = Math.max(0, Math.min(1, trace.ttlMs / trace.maxTtlMs));
+        item.coreMat.opacity = alpha * 0.95;
+        item.glowMat.opacity = alpha * 0.65;
+        item.glowMat.color.setHex(trace.colorHex);
+        item.group.visible = true;
       }
 
-      // Update 3D Plasma Gravity Orb Projectile visual
-      if (sim.projectiles.length > 0) {
-        const proj = sim.projectiles[0];
-        orbGroup.visible = true;
-        orbGroup.position.set(proj.x, proj.y, proj.z);
-        orbShellMesh.rotation.x += dtSec * 6.5;
-        orbShellMesh.rotation.y += dtSec * 8.2;
-      } else {
-        orbGroup.visible = false;
+      // Update Spinning Brass Shell Casings
+      for (let i = 0; i < CASING_POOL_SIZE; i++) {
+        const c = casingPool[i];
+        if (!c.active) continue;
+        c.ageMs += dtMs;
+        if (c.ageMs >= c.maxAgeMs) {
+          c.active = false;
+          c.mesh.visible = false;
+          continue;
+        }
+        c.vy -= 13.5 * dt;
+        c.mesh.position.x += c.vx * dt;
+        c.mesh.position.y += c.vy * dt;
+        c.mesh.position.z += c.vz * dt;
+        if (c.mesh.position.y < 0.02) {
+          c.mesh.position.y = 0.02;
+          c.vy = Math.abs(c.vy) * 0.42;
+          c.vx *= 0.7;
+          c.vz *= 0.7;
+        }
+        c.mesh.rotation.x += c.rx * dt;
+        c.mesh.rotation.y += c.ry * dt;
+        c.mesh.rotation.z += c.rz * dt;
       }
 
-      // Update Arena Machinery & Lava Animations (Foundry Arena v4)
-      updateArenaScene(arenaRig, elapsedSec, dtSec);
-
-      // Update Instanced Sparks & Debris Particles (only upload GPU buffers when active particles exist)
-      let anyParticleUpdated = false;
-      for (let i = 0; i < particles.length; i++) {
-        const p = particles[i];
+      // Update 3D Impact Sparks & Debris Particles
+      for (let i = 0; i < PARTICLE_POOL_SIZE; i++) {
+        const p = particlePool[i];
         if (!p.active) continue;
-        anyParticleUpdated = true;
-        p.age += dtSec;
-        if (p.age >= p.maxAge) {
+        p.ageMs += dtMs;
+        if (p.ageMs >= p.maxAgeMs) {
           p.active = false;
-          dummyObj.scale.setScalar(0);
-          dummyObj.updateMatrix();
-          sparkInstanced.setMatrixAt(i, dummyObj.matrix);
-        } else {
-          p.vy -= 18.5 * dtSec;
-          p.x += p.vx * dtSec;
-          p.y += p.vy * dtSec;
-          p.z += p.vz * dtSec;
-          const floorY = getArenaSurfaceHeight(sim.arenaId, p.x, p.z) + 0.05;
-          if (p.y < floorY) {
-            p.y = floorY;
-            p.vy = Math.abs(p.vy) * 0.35;
-            p.vx *= 0.7;
-            p.vz *= 0.7;
-          }
-          const lifeRatio = 1 - p.age / p.maxAge;
-          dummyObj.position.set(p.x, p.y, p.z);
-          dummyObj.lookAt(p.x + p.vx, p.y + p.vy, p.z + p.vz);
-          dummyObj.scale.set(
-            p.scale * lifeRatio,
-            p.scale * lifeRatio,
-            p.scale * lifeRatio * 2.1
-          );
-          dummyObj.updateMatrix();
-          sparkInstanced.setMatrixAt(i, dummyObj.matrix);
-          sparkInstanced.setColorAt(i, p.color);
+          p.mesh.visible = false;
+          continue;
         }
-      }
-      if (anyParticleUpdated) {
-        sparkInstanced.instanceMatrix.needsUpdate = true;
-        if (sparkInstanced.instanceColor) sparkInstanced.instanceColor.needsUpdate = true;
-      }
-
-      // Update Shockwave Rings
-      for (const ring of shockwaves) {
-        if (ring.active) {
-          ring.age += dtSec;
-          if (ring.age >= ring.maxAge) {
-            ring.active = false;
-            ring.mesh.visible = false;
-          } else {
-            const t = ring.age / ring.maxAge;
-            const easeOut = 1 - Math.pow(1 - t, 3);
-            ring.mesh.scale.setScalar(0.3 + easeOut * ring.maxScale);
-            ring.mat.opacity = (1 - t) * 0.85;
-          }
+        const lifeRatio = 1 - p.ageMs / p.maxAgeMs;
+        p.vy -= p.gravity * dt;
+        p.mesh.position.x += p.vx * dt;
+        p.mesh.position.y += p.vy * dt;
+        p.mesh.position.z += p.vz * dt;
+        if (p.mesh.position.y < 0.03) {
+          p.mesh.position.y = 0.03;
+          p.vy = Math.abs(p.vy) * 0.35;
         }
-      }
-
-      // Update 3D Glowing Crescent Weapon Slash Arcs
-      for (const arc of slashArcs) {
-        if (arc.active) {
-          arc.age += dtSec;
-          if (arc.age >= arc.maxAge) {
-            arc.active = false;
-            arc.mesh.visible = false;
-          } else {
-            const t = arc.age / arc.maxAge;
-            const easeOut = 1 - Math.pow(1 - t, 2.4);
-            arc.mesh.rotation.y = arc.startYaw + arc.spinSpeed * arc.age;
-            arc.mesh.scale.setScalar(arc.baseScale * (0.78 + easeOut * 0.55));
-            arc.mat.opacity = (1 - t) * 0.92;
-          }
-        }
-      }
-
-      // =====================================================================
-      // CAMERA CONTROLLER:
-      // SMOOTH ZOOMED-OUT BEHIND-PLAYER CAMERA (NO LOCK-ON GLITCHING)
-      // =====================================================================
-      if (
-        props.screenState === 'main_menu' ||
-        props.screenState === 'mode_select' ||
-        props.screenState === 'multiplayer_lobby'
-      ) {
-        const orbitAngle = Math.PI - 0.42 + elapsedSec * 0.14;
-        desiredCamPos.set(
-          Math.cos(orbitAngle) * 8.2,
-          3.35,
-          Math.sin(orbitAngle) * 8.2
+        p.mesh.lookAt(
+          p.mesh.position.x + p.vx,
+          p.mesh.position.y + p.vy,
+          p.mesh.position.z + p.vz
         );
-        desiredLookAt.set(0.6, 1.9, -0.4);
-      } else if (props.screenState === 'character_select') {
-        desiredCamPos.set(-3.6, 2.65, 4.2);
-        desiredLookAt.set(-3.6, 2.05, 0);
-      } else if (props.screenState === 'arena_select') {
-        const panAngle = elapsedSec * 0.25;
-        desiredCamPos.set(
-          Math.cos(panAngle) * 14.5,
-          6.8,
-          Math.sin(panAngle) * 14.5
-        );
-        desiredLookAt.set(0, 1.5, 0);
-      } else {
-        // ACTIVE COMBAT: Zoomed-Out Behind-Player Camera
-        const self =
-          props.gameMode === 'multiplayer' && multiplayerClient.localRole === 'guest'
-            ? sim.p2
-            : sim.p1;
-        const opp = self.id === 'p1' ? sim.p2 : sim.p1;
-
-        const isAiming = self.action === 'block' || self.action === 'parry_window';
-        const isSprinting = self.action === 'sprint';
-        const isExecuting =
-          self.action === 'attack_active' && self.currentAttack === 'execution';
-
-        // Subtle shoulder offset so camera sits cleanly behind the player
-        const targetShoulder = shoulderSide * (isAiming ? 0.52 : 0.42);
-        currentShoulderOffset +=
-          (targetShoulder - currentShoulderOffset) * Math.min(1, dtSec * 10);
-
-        // Zoomed-out distance right behind the player (controlled by settings.cameraDistance, default 5.4m)
-        const baseCamDist = Math.max(4.4, props.settings.cameraDistance || 5.4);
-        const camDistance = isExecuting
-          ? baseCamDist - 1.1
-          : isAiming
-            ? baseCamDist - 0.65
-            : isSprinting
-              ? baseCamDist + 0.75
-              : baseCamDist;
-
-        if (props.lockedOn) {
-          const toOppX = opp.x - self.x;
-          const toOppZ = opp.z - self.z;
-          const toOppDist = Math.hypot(toOppX, toOppZ);
-          // Only rotate camera yaw when opponent is not overlapping player's exact position (prevents 180-degree spin glitch)
-          if (toOppDist > 0.85 && cameraTouchId === null) {
-            const targetYaw = Math.atan2(toOppX, toOppZ);
-            camYaw = lerpAngle(camYaw, targetYaw, Math.min(1, dtSec * 6.2));
-          }
-        }
-
-        const fwdX = Math.sin(camYaw);
-        const fwdZ = Math.cos(camYaw);
-        const rightX = -fwdZ;
-        const rightZ = fwdX;
-
-        const camHeightOffset = 2.68 + Math.sin(camPitch) * 1.15;
-        desiredCamPos.set(
-          self.x - fwdX * camDistance + rightX * currentShoulderOffset,
-          self.y + camHeightOffset,
-          self.z - fwdZ * camDistance + rightZ * currentShoulderOffset
-        );
-
-        if (props.lockedOn) {
-          // Look smoothly past the player toward the arena ahead, blended gently with opponent
-          const forwardLookX = self.x + fwdX * 7.5 + rightX * (currentShoulderOffset * 0.45);
-          const forwardLookZ = self.z + fwdZ * 7.5 + rightZ * (currentShoulderOffset * 0.45);
-          desiredLookAt.set(
-            forwardLookX * 0.62 + opp.x * 0.38,
-            self.y * 0.55 + opp.y * 0.45 + 1.45 - Math.sin(camPitch) * 0.45,
-            forwardLookZ * 0.62 + opp.z * 0.38
-          );
-        } else {
-          desiredLookAt.set(
-            self.x + fwdX * 8.5 + rightX * (currentShoulderOffset * 0.55),
-            self.y + 1.48 - Math.sin(camPitch) * 1.85,
-            self.z + fwdZ * 8.5 + rightZ * (currentShoulderOffset * 0.55)
-          );
-        }
-
-        // Smooth radial pillar repulsion (prevents sudden ray-snapping camera glitches)
-        desiredCamPos.x = Math.max(-33.2, Math.min(33.2, desiredCamPos.x));
-        desiredCamPos.z = Math.max(-23.2, Math.min(23.2, desiredCamPos.z));
-
-        for (const col of arenaRig.colliders) {
-          if (col.height < 2.2) continue;
-          const dx = desiredCamPos.x - col.x;
-          const dz = desiredCamPos.z - col.z;
-          const dist = Math.hypot(dx, dz);
-          const minCamClearance = col.radius + 0.65;
-          if (dist < minCamClearance && dist > 0.001) {
-            const push = minCamClearance - dist;
-            desiredCamPos.x += (dx / dist) * push;
-            desiredCamPos.z += (dz / dist) * push;
-          }
-        }
-
-        const camGroundY = getArenaSurfaceHeight(sim.arenaId, desiredCamPos.x, desiredCamPos.z);
-        desiredCamPos.y = Math.max(camGroundY + 1.05, desiredCamPos.y);
+        p.mat.opacity = lifeRatio;
+        p.mesh.scale.setScalar(p.baseScale * (0.4 + lifeRatio * 0.6));
       }
 
-      // Smooth spring-damped camera tracking
-      const lerpFactor = 1 - Math.exp(-12 * dtSec);
-      currentCamPos.lerp(desiredCamPos, lerpFactor);
-      currentLookAt.lerp(desiredLookAt, lerpFactor);
-
-      camera.position.copy(currentCamPos);
-
-      // Apply impact screen shake
-      if (sim.screenShake > 0.01) {
-        const shakeAmt = sim.screenShake * 0.22;
-        camera.position.x += (Math.random() - 0.5) * shakeAmt;
-        camera.position.y += (Math.random() - 0.5) * shakeAmt;
-        camera.position.z += (Math.random() - 0.5) * shakeAmt;
+      // Update Expanding Impact Shock Rings
+      for (let i = 0; i < RING_POOL_SIZE; i++) {
+        const r = ringPool[i];
+        if (!r.active) continue;
+        r.ageMs += dtMs;
+        if (r.ageMs >= r.maxAgeMs) {
+          r.active = false;
+          r.mesh.visible = false;
+          continue;
+        }
+        const t = r.ageMs / r.maxAgeMs;
+        r.mesh.scale.setScalar(0.35 + t * r.maxScale);
+        r.mat.opacity = (1 - t) * 0.85;
       }
 
-      camera.lookAt(currentLookAt);
+      // 12. Direct 60fps HUD DOM Synchronization (dirty-checked to avoid redundant layout/style churn)
+      const p = sim.player;
+      const hpPct = Math.max(0, Math.min(100, (p.hp / p.maxHp) * 100));
+      const hpPctStr = `${hpPct.toFixed(1)}%`;
+      if (hpPctStr !== lastHpPctStr) {
+        lastHpPctStr = hpPctStr;
+        if (hudRefs.p1HpFill.current) {
+          hudRefs.p1HpFill.current.style.width = hpPctStr;
+        }
+        if (hudRefs.p1HpGhost.current) {
+          hudRefs.p1HpGhost.current.style.width = hpPctStr;
+        }
+      }
+      const hpTextStr = `${Math.ceil(hpPct)}%`;
+      if (hpTextStr !== lastHpTextStr && hudRefs.p1HpText.current) {
+        lastHpTextStr = hpTextStr;
+        hudRefs.p1HpText.current.textContent = hpTextStr;
+      }
 
-      // Update HUD DOM bars directly at 60fps
-      updateHudDomDirectly(sim);
+      // Sync Ammo below both Gun Boxes (Slot 1 & Slot 2)
+      const wSlot1 = p.loadoutWeapons[0] || 'm4a1';
+      const wSlot2 = p.loadoutWeapons[1] || 'awp';
+      const ammo1 = p.weapons[wSlot1];
+      const ammo2 = p.weapons[wSlot2];
+
+      if (hudRefs.p1StaminaText.current && ammo1) {
+        const s1Text =
+          p.isReloading && p.activeWeapon === wSlot1
+            ? 'RELOAD...'
+            : `${ammo1.mag} / ${ammo1.reserve}`;
+        if (s1Text !== lastSlot1Text) {
+          lastSlot1Text = s1Text;
+          hudRefs.p1StaminaText.current.textContent = s1Text;
+        }
+      }
+      if (hudRefs.p1AbilityText.current && ammo2) {
+        const s2Text =
+          p.isReloading && p.activeWeapon === wSlot2
+            ? 'RELOAD...'
+            : `${ammo2.mag} / ${ammo2.reserve}`;
+        if (s2Text !== lastSlot2Text) {
+          lastSlot2Text = s2Text;
+          hudRefs.p1AbilityText.current.textContent = s2Text;
+        }
+      }
+
+      // Sync Top Deathmatch Kill Counter & Top Rival Kills
+      if (hudRefs.p2HpText.current) {
+        const killsStr = `${p.kills}`;
+        if (killsStr !== lastKillsText) {
+          lastKillsText = killsStr;
+          hudRefs.p2HpText.current.textContent = killsStr;
+        }
+      }
+      if (hudRefs.p2StaminaText.current) {
+        let topBotKills = 0;
+        for (let i = 0; i < sim.enemies.length; i++) {
+          if (sim.enemies[i].kills > topBotKills) {
+            topBotKills = sim.enemies[i].kills;
+          }
+        }
+        const botKillsStr = `${topBotKills}`;
+        if (botKillsStr !== lastBotKillsText) {
+          lastBotKillsText = botKillsStr;
+          hudRefs.p2StaminaText.current.textContent = botKillsStr;
+        }
+      }
+
+      if (hudRefs.timerText.current) {
+        const totalSecs = Math.max(0, Math.ceil(sim.roundTimerSec));
+        const mins = Math.floor(totalSecs / 60);
+        const secs = totalSecs % 60;
+        const timerStr = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+        if (timerStr !== lastTimerText) {
+          lastTimerText = timerStr;
+          hudRefs.timerText.current.textContent = timerStr;
+        }
+      }
+
+      if (hudRefs.aiStateBadge.current) {
+        const surfUpper = (p.currentSurface || 'concrete').toUpperCase();
+        if (hudRefs.aiStateBadge.current.textContent !== surfUpper) {
+          hudRefs.aiStateBadge.current.textContent = surfUpper;
+          hudRefs.aiStateBadge.current.dataset.surface = p.currentSurface || 'concrete';
+        }
+      }
+
+      // Scope Overlay & Hip-fire Crosshair Smooth Crossfade
+      if (hudRefs.lockReticle.current) {
+        const scopeOpacity = p.adsBlend > 0.15 ? Math.min(1, (p.adsBlend - 0.15) / 0.65) : 0;
+        const scopeOpacityStr = scopeOpacity.toFixed(2);
+        if (scopeOpacityStr !== lastScopeOpacityStr) {
+          lastScopeOpacityStr = scopeOpacityStr;
+          hudRefs.lockReticle.current.style.opacity = scopeOpacityStr;
+        }
+      }
+      if (hudRefs.crosshairRef.current) {
+        const chOpacity = Math.max(0, 1 - p.adsBlend * 1.4);
+        const chOpacityStr = chOpacity.toFixed(2);
+        if (chOpacityStr !== lastChOpacityStr) {
+          lastChOpacityStr = chOpacityStr;
+          hudRefs.crosshairRef.current.style.opacity = chOpacityStr;
+        }
+      }
+
+      // Tactical Slide Speed Vignette
+      if (hudRefs.dashWindOverlay.current) {
+        const slideOpacityStr = p.isSliding ? '0.9' : '0';
+        if (slideOpacityStr !== lastSlideOpacityStr) {
+          lastSlideOpacityStr = slideOpacityStr;
+          hudRefs.dashWindOverlay.current.style.opacity = slideOpacityStr;
+        }
+      }
+
+      if (hudRefs.hitMarkerRef.current) {
+        hitMarkerTimerMs = Math.max(0, hitMarkerTimerMs - dtMs);
+        const hmOpacityStr = hitMarkerTimerMs > 0 ? '1' : '0';
+        if (hmOpacityStr !== lastHitMarkerOpacityStr) {
+          lastHitMarkerOpacityStr = hmOpacityStr;
+          hudRefs.hitMarkerRef.current.style.opacity = hmOpacityStr;
+        }
+      }
+
+      if (hudRefs.screenImpactOverlay.current) {
+        const hurtOpacity = Math.min(0.65, (p.hurtFlashMs / 240) * 0.55);
+        const hurtOpacityStr = hurtOpacity.toFixed(2);
+        if (hurtOpacityStr !== lastHurtOpacityStr) {
+          lastHurtOpacityStr = hurtOpacityStr;
+          hudRefs.screenImpactOverlay.current.style.opacity = hurtOpacityStr;
+        }
+      }
 
       renderer.render(scene, camera);
     };
@@ -1357,26 +2099,24 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
     return () => {
       cancelAnimationFrame(rafId);
-      resizeObserver.disconnect();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mouseup', onMouseUp);
       window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('touchstart', onTouchStart);
-      window.removeEventListener('touchmove', onTouchMove);
-      window.removeEventListener('touchend', onTouchEnd);
-      window.removeEventListener('touchcancel', onTouchEnd);
-      window.removeEventListener('blur', clearAllInputsOnBlur);
+      window.removeEventListener('wheel', onWheel);
+      window.removeEventListener('contextmenu', onContextMenu);
+      window.removeEventListener('resize', onResize);
+      texSet.dispose();
+      envTarget.dispose();
       renderer.dispose();
     };
-  }, []);
+  }, [simRef, hudRefs, touchInputRef]);
 
   return (
     <div
-      ref={mountRef}
-      onContextMenu={(e) => e.preventDefault()}
-      className="fixed inset-0 z-0 w-full h-full overflow-hidden bg-[#0c101c]"
+      ref={containerRef}
+      className="fixed inset-0 w-full h-full overflow-hidden bg-zinc-950 select-none"
     />
   );
 };

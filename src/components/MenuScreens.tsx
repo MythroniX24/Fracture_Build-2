@@ -1,19 +1,21 @@
 import React, { useState } from 'react';
 import {
-  ARENA_REGISTRY,
   ArenaId,
   BotDifficulty,
   CharacterId,
-  CHARACTER_REGISTRY,
+  DEFAULT_HUD_BUTTONS_LAYOUT,
   DEFAULT_KEYBINDINGS,
   GameMode,
   GameSettings,
   KeyBindingsConfig,
+  LoadoutPairId,
   ScreenState,
-} from '../game/config';
-import { SimulationState } from '../game/rules';
-import { soundEngine } from '../audio/soundEngine';
-import { MultiplayerClient, RoomStatePayload } from '../network/multiplayerClient';
+  WeaponId,
+} from '../game/config.ts';
+import { SimulationState, getMatchLeaderboard } from '../game/rules.ts';
+import { soundEngine } from '../audio/soundEngine.ts';
+import { MultiplayerClient, RoomStatePayload } from '../network/multiplayerClient.ts';
+import { WeaponIllustration } from './WeaponArtwork.tsx';
 
 export interface MenuScreensProps {
   screenState: ScreenState;
@@ -32,6 +34,10 @@ export interface MenuScreensProps {
   mpRoom: RoomStatePayload | null;
   mpStatus: string;
   mpError: string | null;
+  selectedWeapon?: WeaponId;
+  selectedLoadoutPairId?: LoadoutPairId;
+  onSelectLoadoutPair?: (pairId: LoadoutPairId, weapons: [WeaponId, WeaponId]) => void;
+  onSelectWeapon?: (w: WeaponId) => void;
   onNavigate: (scr: ScreenState) => void;
   onSelectMode: (m: GameMode) => void;
   onSelectP1Char: (id: CharacterId) => void;
@@ -44,42 +50,29 @@ export interface MenuScreensProps {
   onRestartMatch: () => void;
   onToggleFullscreen: () => void;
   onOpenSettings: (open: boolean) => void;
+  onOpenLayoutEditor: () => void;
   onUpdateSettings: (partial: Partial<GameSettings>) => void;
 }
 
 export const MenuScreens: React.FC<MenuScreensProps> = ({
   screenState,
-  gameMode,
-  p1Char,
-  p2Char,
-  arenaId,
   botDifficulty,
-  roundsToWin,
-  roundTimeSeconds,
   settings,
   settingsOpen,
+  isFullscreen,
   sim,
-  mpClient,
-  mpRoom,
-  mpError,
   onNavigate,
   onSelectMode,
-  onSelectP1Char,
-  onSelectP2Char,
-  onSelectArena,
   onSelectDifficulty,
-  onChangeMatchRules,
   onStartCombat,
   onResumeCombat,
   onRestartMatch,
+  onToggleFullscreen,
   onOpenSettings,
+  onOpenLayoutEditor,
   onUpdateSettings,
 }) => {
-  const [joinCodeInput, setJoinCodeInput] = useState('');
   const [rebindingKey, setRebindingKey] = useState<keyof KeyBindingsConfig | null>(null);
-
-  const characterList = Object.values(CHARACTER_REGISTRY);
-  const arenaList = Object.values(ARENA_REGISTRY);
 
   const handleKeyCapture = (e: React.KeyboardEvent) => {
     if (!rebindingKey) return;
@@ -94,63 +87,90 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
     setRebindingKey(null);
   };
 
+  const leaderboard = screenState === 'match_result' ? getMatchLeaderboard(sim) : [];
+  const topCombatant = leaderboard[0];
+
   return (
     <>
       {/* =================================================================== */}
-      {/* 1. MAIN MENU SCREEN (ULTRA-CLEAN STAGE SHOWCASE)                    */}
+      {/* 1. CLEAN MATTE TACTICAL MAIN MENU                                   */}
       {/* =================================================================== */}
       {screenState === 'main_menu' && (
-        <div className="fixed inset-0 z-20 flex flex-col justify-between p-6 sm:p-10 pointer-events-none select-none">
-          <header className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shadow-[0_0_10px_#f59e0b]" />
-              <span className="font-mono text-xs uppercase tracking-[0.3em] text-slate-300 font-bold">
-                FRACTURE
-              </span>
-            </div>
-
-            <button
-              type="button"
-              aria-label="Open Settings"
-              onClick={() => {
-                soundEngine.unlock();
-                soundEngine.play('ui_click');
-                onOpenSettings(true);
-              }}
-              className="pointer-events-auto w-11 h-11 rounded-full bg-slate-950/75 hover:bg-slate-900 border border-white/15 flex items-center justify-center text-slate-200 transition-all active:scale-90 shadow-lg cursor-pointer"
+        <div
+          className="fixed inset-0 z-20 flex flex-col justify-between p-6 sm:p-10 pointer-events-none select-none"
+          style={{
+            background:
+              'linear-gradient(90deg, rgba(12,14,18,0.88) 0%, rgba(12,14,18,0.52) 52%, rgba(12,14,18,0.10) 100%)',
+          }}
+        >
+          {/* Top Brand Emblem */}
+          <div className="flex items-center gap-3">
+            <svg
+              className="w-7 h-7 text-zinc-100"
+              viewBox="0 0 32 32"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
             >
-              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-              </svg>
-            </button>
-          </header>
+              <polygon points="16,3 29,10 29,22 16,29 3,22 3,10" />
+              <line x1="16" y1="8" x2="16" y2="24" />
+              <line x1="8" y1="16" x2="24" y2="16" />
+            </svg>
+            <span className="font-display font-bold text-sm tracking-[0.22em] text-zinc-200 uppercase">
+              SECTOR-09 · 5-MIN DEATHMATCH
+            </span>
+          </div>
 
-          <div className="my-auto max-w-md flex flex-col items-start gap-6">
+          {/* Left-Third Focal Column: Title, Difficulty, & Primary Actions */}
+          <div className="my-auto max-w-md flex flex-col items-start gap-5 pointer-events-auto">
             <div>
-              <h1 className="font-display font-black text-5xl sm:text-7xl tracking-tight uppercase italic text-white leading-none drop-shadow-[0_8px_28px_rgba(0,0,0,0.85)]">
+              <h1 className="font-display font-black text-5xl sm:text-6xl tracking-tight text-zinc-100 leading-none">
                 FRACTURE
               </h1>
-              <p className="mt-1.5 font-mono text-xs uppercase tracking-[0.35em] text-amber-400 font-semibold">
-                3D ARENA COMBAT
+              <p className="mt-1.5 text-sm text-zinc-400">
+                5-Minute Tactical Arena First-Person Deathmatch
               </p>
             </div>
 
-            <nav className="pointer-events-auto flex flex-col gap-2.5 w-64 sm:w-72">
+            {/* Difficulty Segmented Selector */}
+            <div className="w-full sm:w-80 bg-[#12141a]/95 border border-white/15 rounded-xl px-4 py-2.5 flex items-center justify-between shadow-xl">
+              <span className="text-xs font-medium text-zinc-400">AI Difficulty</span>
+              <div className="flex items-center gap-1">
+                {(['easy', 'normal', 'hard'] as BotDifficulty[]).map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => {
+                      soundEngine.play('ui_click');
+                      onSelectDifficulty(d);
+                    }}
+                    className={`px-2.5 py-1 rounded text-xs font-medium capitalize transition-colors cursor-pointer ${
+                      botDifficulty === d
+                        ? 'bg-zinc-200 text-zinc-950 font-semibold'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {d}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* <= 3 Primary Menu Actions */}
+            <nav className="flex flex-col gap-2.5 w-full sm:w-80">
               <button
                 type="button"
+                data-start="true"
                 onClick={() => {
                   soundEngine.unlock();
                   soundEngine.play('ui_confirm');
                   onSelectMode('bot');
-                  onNavigate('mode_select');
+                  onStartCombat();
                 }}
-                className="w-full px-6 py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-display font-black text-lg tracking-wider uppercase flex items-center justify-between shadow-[0_8px_24px_rgba(245,158,11,0.35)] transition-all active:scale-95 cursor-pointer"
+                className="w-full py-3.5 px-5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 font-display font-bold text-base tracking-wide flex items-center justify-between transition-transform active:scale-98 cursor-pointer"
               >
-                <span>PLAY</span>
-                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
+                <span>Start Deathmatch</span>
+                <span className="font-mono text-xs font-bold">05:00 →</span>
               </button>
 
               <button
@@ -159,12 +179,12 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
                   soundEngine.unlock();
                   soundEngine.play('ui_click');
                   onSelectMode('training');
-                  onNavigate('character_select');
+                  onStartCombat();
                 }}
-                className="w-full px-5 py-3 rounded-2xl bg-slate-950/75 hover:bg-slate-900/90 border border-white/15 hover:border-cyan-400/50 text-white font-display font-bold text-sm tracking-wider uppercase flex items-center justify-between transition-all active:scale-95 cursor-pointer"
+                className="w-full py-3 px-5 rounded-xl bg-[#14171e] hover:bg-zinc-800 border border-white/15 text-zinc-200 font-display font-semibold text-sm flex items-center justify-between transition-colors cursor-pointer"
               >
-                <span>TRAINING</span>
-                <span className="text-cyan-400 font-mono text-xs">→</span>
+                <span>Firing Range</span>
+                <span className="font-mono text-xs text-zinc-400">Practice</span>
               </button>
 
               <button
@@ -172,438 +192,35 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
                 onClick={() => {
                   soundEngine.unlock();
                   soundEngine.play('ui_click');
-                  onSelectMode('multiplayer');
-                  onNavigate('multiplayer_lobby');
+                  onOpenSettings(true);
                 }}
-                className="w-full px-5 py-3 rounded-2xl bg-slate-950/75 hover:bg-slate-900/90 border border-white/15 hover:border-purple-400/50 text-white font-display font-bold text-sm tracking-wider uppercase flex items-center justify-between transition-all active:scale-95 cursor-pointer"
+                className="w-full py-3 px-5 rounded-xl bg-[#14171e] hover:bg-zinc-800 border border-white/15 text-zinc-200 font-display font-semibold text-sm flex items-center justify-between transition-colors cursor-pointer"
               >
-                <span>ONLINE DUEL</span>
-                <span className="text-purple-400 font-mono text-xs">→</span>
+                <span>Settings</span>
+                <span className="font-mono text-xs text-zinc-400">Configure</span>
               </button>
             </nav>
           </div>
 
-          <div />
-        </div>
-      )}
-
-      {/* =================================================================== */}
-      {/* 2. MODE SELECT SCREEN (CLEAN COMPACT PANEL)                         */}
-      {/* =================================================================== */}
-      {screenState === 'mode_select' && (
-        <div className="fixed inset-0 z-20 bg-slate-950/65 backdrop-blur-md flex items-center justify-center p-4 select-none">
-          <div className="w-full max-w-xl bg-slate-900/90 border border-white/15 rounded-3xl p-6 sm:p-8 flex flex-col gap-6 shadow-2xl">
-            <div className="flex items-center justify-between">
-              <h2 className="font-display font-black text-2xl sm:text-3xl uppercase tracking-tight text-white">
-                SELECT MODE
-              </h2>
-              <button
-                type="button"
-                onClick={() => {
-                  soundEngine.play('ui_click');
-                  onNavigate('main_menu');
-                }}
-                className="px-4 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 text-xs font-bold uppercase tracking-wider text-slate-200 cursor-pointer"
-              >
-                Back
-              </button>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3">
-              {(
-                [
-                  { id: 'bot', title: 'VS AI', accent: 'border-amber-400 bg-amber-500/15' },
-                  { id: 'training', title: 'TRAINING', accent: 'border-cyan-400 bg-cyan-500/15' },
-                  { id: 'multiplayer', title: 'ONLINE 1V1', accent: 'border-purple-400 bg-purple-500/15' },
-                ] as { id: GameMode; title: string; accent: string }[]
-              ).map((m) => {
-                const active = gameMode === m.id;
-                return (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => {
-                      soundEngine.play('ui_click');
-                      onSelectMode(m.id);
-                    }}
-                    className={`p-4 rounded-2xl border-2 text-center transition-all cursor-pointer ${
-                      active
-                        ? `${m.accent} text-white shadow-lg`
-                        : 'border-white/10 bg-slate-950/60 text-slate-400 hover:text-white hover:border-white/25'
-                    }`}
-                  >
-                    <div className="font-display font-black text-sm sm:text-base uppercase tracking-wider">
-                      {m.title}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {gameMode !== 'multiplayer' && (
-              <div className="flex flex-col gap-2.5">
-                <span className="font-mono text-[11px] uppercase tracking-widest text-slate-400 font-bold">
-                  AI DIFFICULTY
-                </span>
-                <div className="grid grid-cols-3 gap-2.5">
-                  {(['easy', 'normal', 'hard'] as BotDifficulty[]).map((diff) => {
-                    const active = botDifficulty === diff;
-                    return (
-                      <button
-                        key={diff}
-                        type="button"
-                        onClick={() => {
-                          soundEngine.play('ui_click');
-                          onSelectDifficulty(diff);
-                        }}
-                        className={`py-2.5 rounded-xl border font-display font-bold text-xs uppercase tracking-wider transition-all cursor-pointer ${
-                          active
-                            ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-md'
-                            : 'bg-slate-950/60 text-slate-300 border-white/10 hover:border-white/25'
-                        }`}
-                      >
-                        {diff}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            <button
-              type="button"
-              onClick={() => {
-                soundEngine.play('ui_confirm');
-                if (gameMode === 'multiplayer') {
-                  onNavigate('multiplayer_lobby');
-                } else {
-                  onNavigate('character_select');
-                }
-              }}
-              className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-display font-black text-base uppercase tracking-wider shadow-lg transition-all active:scale-95 cursor-pointer"
-            >
-              CONTINUE
-            </button>
+          {/* Flat Inline Control Hint Line */}
+          <div className="text-xs font-mono text-zinc-400">
+            WASD Move · Hold &amp; Drag Fire Button · V Slide · Right-Click Scope · R Reload · Esc Pause
           </div>
         </div>
       )}
 
       {/* =================================================================== */}
-      {/* 3. CHARACTER SELECT SCREEN (CLEAN FIGHTER CARDS)                    */}
-      {/* =================================================================== */}
-      {screenState === 'character_select' && (
-        <div className="fixed inset-0 z-20 flex flex-col justify-between p-5 sm:p-8 pointer-events-none select-none">
-          <header className="flex items-center justify-between pointer-events-auto">
-            <h2 className="font-display font-black text-2xl sm:text-4xl uppercase tracking-tight text-white drop-shadow">
-              SELECT FIGHTER
-            </h2>
-            <button
-              type="button"
-              onClick={() => {
-                soundEngine.play('ui_click');
-                onNavigate('mode_select');
-              }}
-              className="px-4 py-2 rounded-full bg-slate-950/80 hover:bg-slate-900 border border-white/15 text-xs font-bold uppercase tracking-wider text-slate-200 cursor-pointer"
-            >
-              Back
-            </button>
-          </header>
-
-          <div className="my-auto ml-auto w-full max-w-md flex flex-col gap-3 pointer-events-auto">
-            {characterList.map((char) => {
-              const isSelected = p1Char === char.id;
-              return (
-                <button
-                  key={char.id}
-                  type="button"
-                  onClick={() => {
-                    soundEngine.play('ui_click');
-                    const opp: CharacterId = char.id === 'volt' ? 'rift' : 'volt';
-                    onSelectP1Char(char.id);
-                    onSelectP2Char(opp);
-                  }}
-                  className={`p-4 sm:p-5 rounded-2xl border-2 text-left transition-all cursor-pointer backdrop-blur-md ${
-                    isSelected
-                      ? 'bg-slate-900/90 border-cyan-400 shadow-[0_0_24px_rgba(56,189,248,0.25)]'
-                      : 'bg-slate-950/70 border-white/10 hover:border-white/25'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="font-display font-black text-xl sm:text-2xl uppercase text-white">
-                        {char.name}
-                      </div>
-                      <div className="font-mono text-[11px] uppercase tracking-wider text-cyan-300">
-                        {char.title}
-                      </div>
-                    </div>
-                    <span
-                      className={`w-3.5 h-3.5 rounded-full ${
-                        isSelected ? 'bg-cyan-400 shadow-[0_0_10px_#38bdf8]' : 'bg-slate-700'
-                      }`}
-                    />
-                  </div>
-
-                  <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-                    <div className="bg-slate-950/70 rounded-xl py-1.5 border border-white/5">
-                      <div className="text-[10px] font-mono text-slate-400">SPEED</div>
-                      <div className="font-mono font-bold text-xs text-cyan-300">
-                        {char.stats.speedRating}/10
-                      </div>
-                    </div>
-                    <div className="bg-slate-950/70 rounded-xl py-1.5 border border-white/5">
-                      <div className="text-[10px] font-mono text-slate-400">POWER</div>
-                      <div className="font-mono font-bold text-xs text-amber-300">
-                        {char.stats.powerRating}/10
-                      </div>
-                    </div>
-                    <div className="bg-slate-950/70 rounded-xl py-1.5 border border-white/5">
-                      <div className="text-[10px] font-mono text-slate-400">DEFENSE</div>
-                      <div className="font-mono font-bold text-xs text-emerald-300">
-                        {char.stats.defenseRating}/10
-                      </div>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-
-            <button
-              type="button"
-              onClick={() => {
-                soundEngine.play('ui_confirm');
-                onNavigate('arena_select');
-              }}
-              className="mt-1 w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-display font-black text-base uppercase tracking-wider shadow-lg transition-all active:scale-95 cursor-pointer"
-            >
-              NEXT: ARENA
-            </button>
-          </div>
-
-          <div />
-        </div>
-      )}
-
-      {/* =================================================================== */}
-      {/* 4. ARENA SELECT & MATCH SETTINGS SCREEN                             */}
-      {/* =================================================================== */}
-      {(screenState === 'arena_select' || screenState === 'match_settings') && (
-        <div className="fixed inset-0 z-20 flex flex-col justify-between p-5 sm:p-8 pointer-events-none select-none">
-          <header className="flex items-center justify-between pointer-events-auto">
-            <h2 className="font-display font-black text-2xl sm:text-4xl uppercase tracking-tight text-white drop-shadow">
-              SELECT ARENA
-            </h2>
-            <button
-              type="button"
-              onClick={() => {
-                soundEngine.play('ui_click');
-                onNavigate('character_select');
-              }}
-              className="px-4 py-2 rounded-full bg-slate-950/80 hover:bg-slate-900 border border-white/15 text-xs font-bold uppercase tracking-wider text-slate-200 cursor-pointer"
-            >
-              Back
-            </button>
-          </header>
-
-          <div className="mt-auto mx-auto w-full max-w-md bg-slate-950/85 backdrop-blur-md border border-white/15 rounded-3xl p-5 flex flex-col gap-4 pointer-events-auto shadow-2xl">
-            <div className="flex flex-col gap-2">
-              {arenaList.map((arena) => {
-                const active = arenaId === arena.id;
-                return (
-                  <button
-                    key={arena.id}
-                    type="button"
-                    onClick={() => {
-                      soundEngine.play('ui_click');
-                      onSelectArena(arena.id);
-                    }}
-                    className={`flex items-center justify-between px-4 py-2.5 rounded-2xl border text-left transition-all cursor-pointer ${
-                      active
-                        ? 'bg-slate-900 border-amber-400 text-white'
-                        : 'bg-slate-950/60 border-white/10 text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    <div>
-                      <div className="font-display font-black text-base uppercase">
-                        {arena.name}
-                      </div>
-                      <div className="font-mono text-[10px] uppercase tracking-wider text-amber-400">
-                        {arena.subtitle}
-                      </div>
-                    </div>
-                    <span
-                      className={`w-3 h-3 rounded-full ${
-                        active ? 'bg-amber-400 shadow-[0_0_8px_#f59e0b]' : 'bg-slate-700'
-                      }`}
-                    />
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Compact Rounds & Timer Selector */}
-            <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/10">
-              <div className="flex items-center justify-between bg-slate-900/80 rounded-xl px-3 py-2">
-                <span className="text-[11px] font-mono text-slate-400">ROUNDS</span>
-                <div className="flex gap-1">
-                  {[1, 2, 3].map((r) => (
-                    <button
-                      key={r}
-                      type="button"
-                      onClick={() => onChangeMatchRules(r, roundTimeSeconds)}
-                      className={`w-6 h-6 rounded-lg font-mono text-xs font-bold cursor-pointer ${
-                        roundsToWin === r
-                          ? 'bg-amber-500 text-slate-950'
-                          : 'bg-slate-800 text-slate-300'
-                      }`}
-                    >
-                      {r}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between bg-slate-900/80 rounded-xl px-3 py-2">
-                <span className="text-[11px] font-mono text-slate-400">TIME</span>
-                <div className="flex gap-1">
-                  {[60, 90].map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => onChangeMatchRules(roundsToWin, t)}
-                      className={`px-2 h-6 rounded-lg font-mono text-xs font-bold cursor-pointer ${
-                        roundTimeSeconds === t
-                          ? 'bg-cyan-400 text-slate-950'
-                          : 'bg-slate-800 text-slate-300'
-                      }`}
-                    >
-                      {t}s
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                soundEngine.play('ui_confirm');
-                onStartCombat();
-              }}
-              className="w-full py-4 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-display font-black text-lg uppercase tracking-wider shadow-[0_8px_24px_rgba(245,158,11,0.4)] transition-all active:scale-95 cursor-pointer"
-            >
-              START FIGHT
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* =================================================================== */}
-      {/* 5. MULTIPLAYER LOBBY SCREEN                                         */}
-      {/* =================================================================== */}
-      {screenState === 'multiplayer_lobby' && (
-        <div className="fixed inset-0 z-20 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 select-none">
-          <div className="w-full max-w-md bg-slate-900/95 border border-white/15 rounded-3xl p-6 flex flex-col gap-5 shadow-2xl">
-            <div className="flex items-center justify-between">
-              <h2 className="font-display font-black text-2xl uppercase text-white">
-                ONLINE 1V1
-              </h2>
-              <button
-                type="button"
-                onClick={() => {
-                  soundEngine.play('ui_click');
-                  mpClient.leaveRoom();
-                  onNavigate('main_menu');
-                }}
-                className="px-4 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 text-xs font-bold uppercase text-slate-200 cursor-pointer"
-              >
-                Back
-              </button>
-            </div>
-
-            {mpError && (
-              <div className="p-3 rounded-xl bg-rose-500/20 border border-rose-500/50 text-xs text-rose-200 font-medium">
-                {mpError}
-              </div>
-            )}
-
-            {!mpRoom ? (
-              <div className="flex flex-col gap-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    soundEngine.play('ui_confirm');
-                    mpClient.hostRoom('PLAYER 1', p1Char, arenaId);
-                  }}
-                  className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-display font-black text-sm uppercase tracking-wider cursor-pointer"
-                >
-                  CREATE ROOM
-                </button>
-
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    maxLength={6}
-                    value={joinCodeInput}
-                    onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
-                    placeholder="ROOM CODE"
-                    className="flex-1 bg-slate-950 border border-white/15 rounded-xl px-4 py-3 font-mono font-bold text-sm uppercase tracking-widest text-white text-center"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      soundEngine.play('ui_confirm');
-                      if (joinCodeInput.trim()) {
-                        mpClient.joinRoom(joinCodeInput.trim(), 'CHALLENGER', p2Char);
-                      }
-                    }}
-                    className="px-5 py-3 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-display font-black text-sm uppercase cursor-pointer"
-                  >
-                    JOIN
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="py-4 flex flex-col items-center gap-4 text-center">
-                <span className="font-mono text-xs uppercase tracking-widest text-slate-400">
-                  ROOM CODE
-                </span>
-                <div className="px-6 py-3 rounded-2xl bg-slate-950 border border-cyan-400/50 font-mono font-black text-3xl tracking-[0.25em] text-cyan-300">
-                  {mpRoom.code}
-                </div>
-                {mpRoom.players.length >= 2 ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      soundEngine.play('ui_confirm');
-                      mpClient.startMatch();
-                    }}
-                    className="w-full py-3.5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-display font-black text-sm uppercase tracking-wider cursor-pointer"
-                  >
-                    START ONLINE DUEL
-                  </button>
-                ) : (
-                  <span className="text-xs text-slate-400 animate-pulse">
-                    Waiting for challenger...
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* =================================================================== */}
-      {/* 6. PAUSE MODAL                                                      */}
+      {/* 2. PAUSE MODAL                                                      */}
       {/* =================================================================== */}
       {screenState === 'paused' && (
-        <div
-          role="dialog"
-          aria-label="Pause Menu"
-          className="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 select-none"
-        >
-          <div className="w-full max-w-xs bg-slate-900 border border-white/15 rounded-3xl p-6 flex flex-col gap-3 shadow-2xl text-center">
-            <h3 className="font-display font-black text-2xl uppercase text-white mb-1">PAUSED</h3>
+        <div className="fixed inset-0 z-30 bg-[#0b0d12]/80 flex items-center justify-center p-4 select-none">
+          <div className="w-full max-w-xs bg-[#14171e] border border-white/15 rounded-2xl p-6 flex flex-col gap-3 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h2 className="font-display font-bold text-lg text-zinc-100">Paused</h2>
+              <span className="font-mono text-xs text-zinc-400 tabular-nums">
+                Kills: {sim.player.kills}
+              </span>
+            </div>
 
             <button
               type="button"
@@ -611,20 +228,20 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
                 soundEngine.play('ui_confirm');
                 onResumeCombat();
               }}
-              className="w-full py-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-display font-black text-sm uppercase tracking-wider cursor-pointer"
+              className="w-full py-3 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-sm cursor-pointer"
             >
-              RESUME
+              Resume
             </button>
 
             <button
               type="button"
               onClick={() => {
                 soundEngine.play('ui_click');
-                onRestartMatch();
+                onOpenLayoutEditor();
               }}
-              className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="w-full py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-100 font-medium text-sm cursor-pointer"
             >
-              RESTART
+              Customize Controls
             </button>
 
             <button
@@ -633,9 +250,31 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
                 soundEngine.play('ui_click');
                 onOpenSettings(true);
               }}
-              className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="w-full py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-200 font-medium text-sm cursor-pointer"
             >
-              SETTINGS
+              Settings
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                soundEngine.play('ui_click');
+                onRestartMatch();
+              }}
+              className="w-full py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-200 font-medium text-sm cursor-pointer"
+            >
+              Restart Match
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                soundEngine.play('ui_confirm');
+                onNavigate('match_result');
+              }}
+              className="w-full py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-amber-300 font-medium text-sm cursor-pointer"
+            >
+              Finish Match &amp; Leaderboard
             </button>
 
             <button
@@ -644,46 +283,91 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
                 soundEngine.play('ui_click');
                 onNavigate('main_menu');
               }}
-              className="w-full py-3 rounded-2xl bg-rose-950/70 hover:bg-rose-900 border border-rose-500/30 text-rose-200 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+              className="w-full py-2.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-400 hover:text-zinc-200 font-medium text-sm cursor-pointer"
             >
-              QUIT
+              Main Menu
             </button>
           </div>
         </div>
       )}
 
       {/* =================================================================== */}
-      {/* 7. MATCH RESULT SCREEN                                              */}
+      {/* 3. 5-MINUTE DEATHMATCH LEADERBOARD & MATCH RESULT MODAL             */}
       {/* =================================================================== */}
       {screenState === 'match_result' && (
-        <div className="fixed inset-0 z-30 bg-slate-950/70 backdrop-blur-md flex items-center justify-center p-4 select-none">
-          <div className="w-full max-w-sm bg-slate-900/95 border border-white/15 rounded-3xl p-6 text-center flex flex-col items-center gap-5 shadow-2xl">
-            <div className="font-mono text-xs uppercase tracking-[0.3em] text-amber-400 font-bold">
-              MATCH OVER
+        <div
+          role="dialog"
+          aria-label="Deathmatch Leaderboard"
+          className="fixed inset-0 z-30 bg-[#0b0d12]/90 flex items-center justify-center p-4 select-none"
+        >
+          <div className="w-full max-w-lg bg-[#14171e] border border-white/15 rounded-2xl p-5 sm:p-6 flex flex-col gap-4 shadow-2xl max-h-[92vh] overflow-y-auto">
+            {/* Winner Header */}
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div>
+                <div className="font-mono text-xs uppercase tracking-wider text-amber-400 font-bold">
+                  {topCombatant?.isPlayer
+                    ? 'VICTORY · MOST KILLS'
+                    : `WINNER: ${topCombatant?.name || 'HOSTILE'}`}
+                </div>
+                <h2 className="mt-0.5 font-display font-black text-2xl text-zinc-100">
+                  Deathmatch Leaderboard
+                </h2>
+              </div>
+              <div className="text-right font-mono">
+                <div className="text-[11px] text-zinc-400">Your Kills</div>
+                <div className="text-2xl font-black text-emerald-400 tabular-nums">
+                  {sim.player.kills}
+                </div>
+              </div>
             </div>
 
-            <h2 className="font-display font-black text-3xl sm:text-4xl uppercase italic text-white">
-              {sim.matchWinner === 'p1'
-                ? `${CHARACTER_REGISTRY[p1Char].name} WINS`
-                : `${CHARACTER_REGISTRY[p2Char].name} WINS`}
-            </h2>
+            {/* Ranked Combatant Leaderboard Table */}
+            <div className="flex flex-col gap-1.5">
+              <div className="grid grid-cols-12 px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-zinc-400">
+                <span className="col-span-2">Rank</span>
+                <span className="col-span-4">Combatant</span>
+                <span className="col-span-3 text-center">Loadout</span>
+                <span className="col-span-2 text-right">Kills</span>
+                <span className="col-span-1 text-right">D</span>
+              </div>
 
-            <div className="flex items-center gap-4 px-5 py-2 rounded-full bg-slate-950 border border-white/10 font-mono font-black text-xl text-white">
-              <span className="text-cyan-400">{sim.p1RoundsWon}</span>
-              <span className="text-slate-600">:</span>
-              <span className="text-rose-400">{sim.p2RoundsWon}</span>
+              {leaderboard.map((entry, idx) => (
+                <div
+                  key={entry.id}
+                  className={`grid grid-cols-12 items-center px-3 py-2 rounded-xl border font-mono text-xs tabular-nums ${
+                    entry.isPlayer
+                      ? 'bg-emerald-500/15 border-emerald-400/50 text-zinc-100 font-bold'
+                      : idx === 0
+                        ? 'bg-amber-500/15 border-amber-400/40 text-zinc-100'
+                        : 'bg-[#0e1015] border-white/10 text-zinc-300'
+                  }`}
+                >
+                  <span className="col-span-2 font-bold text-amber-300">#{idx + 1}</span>
+                  <span className="col-span-4 truncate pr-2">{entry.name}</span>
+                  <div className="col-span-3 flex items-center justify-center gap-1">
+                    <WeaponIllustration weaponId={entry.weapons[0]} className="w-10 h-4" />
+                    <WeaponIllustration weaponId={entry.weapons[1]} className="w-10 h-4" />
+                  </div>
+                  <span className="col-span-2 text-right text-sm font-black text-zinc-100">
+                    {entry.kills}
+                  </span>
+                  <span className="col-span-1 text-right text-zinc-400">{entry.deaths}</span>
+                </div>
+              ))}
             </div>
 
-            <div className="w-full flex flex-col gap-2.5">
+            {/* Play Again & Back to Main Menu Actions */}
+            <div className="flex flex-col sm:flex-row gap-2.5 pt-2">
               <button
                 type="button"
+                data-start="true"
                 onClick={() => {
                   soundEngine.play('ui_confirm');
                   onRestartMatch();
                 }}
-                className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-display font-black text-base uppercase tracking-wider cursor-pointer"
+                className="flex-1 py-3 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-sm cursor-pointer"
               >
-                REMATCH
+                Play Again
               </button>
               <button
                 type="button"
@@ -691,9 +375,9 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
                   soundEngine.play('ui_click');
                   onNavigate('main_menu');
                 }}
-                className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-display font-bold text-xs uppercase tracking-wider cursor-pointer"
+                className="flex-1 py-3 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/15 text-zinc-200 font-medium text-sm cursor-pointer"
               >
-                MAIN MENU
+                Back to Main Menu
               </button>
             </div>
           </div>
@@ -701,7 +385,7 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
       )}
 
       {/* =================================================================== */}
-      {/* 8. SETTINGS MODAL                                                   */}
+      {/* 4. CLEAN MATTE SETTINGS MODAL                                       */}
       {/* =================================================================== */}
       {settingsOpen && (
         <div
@@ -709,38 +393,39 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
           aria-label="Settings"
           onKeyDown={handleKeyCapture}
           tabIndex={-1}
-          className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-md flex items-center justify-center p-4 select-none"
+          className="fixed inset-0 z-50 bg-[#0b0d12]/80 flex items-center justify-center p-4 select-none"
         >
-          <div className="w-full max-w-md bg-slate-900 border border-white/15 rounded-3xl p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+          <div className="w-full max-w-md bg-[#14171e] border border-white/15 rounded-2xl p-5 sm:p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="font-display font-black text-xl uppercase text-white">SETTINGS</h3>
+              <h3 className="font-display font-bold text-lg text-zinc-100">Settings</h3>
               <button
                 type="button"
+                aria-label="Close Settings"
                 onClick={() => {
                   soundEngine.play('ui_click');
                   onOpenSettings(false);
                 }}
-                className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center justify-center font-bold cursor-pointer"
+                className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 flex items-center justify-center cursor-pointer"
               >
-                ✕
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
               </button>
             </div>
 
             {/* Graphics Quality */}
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                Graphics
-              </span>
-              <div className="flex gap-1.5">
+              <span className="text-xs font-medium text-zinc-300">Graphics Quality</span>
+              <div className="flex gap-1 bg-[#0e1015] p-1 rounded-lg border border-white/10">
                 {(['low', 'medium', 'high'] as const).map((q) => (
                   <button
                     key={q}
                     type="button"
                     onClick={() => onUpdateSettings({ graphicsQuality: q })}
-                    className={`px-3 py-1 rounded-lg text-xs font-bold uppercase cursor-pointer ${
+                    className={`px-3 py-1 rounded text-xs font-medium capitalize cursor-pointer ${
                       settings.graphicsQuality === q
-                        ? 'bg-cyan-400 text-slate-950'
-                        : 'bg-slate-800 text-slate-300'
+                        ? 'bg-zinc-100 text-zinc-950 font-semibold'
+                        : 'text-zinc-400 hover:text-zinc-200'
                     }`}
                   >
                     {q}
@@ -749,32 +434,55 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
               </div>
             </div>
 
-            {/* Camera Zoom Distance */}
+            {/* Camera Aim Sensitivity */}
             <label className="flex flex-col gap-1">
-              <div className="flex justify-between text-xs font-bold uppercase tracking-wider text-slate-300">
-                <span>Camera Distance</span>
-                <span className="font-mono text-cyan-300">
-                  {settings.cameraDistance.toFixed(1)}m
+              <div className="flex justify-between text-xs text-zinc-300">
+                <span>Camera Aim Sensitivity</span>
+                <span className="font-mono text-zinc-100 tabular-nums">
+                  {Math.round(settings.touchSensitivity * 100)}%
                 </span>
               </div>
               <input
                 type="range"
-                min={4.4}
-                max={7.2}
-                step={0.2}
-                value={settings.cameraDistance}
+                aria-label="Camera Aim Sensitivity"
+                min={0.2}
+                max={2.0}
+                step={0.05}
+                value={settings.touchSensitivity}
                 onChange={(e) =>
-                  onUpdateSettings({ cameraDistance: parseFloat(e.target.value) })
+                  onUpdateSettings({ touchSensitivity: parseFloat(e.target.value) })
                 }
-                className="w-full accent-cyan-400"
+                className="w-full accent-zinc-100 cursor-pointer"
               />
             </label>
 
-            {/* Master Volume */}
+            {/* Firing Sensitivity (Fire Button Joystick Aim) */}
             <label className="flex flex-col gap-1">
-              <div className="flex justify-between text-xs font-bold uppercase tracking-wider text-slate-300">
+              <div className="flex justify-between text-xs text-zinc-300">
+                <span>Firing Sensitivity</span>
+                <span className="font-mono text-amber-300 tabular-nums">
+                  {Math.round((settings.fireSensitivity ?? 0.45) * 100)}%
+                </span>
+              </div>
+              <input
+                type="range"
+                aria-label="Firing Sensitivity"
+                min={0.1}
+                max={2.0}
+                step={0.05}
+                value={settings.fireSensitivity ?? 0.45}
+                onChange={(e) =>
+                  onUpdateSettings({ fireSensitivity: parseFloat(e.target.value) })
+                }
+                className="w-full accent-amber-400 cursor-pointer"
+              />
+            </label>
+
+            {/* Audio Volume */}
+            <label className="flex flex-col gap-1">
+              <div className="flex justify-between text-xs text-zinc-300">
                 <span>Audio Volume</span>
-                <span className="font-mono text-amber-300">
+                <span className="font-mono text-zinc-100 tabular-nums">
                   {Math.round(settings.masterVolume * 100)}%
                 </span>
               </div>
@@ -787,64 +495,129 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
                 onChange={(e) =>
                   onUpdateSettings({ masterVolume: parseFloat(e.target.value) })
                 }
-                className="w-full accent-amber-400"
+                className="w-full accent-zinc-100 cursor-pointer"
               />
             </label>
 
-            {/* Compact Keybindings */}
+            {/* Fullscreen & Mobile Landscape */}
+            <div className="flex items-center justify-between border-t border-white/10 pt-3">
+              <span className="text-xs font-medium text-zinc-300">
+                Fullscreen &amp; Landscape
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateSettings({
+                      autoFullscreenLandscape: !settings.autoFullscreenLandscape,
+                    })
+                  }
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium cursor-pointer ${
+                    settings.autoFullscreenLandscape
+                      ? 'bg-zinc-200 text-zinc-950 font-semibold'
+                      : 'bg-zinc-800 text-zinc-400'
+                  }`}
+                >
+                  {settings.autoFullscreenLandscape ? 'Auto: On' : 'Auto: Off'}
+                </button>
+                <button
+                  type="button"
+                  data-fullscreen-toggle="true"
+                  onClick={() => {
+                    soundEngine.play('ui_click');
+                    onToggleFullscreen();
+                  }}
+                  className="px-3 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-200 cursor-pointer"
+                >
+                  {isFullscreen ? 'Exit' : 'Fullscreen'}
+                </button>
+              </div>
+            </div>
+
+            {/* Keybindings */}
             <div className="border-t border-white/10 pt-3 flex flex-col gap-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Controls
-                </span>
+                <span className="text-xs font-medium text-zinc-300">Keyboard Bindings</span>
                 <button
                   type="button"
                   onClick={() =>
                     onUpdateSettings({ keybindings: { ...DEFAULT_KEYBINDINGS } })
                   }
-                  className="text-[11px] font-mono text-cyan-400 hover:underline cursor-pointer"
+                  className="text-xs font-mono text-zinc-400 hover:text-zinc-100 cursor-pointer"
                 >
                   Reset
                 </button>
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-1.5">
                 {(
                   [
-                    ['lightAttack', 'Strike'],
-                    ['heavyAttack', 'Heavy'],
-                    ['guard', 'Guard'],
-                    ['dodge', 'Dash'],
-                    ['ability', 'Special'],
-                    ['lockOn', 'Lock-On'],
+                    ['fire', 'Fire'],
+                    ['ads', 'Scope'],
+                    ['reload', 'Reload'],
+                    ['jump', 'Jump'],
+                    ['crouch', 'Crouch'],
+                    ['slide', 'Slide'],
+                    ['nextWeapon', 'Switch Gun'],
                   ] as [keyof KeyBindingsConfig, string][]
                 ).map(([key, label]) => (
                   <button
                     key={String(key)}
                     type="button"
                     onClick={() => setRebindingKey(key)}
-                    className={`px-3 py-2 rounded-xl border text-xs flex items-center justify-between cursor-pointer ${
+                    className={`px-3 py-2 rounded-lg border text-xs flex items-center justify-between cursor-pointer ${
                       rebindingKey === key
-                        ? 'border-amber-400 bg-amber-500/20 text-amber-200'
-                        : 'border-white/10 bg-slate-950/70 text-slate-300'
+                        ? 'border-white bg-zinc-800 text-white'
+                        : 'border-white/10 bg-[#0e1015] text-zinc-300 hover:border-white/25'
                     }`}
                   >
                     <span>{label}</span>
-                    <span className="font-mono font-bold text-cyan-300">
+                    <span className="font-mono font-semibold text-zinc-100">
                       {rebindingKey === key
                         ? '...'
-                        : settings.keybindings[key].replace('Key', '')}
+                        : (settings.keybindings[key] || '').replace('Key', '')}
                     </span>
                   </button>
                 ))}
               </div>
             </div>
 
+            {/* Touch Controls Layout Customizer */}
+            <div className="border-t border-white/10 pt-3 flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-zinc-300">Touch Controls</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateSettings({
+                      buttonsLayout: { ...DEFAULT_HUD_BUTTONS_LAYOUT },
+                      hudGlobalScale: 1.0,
+                      hudGlobalOpacity: 0.95,
+                    })
+                  }
+                  className="text-xs font-mono text-zinc-400 hover:text-zinc-100 cursor-pointer"
+                >
+                  Reset Layout
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  soundEngine.play('ui_confirm');
+                  onOpenLayoutEditor();
+                }}
+                className="w-full py-3 px-4 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/15 text-zinc-100 font-medium text-sm flex items-center justify-center transition-colors cursor-pointer"
+              >
+                Customize Controls
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={() => onOpenSettings(false)}
-              className="mt-2 w-full py-3 rounded-2xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-display font-black text-sm uppercase tracking-wider cursor-pointer"
+              className="mt-1 w-full py-3 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 font-semibold text-sm cursor-pointer"
             >
-              DONE
+              Done
             </button>
           </div>
         </div>

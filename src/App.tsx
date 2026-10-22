@@ -3,24 +3,61 @@ import {
   ArenaId,
   BotDifficulty,
   CharacterId,
+  DEATHMATCH_DURATION_SECONDS,
+  DEFAULT_HUD_BUTTONS_LAYOUT,
+  DEFAULT_KEYBINDINGS,
   DEFAULT_SETTINGS,
   DEFAULT_TRAINING_CONFIG,
   GameMode,
   GameSettings,
+  LOADOUT_PAIRS,
+  LoadoutPairId,
   ScreenState,
   TrainingConfig,
+  WeaponId,
 } from './game/config.ts';
 import {
   CombatEvent,
   SimulationState,
   createSimulationState,
+  handleWeaponSlotClick,
   resetRoundPositions,
+  setPlayerLoadoutPair,
 } from './game/rules.ts';
 import { GameCanvas } from './components/GameCanvas.tsx';
 import { CombatHUD, HudDomRefs, TouchInputState } from './components/CombatHUD.tsx';
 import { MenuScreens } from './components/MenuScreens.tsx';
+import { HUDLayoutEditor } from './components/HUDLayoutEditor.tsx';
 import { soundEngine } from './audio/soundEngine.ts';
 import { multiplayerClient, RoomStatePayload } from './network/multiplayerClient.ts';
+
+const SETTINGS_STORAGE_KEY = 'fracture_fps_settings_v2';
+
+function loadStoredSettings(): GameSettings {
+  try {
+    const raw = typeof window !== 'undefined' ? localStorage.getItem(SETTINGS_STORAGE_KEY) : null;
+    if (!raw) return DEFAULT_SETTINGS;
+    const parsed = JSON.parse(raw);
+    return {
+      ...DEFAULT_SETTINGS,
+      ...parsed,
+      fireSensitivity:
+        typeof parsed.fireSensitivity === 'number'
+          ? parsed.fireSensitivity
+          : DEFAULT_SETTINGS.fireSensitivity,
+      buttonsLayout: {
+        ...DEFAULT_HUD_BUTTONS_LAYOUT,
+        ...(parsed.buttonsLayout || {}),
+      },
+      keybindings: {
+        ...DEFAULT_KEYBINDINGS,
+        ...(parsed.keybindings || {}),
+      },
+    };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
 
 export function App() {
   const searchParams =
@@ -40,13 +77,29 @@ export function App() {
     initialArenaParam || 'foundry_arena'
   );
   const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>('normal');
-  const [roundsToWin, setRoundsToWin] = useState<number>(2);
-  const [roundTimeSeconds, setRoundTimeSeconds] = useState<number>(90);
+  const [roundsToWin, setRoundsToWin] = useState<number>(1);
+  const [roundTimeSeconds, setRoundTimeSeconds] = useState<number>(
+    DEATHMATCH_DURATION_SECONDS
+  );
+  const [selectedLoadoutPairId, setSelectedLoadoutPairId] =
+    useState<LoadoutPairId>('pair_1');
+  const [loadoutWeapons, setLoadoutWeapons] = useState<[WeaponId, WeaponId]>(
+    LOADOUT_PAIRS[0].weapons
+  );
+  const [selectedWeapon, setSelectedWeapon] = useState<WeaponId>(
+    LOADOUT_PAIRS[0].weapons[0]
+  );
+  const [loadoutOverlayMode, setLoadoutOverlayMode] = useState<
+    'initial' | 'respawn' | null
+  >(null);
 
-  const [lockedOn, setLockedOn] = useState<boolean>(true);
+  const [lockedOn, setLockedOn] = useState<boolean>(false);
+  const [firstPersonMode, setFirstPersonMode] = useState<boolean>(true);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const [settings, setSettings] = useState<GameSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<GameSettings>(() => loadStoredSettings());
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+  const [layoutEditorOpen, setLayoutEditorOpen] = useState<boolean>(false);
+  const [editorOpenedFromSettings, setEditorOpenedFromSettings] = useState<boolean>(false);
   const [trainingConfig, setTrainingConfig] = useState<TrainingConfig>(DEFAULT_TRAINING_CONFIG);
 
   const [countdownValue, setCountdownValue] = useState<number | null>(null);
@@ -68,7 +121,14 @@ export function App() {
 
   // Core simulation state ref
   const simRef = useRef<SimulationState>(
-    createSimulationState('volt', 'rift', 'foundry_arena', 2, 90)
+    createSimulationState(
+      'volt',
+      'rift',
+      'foundry_arena',
+      1,
+      DEATHMATCH_DURATION_SECONDS,
+      LOADOUT_PAIRS[0].weapons
+    )
   );
 
   // Touch input state ref
@@ -80,6 +140,9 @@ export function App() {
     shoulderTogglePressed: false,
     aimHeld: false,
     lightPressed: false,
+    lightHeld: false,
+    attackDragX: 0,
+    attackDragY: 0,
     heavyPressed: false,
     guardHeld: false,
     guardJustPressed: false,
@@ -121,80 +184,159 @@ export function App() {
   const btnHeavyRef = useRef<HTMLButtonElement | null>(null);
   const btnDodgeRef = useRef<HTMLButtonElement | null>(null);
   const btnAbilityRef = useRef<HTMLButtonElement | null>(null);
+  const screenImpactOverlay = useRef<HTMLDivElement | null>(null);
+  const dashWindOverlay = useRef<HTMLDivElement | null>(null);
+  const hudShakeContainer = useRef<HTMLDivElement | null>(null);
 
-  const hudRefs: HudDomRefs = {
-    p1HpFill,
-    p1HpGhost,
-    p1HpText,
-    p1StaminaFill,
-    p1StaminaText,
-    p1AbilityFill,
-    p1AbilityText,
-    p1StateBadge,
-    p1ComboBox,
-    p1ComboHits,
-    p1ComboDmg,
-    p2HpFill,
-    p2HpGhost,
-    p2HpText,
-    p2StaminaFill,
-    p2StaminaText,
-    p2StateBadge,
-    p2ComboBox,
-    p2ComboHits,
-    p2ComboDmg,
-    timerText,
-    aiStateBadge,
-    lockReticle,
-    crosshairRef,
-    hitMarkerRef,
-    mobileAbilityOverlay,
-    mobileAbilityTimer,
-    btnLightRef,
-    btnHeavyRef,
-    btnDodgeRef,
-    btnAbilityRef,
-  };
+  const hudRefs: HudDomRefs = React.useMemo(
+    () => ({
+      p1HpFill,
+      p1HpGhost,
+      p1HpText,
+      p1StaminaFill,
+      p1StaminaText,
+      p1AbilityFill,
+      p1AbilityText,
+      p1StateBadge,
+      p1ComboBox,
+      p1ComboHits,
+      p1ComboDmg,
+      p2HpFill,
+      p2HpGhost,
+      p2HpText,
+      p2StaminaFill,
+      p2StaminaText,
+      p2StateBadge,
+      p2ComboBox,
+      p2ComboHits,
+      p2ComboDmg,
+      timerText,
+      aiStateBadge,
+      lockReticle,
+      crosshairRef,
+      hitMarkerRef,
+      mobileAbilityOverlay,
+      mobileAbilityTimer,
+      btnLightRef,
+      btnHeavyRef,
+      btnDodgeRef,
+      btnAbilityRef,
+      screenImpactOverlay,
+      dashWindOverlay,
+      hudShakeContainer,
+    }),
+    []
+  );
 
-  // Track Fullscreen API state changes
-  useEffect(() => {
-    const onFullscreenChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
-    };
-    document.addEventListener('fullscreenchange', onFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
-  }, []);
-
-  const requestLandscapeFullscreen = useCallback(async () => {
-    const isHeadless =
-      navigator.webdriver || /HeadlessChrome/i.test(navigator.userAgent);
-    if (isHeadless) return;
-
-    try {
-      if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
-        await document.documentElement.requestFullscreen();
-      }
-    } catch {
-      // Graceful fallback when fullscreen is blocked by iframe policy or browser
-    }
-
+  const lockMobileLandscape = useCallback(async () => {
     try {
       const orientationApi = screen.orientation as ScreenOrientation & {
         lock?: (orientation: string) => Promise<void>;
       };
       if (orientationApi && typeof orientationApi.lock === 'function') {
-        await orientationApi.lock('landscape');
+        try {
+          await orientationApi.lock('landscape');
+        } catch {
+          await orientationApi.lock('landscape-primary');
+        }
       }
     } catch {
       // Graceful fallback when orientation lock is unsupported
     }
   }, []);
 
+  const requestLandscapeFullscreen = useCallback(async () => {
+    soundEngine.unlock();
+    const isHeadless =
+      navigator.webdriver || /HeadlessChrome/i.test(navigator.userAgent);
+    if (isHeadless) return;
+
+    const docEl = document.documentElement as HTMLElement & {
+      webkitRequestFullscreen?: () => Promise<void>;
+    };
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+    };
+
+    try {
+      const currentlyFullscreen = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement);
+      if (!currentlyFullscreen) {
+        if (typeof docEl.requestFullscreen === 'function') {
+          await docEl.requestFullscreen({ navigationUI: 'hide' }).catch(() =>
+            docEl.requestFullscreen()
+          );
+        } else if (typeof docEl.webkitRequestFullscreen === 'function') {
+          await docEl.webkitRequestFullscreen();
+        }
+      }
+    } catch {
+      // Graceful fallback when fullscreen is blocked by iframe policy or browser
+    }
+
+    await lockMobileLandscape();
+  }, [lockMobileLandscape]);
+
+  // Automatically enter Fullscreen + Landscape on any in-game click/tap (in bubble phase so button clicks execute first and are never swallowed)
+  useEffect(() => {
+    if (!settings.autoFullscreenLandscape) return;
+
+    const handleUserInteraction = (e: Event) => {
+      soundEngine.unlock();
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest('[data-fullscreen-toggle="true"]')) {
+        return;
+      }
+      const doc = document as Document & {
+        webkitFullscreenElement?: Element | null;
+      };
+      if (!doc.fullscreenElement && !doc.webkitFullscreenElement) {
+        void requestLandscapeFullscreen();
+      } else {
+        void lockMobileLandscape();
+      }
+    };
+
+    window.addEventListener('click', handleUserInteraction, { capture: false, passive: true });
+    window.addEventListener('touchend', handleUserInteraction, { capture: false, passive: true });
+    window.addEventListener('pointerup', handleUserInteraction, { capture: false, passive: true });
+    return () => {
+      window.removeEventListener('click', handleUserInteraction, { capture: false });
+      window.removeEventListener('touchend', handleUserInteraction, { capture: false });
+      window.removeEventListener('pointerup', handleUserInteraction, { capture: false });
+    };
+  }, [settings.autoFullscreenLandscape, requestLandscapeFullscreen, lockMobileLandscape]);
+
+  // Track Fullscreen API state changes and enforce landscape lock when entering fullscreen
+  useEffect(() => {
+    const doc = document as Document & {
+      webkitFullscreenElement?: Element | null;
+    };
+    const onFullscreenChange = () => {
+      const active = Boolean(doc.fullscreenElement || doc.webkitFullscreenElement);
+      setIsFullscreen(active);
+      if (active) {
+        void lockMobileLandscape();
+      }
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
+    };
+  }, [lockMobileLandscape]);
+
   const handleToggleFullscreen = useCallback(async () => {
     try {
-      if (document.fullscreenElement) {
-        if (document.exitFullscreen) {
-          await document.exitFullscreen();
+      const doc = document as Document & {
+        webkitFullscreenElement?: Element | null;
+        webkitExitFullscreen?: () => Promise<void>;
+      };
+      if (doc.fullscreenElement || doc.webkitFullscreenElement) {
+        if (typeof doc.exitFullscreen === 'function') {
+          await doc.exitFullscreen();
+        } else if (typeof doc.webkitExitFullscreen === 'function') {
+          await doc.webkitExitFullscreen();
         }
         try {
           const orientationApi = screen.orientation as ScreenOrientation & {
@@ -225,6 +367,16 @@ export function App() {
     }
   }, [screenState]);
 
+  // Sync activeWeapon state from simulation
+  useEffect(() => {
+    if (screenState !== 'combat') return;
+    const id = window.setInterval(() => {
+      const curWep = simRef.current.player.activeWeapon;
+      setSelectedWeapon((prev) => (prev !== curWep ? curWep : prev));
+    }, 150);
+    return () => window.clearInterval(id);
+  }, [screenState]);
+
   // Subscribe to MultiplayerClient updates
   useEffect(() => {
     const unsub = multiplayerClient.subscribe(() => {
@@ -242,34 +394,36 @@ export function App() {
       overrideArena = arenaId,
       overrideRounds = roundsToWin,
       overrideTimer = roundTimeSeconds,
-      skipCountdown = false
+      skipLoadoutPrompt = false
     ) => {
       if (document.activeElement instanceof HTMLElement) {
         document.activeElement.blur();
       }
-      if (settings.autoFullscreenLandscape) {
-        void requestLandscapeFullscreen();
-      }
-      simRef.current = createSimulationState(
+      const nextSim = createSimulationState(
         overrideP1,
         overrideP2,
         overrideArena,
         overrideRounds,
-        overrideTimer
+        overrideTimer,
+        loadoutWeapons
       );
-      setLockedOn(true);
+      setSelectedWeapon(nextSim.player.activeWeapon);
+      simRef.current = nextSim;
+      setLockedOn(false);
       setSimVersion((v) => v + 1);
       setRoundBanner(null);
+      setCountdownValue(null);
+      setScreenState('combat');
 
-      if (skipCountdown || gameMode === 'training') {
-        setCountdownValue(null);
-        setScreenState('combat');
-        return;
+      if (skipLoadoutPrompt) {
+        setLoadoutOverlayMode(null);
+      } else {
+        setLoadoutOverlayMode('initial');
       }
 
-      setScreenState('combat');
-      setCountdownValue(3);
-      soundEngine.play('countdown_tick');
+      if (settings.autoFullscreenLandscape) {
+        void requestLandscapeFullscreen();
+      }
     },
     [
       p1Char,
@@ -277,7 +431,7 @@ export function App() {
       arenaId,
       roundsToWin,
       roundTimeSeconds,
-      gameMode,
+      loadoutWeapons,
       settings.autoFullscreenLandscape,
       requestLandscapeFullscreen,
     ]
@@ -296,7 +450,7 @@ export function App() {
       } else {
         setCountdownValue(null);
       }
-    }, 650);
+    }, 600);
     return () => window.clearTimeout(timer);
   }, [countdownValue]);
 
@@ -323,7 +477,7 @@ export function App() {
   // Global keyboard shortcuts: Enter/Space on title screen starts; Escape/P pauses/resumes; R resets in training; F toggles fullscreen
   useEffect(() => {
     const onGlobalKeyDown = (e: KeyboardEvent) => {
-      if (settingsOpen) return;
+      if (settingsOpen || layoutEditorOpen) return;
 
       if (screenState === 'main_menu' && (e.code === 'Enter' || e.code === 'Space')) {
         e.preventDefault();
@@ -336,6 +490,13 @@ export function App() {
       if (e.code === 'Escape' || e.code === 'KeyP') {
         if (screenState === 'combat') {
           e.preventDefault();
+          if (document.pointerLockElement) {
+            try {
+              document.exitPointerLock();
+            } catch {
+              // ignore
+            }
+          }
           setScreenState('paused');
         } else if (screenState === 'paused') {
           e.preventDefault();
@@ -354,11 +515,6 @@ export function App() {
       if (e.code === 'KeyF' && (screenState === 'combat' || screenState === 'paused')) {
         void handleToggleFullscreen();
       }
-
-      if (e.code === 'KeyR' && screenState === 'combat' && gameMode === 'training') {
-        resetRoundPositions(simRef.current);
-        setSimVersion((v) => v + 1);
-      }
     };
 
     window.addEventListener('keydown', onGlobalKeyDown);
@@ -366,6 +522,7 @@ export function App() {
   }, [
     screenState,
     settingsOpen,
+    layoutEditorOpen,
     gameMode,
     p1Char,
     p2Char,
@@ -377,44 +534,39 @@ export function App() {
   ]);
 
   const handleCombatEvent = useCallback((evt: CombatEvent) => {
+    if (evt.type === 'player_respawn' && simRef.current.player.awaitingRespawn) {
+      setLoadoutOverlayMode('respawn');
+    }
     if (
-      evt.type === 'parried' ||
-      evt.type === 'counter_riposte' ||
-      evt.type === 'combo_breaker' ||
-      evt.type === 'guard_break' ||
-      evt.type === 'execution_hit' ||
+      evt.type === 'headshot' ||
+      evt.type === 'enemy_killed' ||
+      evt.type === 'wave_clear' ||
+      evt.type === 'player_respawn' ||
+      evt.type === 'pickup_collected' ||
       evt.type === 'barrel_explode' ||
-      evt.type === 'prop_shatter' ||
-      evt.type === 'dodge_evade' ||
-      evt.type === 'ability_cast' ||
-      evt.type === 'decoy_shatter' ||
-      evt.type === 'hit_heavy'
+      evt.type === 'prop_shatter'
     ) {
       const colorMap: Record<string, string> = {
-        parried: '#38bdf8',
-        counter_riposte: '#fbbf24',
-        combo_breaker: '#38bdf8',
-        guard_break: '#ef4444',
-        execution_hit: '#f43f5e',
-        barrel_explode: '#fb923c',
-        prop_shatter: '#f59e0b',
-        dodge_evade: '#e6e4e0',
-        ability_cast: '#d97706',
-        decoy_shatter: '#a3b18a',
-        hit_heavy: '#f59e0b',
+        headshot: '#f59e0b',
+        enemy_killed: '#e4e4e7',
+        wave_clear: '#10b981',
+        player_respawn: '#38bdf8',
+        pickup_collected: '#10b981',
+        barrel_explode: '#f97316',
+        prop_shatter: '#d4d4d8',
       };
       setCombatCallout({
         id: Date.now() + Math.random(),
         text: evt.label,
-        color: colorMap[evt.type] || '#e6e4e0',
+        color: colorMap[evt.type] || '#f4f4f5',
       });
     }
   }, []);
 
-  // Clear combat callouts after 1.1s
+  // Clear combat callouts after 1.0s
   useEffect(() => {
     if (!combatCallout) return;
-    const t = window.setTimeout(() => setCombatCallout(null), 1100);
+    const t = window.setTimeout(() => setCombatCallout(null), 1000);
     return () => window.clearTimeout(t);
   }, [combatCallout]);
 
@@ -424,40 +576,94 @@ export function App() {
 
     const winLabel =
       winner === 'draw'
-        ? 'ROUND DRAW'
+        ? 'TIME EXPIRED'
         : winner === 'p1'
-          ? 'ROUND WON'
-          : 'ROUND LOST';
+          ? 'VICTORY · MOST KILLS'
+          : `WINNER: ${sim.winnerName || 'HOSTILE'}`;
     setRoundBanner(winLabel);
 
     window.setTimeout(() => {
       if (sim.matchOver) {
+        if (document.pointerLockElement) {
+          try {
+            document.exitPointerLock();
+          } catch {
+            // ignore
+          }
+        }
         setRoundBanner(null);
         setScreenState('match_result');
       } else {
-        sim.roundNumber += 1;
         resetRoundPositions(sim);
         setSimVersion((v) => v + 1);
         setRoundBanner(null);
-        setCountdownValue(2);
       }
-    }, 1800);
+    }, 900);
   }, []);
 
   const handleUpdateSettings = useCallback((updates: Partial<GameSettings>) => {
     setSettings((prev) => {
-      const next = { ...prev, ...updates };
+      const next = {
+        ...prev,
+        ...updates,
+        buttonsLayout: updates.buttonsLayout
+          ? { ...prev.buttonsLayout, ...updates.buttonsLayout }
+          : prev.buttonsLayout,
+      };
       soundEngine.setVolume(next.masterVolume, next.muted);
+      try {
+        localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
+      } catch {
+        // ignore
+      }
       return next;
     });
   }, []);
+
+  const handleSelectWeapon = useCallback((w: WeaponId) => {
+    const action = handleWeaponSlotClick(simRef.current.player, w);
+    if (action === 'switched') {
+      setSelectedWeapon(w);
+    }
+  }, []);
+
+  const handleSelectLoadoutPair = useCallback(
+    (
+      pairId: LoadoutPairId,
+      weapons: [WeaponId, WeaponId],
+      autoSpawn = false
+    ) => {
+      setSelectedLoadoutPairId(pairId);
+      setLoadoutWeapons(weapons);
+      setSelectedWeapon(weapons[0]);
+      setPlayerLoadoutPair(simRef.current.player, weapons);
+      simRef.current.player.activeWeapon = weapons[0];
+      if (autoSpawn) {
+        simRef.current.player.awaitingRespawn = false;
+        setLoadoutOverlayMode(null);
+      }
+      if (settings.autoFullscreenLandscape) {
+        void requestLandscapeFullscreen();
+      }
+    },
+    [settings.autoFullscreenLandscape, requestLandscapeFullscreen]
+  );
+
+  const handleConfirmRespawn = useCallback(() => {
+    simRef.current.player.awaitingRespawn = false;
+    simRef.current.player.hp = simRef.current.player.maxHp;
+    setLoadoutOverlayMode(null);
+    if (settings.autoFullscreenLandscape) {
+      void requestLandscapeFullscreen();
+    }
+  }, [settings.autoFullscreenLandscape, requestLandscapeFullscreen]);
 
   const isCombatVisible =
     screenState === 'combat' || screenState === 'paused' || screenState === 'match_result';
 
   return (
-    <div className="relative w-screen h-[100dvh] overflow-hidden bg-[#0d0e11] select-none">
-      {/* Persistent Three.js WebGL Viewport */}
+    <div className="relative w-screen h-[100dvh] overflow-hidden bg-[#0e1015] select-none">
+      {/* Persistent Three.js WebGL First-Person Shooter Viewport */}
       <GameCanvas
         screenState={screenState}
         gameMode={gameMode}
@@ -466,31 +672,28 @@ export function App() {
         arenaId={arenaId}
         botDifficulty={botDifficulty}
         lockedOn={lockedOn}
+        firstPersonMode={firstPersonMode}
         settings={settings}
         trainingConfig={trainingConfig}
         simRef={simRef}
         hudRefs={hudRefs}
         touchInputRef={touchInputRef}
+        loadoutOverlayOpen={Boolean(loadoutOverlayMode)}
         onToggleLockOn={() => setLockedOn((prev) => !prev)}
+        onToggleFirstPerson={() => setFirstPersonMode((prev) => !prev)}
         onCombatEvent={handleCombatEvent}
         onRoundFinished={handleRoundFinished}
       />
 
-      {/* Active Combat HUD */}
-      {isCombatVisible && (
+      {/* Active FPS Combat HUD (Hidden while Full-Screen Controls Layout Editor is active) */}
+      {isCombatVisible && !layoutEditorOpen && (
         <CombatHUD
           hudRefs={hudRefs}
           p1Char={p1Char}
           p2Char={p2Char}
-          p1Name="PLAYER 1"
-          p2Name={
-            gameMode === 'training'
-              ? 'PRACTICE DUMMY'
-              : gameMode === 'multiplayer'
-                ? 'CHALLENGER'
-                : `AI (${botDifficulty.toUpperCase()})`
-          }
-          roundNumber={simRef.current.roundNumber}
+          p1Name="OPERATOR"
+          p2Name="HOSTILES"
+          roundNumber={simRef.current.waveNumber}
           roundsToWin={simRef.current.roundsToWin}
           p1RoundsWon={simRef.current.p1RoundsWon}
           p2RoundsWon={simRef.current.p2RoundsWon}
@@ -501,16 +704,45 @@ export function App() {
           muted={settings.muted}
           isFullscreen={isFullscreen}
           lockedOn={lockedOn}
+          firstPersonMode={firstPersonMode}
           settings={settings}
           trainingConfig={trainingConfig}
           touchInputRef={touchInputRef}
+          activeWeapon={selectedWeapon}
+          loadoutWeapons={loadoutWeapons}
+          selectedLoadoutPairId={selectedLoadoutPairId}
+          loadoutOverlayMode={screenState === 'combat' ? loadoutOverlayMode : null}
+          onSelectLoadoutPair={handleSelectLoadoutPair}
+          onConfirmRespawn={handleConfirmRespawn}
+          onSelectWeapon={handleSelectWeapon}
           onToggleMute={() => handleUpdateSettings({ muted: !settings.muted })}
           onToggleFullscreen={() => void handleToggleFullscreen()}
           onToggleLockOn={() => setLockedOn((prev) => !prev)}
+          onToggleFirstPerson={() => setFirstPersonMode((prev) => !prev)}
           onToggleControlHints={() =>
             handleUpdateSettings({ showControlHints: !settings.showControlHints })
           }
-          onPause={() => setScreenState('paused')}
+          onPause={() => {
+            if (document.pointerLockElement) {
+              try {
+                document.exitPointerLock();
+              } catch {
+                // ignore
+              }
+            }
+            setScreenState('paused');
+          }}
+          onOpenLayoutEditor={() => {
+            if (document.pointerLockElement) {
+              try {
+                document.exitPointerLock();
+              } catch {
+                // ignore
+              }
+            }
+            setEditorOpenedFromSettings(false);
+            setLayoutEditorOpen(true);
+          }}
           onRestartRound={() => {
             resetRoundPositions(simRef.current);
             setSimVersion((v) => v + 1);
@@ -521,54 +753,87 @@ export function App() {
         />
       )}
 
-      {/* Menu, Lobby, Settings, Pause & Result Screens */}
-      <MenuScreens
-        screenState={screenState}
-        gameMode={gameMode}
-        p1Char={p1Char}
-        p2Char={p2Char}
-        arenaId={arenaId}
-        botDifficulty={botDifficulty}
-        roundsToWin={roundsToWin}
-        roundTimeSeconds={roundTimeSeconds}
-        settings={settings}
-        settingsOpen={settingsOpen}
-        isFullscreen={isFullscreen}
-        sim={simRef.current}
-        mpClient={multiplayerClient}
-        mpRoom={mpRoom}
-        mpStatus={mpStatus}
-        mpError={mpError}
-        onNavigate={(scr) => setScreenState(scr)}
-        onSelectMode={(m) => setGameMode(m)}
-        onSelectP1Char={(id) => {
-          setP1Char(id);
-          simRef.current.p1.characterId = id;
-        }}
-        onSelectP2Char={(id) => {
-          setP2Char(id);
-          simRef.current.p2.characterId = id;
-        }}
-        onSelectArena={(id) => {
-          setArenaId(id);
-          simRef.current.arenaId = id;
-        }}
-        onSelectDifficulty={(d) => setBotDifficulty(d)}
-        onChangeMatchRules={(r, t) => {
-          setRoundsToWin(r);
-          setRoundTimeSeconds(t);
-        }}
-        onStartCombat={() =>
-          launchMatch(p1Char, p2Char, arenaId, roundsToWin, roundTimeSeconds, false)
-        }
-        onResumeCombat={() => setScreenState('combat')}
-        onRestartMatch={() =>
-          launchMatch(p1Char, p2Char, arenaId, roundsToWin, roundTimeSeconds, false)
-        }
-        onToggleFullscreen={() => void handleToggleFullscreen()}
-        onOpenSettings={(open) => setSettingsOpen(open)}
-        onUpdateSettings={handleUpdateSettings}
-      />
+      {/* Clean Matte Menu, Settings, Pause & Result Screens */}
+      {!layoutEditorOpen && (
+        <MenuScreens
+          screenState={screenState}
+          gameMode={gameMode}
+          p1Char={p1Char}
+          p2Char={p2Char}
+          arenaId={arenaId}
+          botDifficulty={botDifficulty}
+          roundsToWin={roundsToWin}
+          roundTimeSeconds={roundTimeSeconds}
+          settings={settings}
+          settingsOpen={settingsOpen}
+          isFullscreen={isFullscreen}
+          sim={simRef.current}
+          mpClient={multiplayerClient}
+          mpRoom={mpRoom}
+          mpStatus={mpStatus}
+          mpError={mpError}
+          selectedWeapon={selectedWeapon}
+          selectedLoadoutPairId={selectedLoadoutPairId}
+          onSelectLoadoutPair={handleSelectLoadoutPair}
+          onSelectWeapon={handleSelectWeapon}
+          onNavigate={(scr) => setScreenState(scr)}
+          onSelectMode={(m) => setGameMode(m)}
+          onSelectP1Char={(id) => {
+            setP1Char(id);
+            simRef.current.p1.characterId = id;
+          }}
+          onSelectP2Char={(id) => {
+            setP2Char(id);
+            simRef.current.p2.characterId = id;
+          }}
+          onSelectArena={(id) => {
+            setArenaId(id);
+            simRef.current.arenaId = id;
+          }}
+          onSelectDifficulty={(d) => setBotDifficulty(d)}
+          onChangeMatchRules={(r, t) => {
+            setRoundsToWin(r);
+            setRoundTimeSeconds(t);
+          }}
+          onStartCombat={() =>
+            launchMatch(p1Char, p2Char, arenaId, roundsToWin, roundTimeSeconds, false)
+          }
+          onResumeCombat={() => setScreenState('combat')}
+          onRestartMatch={() =>
+            launchMatch(p1Char, p2Char, arenaId, roundsToWin, roundTimeSeconds, false)
+          }
+          onToggleFullscreen={() => void handleToggleFullscreen()}
+          onOpenSettings={(open) => setSettingsOpen(open)}
+          onOpenLayoutEditor={() => {
+            setEditorOpenedFromSettings(settingsOpen);
+            setSettingsOpen(false);
+            setLayoutEditorOpen(true);
+          }}
+          onUpdateSettings={handleUpdateSettings}
+        />
+      )}
+
+      {/* Dedicated Full-Screen Controls Layout Editor with Movable & Hideable Mini Bar */}
+      {layoutEditorOpen && (
+        <HUDLayoutEditor
+          settings={settings}
+          openedFromSettings={editorOpenedFromSettings}
+          onSave={(newLayout, globalScale, globalOpacity) => {
+            handleUpdateSettings({
+              buttonsLayout: newLayout,
+              hudGlobalScale: globalScale,
+              hudGlobalOpacity: globalOpacity,
+            });
+          }}
+          onClose={() => {
+            setLayoutEditorOpen(false);
+            if (editorOpenedFromSettings) {
+              setSettingsOpen(true);
+              setEditorOpenedFromSettings(false);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

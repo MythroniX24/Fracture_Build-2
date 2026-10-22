@@ -1,3 +1,4 @@
+export type WeaponId = 'm4a1' | 'ak47' | 'mp5' | 'spas12' | 'awp' | 'deagle';
 export type CharacterId = 'volt' | 'rift';
 export type ArenaId = 'foundry_arena' | 'iron_fortress' | 'overgrown_colossus';
 export type GameMode = 'bot' | 'training' | 'multiplayer';
@@ -14,77 +15,217 @@ export type ScreenState =
   | 'paused'
   | 'match_result';
 
-export interface AttackSpec {
-  id:
-    | 'light_1'
-    | 'light_2'
-    | 'light_3'
-    | 'heavy'
-    | 'ability'
-    | 'dash_strike'
-    | 'aerial_slam'
-    | 'execution';
+export interface WeaponSpec {
+  id: WeaponId;
+  slot: number; // 1 to 6
   name: string;
+  shortName: string;
+  category: 'Assault Rifle' | 'Submachine Gun' | 'Shotgun' | 'Sniper Rifle' | 'Sidearm';
   damage: number;
-  chipDamage: number;
-  staminaCost: number;
-  guardDamage: number; // Stamina drained on block
-  poiseDamage: number; // Posture/poise damage toward stagger/execution
-  windupMs: number;
-  activeMs: number;
-  recoveryMs: number;
-  range: number;
-  arcCos: number; // Cosine of half-angle for directional cone check
-  knockback: number;
-  hitstunMs: number;
-  blockstunMs: number;
-  forwardLunge: number;
-  canChainInto?: 'light_2' | 'light_3' | 'heavy';
+  headshotMultiplier: number;
+  rpm: number;
+  fireIntervalMs: number;
+  magSize: number;
+  reserveMax: number;
+  reloadTimeMs: number;
+  pellets: number;
+  hipSpreadDeg: number;
+  adsSpreadDeg: number;
+  adsFov: number;
+  recoilPitchDeg: number;
+  recoilYawDeg: number;
+  maxRange: number;
+  autoFire: boolean;
+  moveSpeedMultiplier: number;
+  soundId:
+    | 'shot_m4a1'
+    | 'shot_ak47'
+    | 'shot_mp5'
+    | 'shot_spas12'
+    | 'shot_awp'
+    | 'shot_deagle';
+  bodyColorHex: number;
+  accentColorHex: number;
 }
 
-export interface CharacterDefinition {
-  id: CharacterId;
-  name: string;
-  title: string;
-  codename: string;
-  lore: string;
-  palette: {
-    primary: string;
-    secondary: string;
-    emissive: string;
-    accentHex: number;
-    emissiveHex: number;
-  };
-  stats: {
-    maxHp: number;
-    maxStamina: number;
-    maxPoise: number;
-    staminaRegenPerSec: number;
-    walkSpeed: number;
-    sprintSpeed: number;
-    dodgeDistance: number;
-    dodgeCost: number;
-    speedRating: number; // 1-10 for UI
-    powerRating: number; // 1-10 for UI
-    defenseRating: number; // 1-10 for UI
-  };
-  ability: {
-    name: string;
-    cooldownMs: number;
-    staminaCost: number;
-    description: string;
-  };
-  attacks: Record<
-    | 'light_1'
-    | 'light_2'
-    | 'light_3'
-    | 'heavy'
-    | 'ability'
-    | 'dash_strike'
-    | 'aerial_slam'
-    | 'execution',
-    AttackSpec
-  >;
+export const WEAPON_ORDER: WeaponId[] = [
+  'm4a1',
+  'ak47',
+  'mp5',
+  'spas12',
+  'awp',
+  'deagle',
+];
+
+export const WEAPON_REGISTRY: Record<WeaponId, WeaponSpec> = {
+  m4a1: {
+    id: 'm4a1',
+    slot: 1,
+    name: 'M4A1 Carbine',
+    shortName: 'M4A1',
+    category: 'Assault Rifle',
+    damage: 28,
+    headshotMultiplier: 1.9,
+    rpm: 650,
+    fireIntervalMs: Math.round(60000 / 650),
+    magSize: 30,
+    reserveMax: 150,
+    reloadTimeMs: 1750,
+    pellets: 1,
+    hipSpreadDeg: 1.6,
+    adsSpreadDeg: 0.25,
+    adsFov: 46,
+    recoilPitchDeg: 0.65,
+    recoilYawDeg: 0.22,
+    maxRange: 145,
+    autoFire: true,
+    moveSpeedMultiplier: 0.96,
+    soundId: 'shot_m4a1',
+    bodyColorHex: 0x26292e,
+    accentColorHex: 0x525866,
+  },
+  ak47: {
+    id: 'ak47',
+    slot: 2,
+    name: 'AK-47 Heavy',
+    shortName: 'AK-47',
+    category: 'Assault Rifle',
+    damage: 36,
+    headshotMultiplier: 2.1,
+    rpm: 560,
+    fireIntervalMs: Math.round(60000 / 560),
+    magSize: 30,
+    reserveMax: 150,
+    reloadTimeMs: 1950,
+    pellets: 1,
+    hipSpreadDeg: 2.1,
+    adsSpreadDeg: 0.35,
+    adsFov: 48,
+    recoilPitchDeg: 0.92,
+    recoilYawDeg: 0.32,
+    maxRange: 150,
+    autoFire: true,
+    moveSpeedMultiplier: 0.93,
+    soundId: 'shot_ak47',
+    bodyColorHex: 0x2b2d31,
+    accentColorHex: 0x6e472b,
+  },
+  mp5: {
+    id: 'mp5',
+    slot: 3,
+    name: 'MP5-K Tactical',
+    shortName: 'MP5-K',
+    category: 'Submachine Gun',
+    damage: 21,
+    headshotMultiplier: 1.75,
+    rpm: 860,
+    fireIntervalMs: Math.round(60000 / 860),
+    magSize: 35,
+    reserveMax: 175,
+    reloadTimeMs: 1450,
+    pellets: 1,
+    hipSpreadDeg: 1.35,
+    adsSpreadDeg: 0.3,
+    adsFov: 52,
+    recoilPitchDeg: 0.45,
+    recoilYawDeg: 0.18,
+    maxRange: 105,
+    autoFire: true,
+    moveSpeedMultiplier: 1.04,
+    soundId: 'shot_mp5',
+    bodyColorHex: 0x1f2328,
+    accentColorHex: 0x454c56,
+  },
+  spas12: {
+    id: 'spas12',
+    slot: 4,
+    name: 'SPAS-12 Combat',
+    shortName: 'SPAS-12',
+    category: 'Shotgun',
+    damage: 19,
+    headshotMultiplier: 1.5,
+    rpm: 105,
+    fireIntervalMs: Math.round(60000 / 105),
+    magSize: 8,
+    reserveMax: 48,
+    reloadTimeMs: 2100,
+    pellets: 8,
+    hipSpreadDeg: 5.2,
+    adsSpreadDeg: 3.1,
+    adsFov: 55,
+    recoilPitchDeg: 2.3,
+    recoilYawDeg: 0.45,
+    maxRange: 65,
+    autoFire: false,
+    moveSpeedMultiplier: 0.95,
+    soundId: 'shot_spas12',
+    bodyColorHex: 0x292c32,
+    accentColorHex: 0x5c626d,
+  },
+  awp: {
+    id: 'awp',
+    slot: 5,
+    name: 'AWP Magnum',
+    shortName: 'AWP',
+    category: 'Sniper Rifle',
+    damage: 115,
+    headshotMultiplier: 2.5,
+    rpm: 52,
+    fireIntervalMs: Math.round(60000 / 52),
+    magSize: 5,
+    reserveMax: 30,
+    reloadTimeMs: 2450,
+    pellets: 1,
+    hipSpreadDeg: 3.8,
+    adsSpreadDeg: 0.03,
+    adsFov: 22,
+    recoilPitchDeg: 3.1,
+    recoilYawDeg: 0.2,
+    maxRange: 220,
+    autoFire: false,
+    moveSpeedMultiplier: 0.88,
+    soundId: 'shot_awp',
+    bodyColorHex: 0x364037,
+    accentColorHex: 0x1c2024,
+  },
+  deagle: {
+    id: 'deagle',
+    slot: 6,
+    name: 'Desert Eagle .50',
+    shortName: 'DEAGLE',
+    category: 'Sidearm',
+    damage: 54,
+    headshotMultiplier: 2.2,
+    rpm: 240,
+    fireIntervalMs: Math.round(60000 / 240),
+    magSize: 9,
+    reserveMax: 54,
+    reloadTimeMs: 1350,
+    pellets: 1,
+    hipSpreadDeg: 1.4,
+    adsSpreadDeg: 0.18,
+    adsFov: 54,
+    recoilPitchDeg: 1.55,
+    recoilYawDeg: 0.25,
+    maxRange: 120,
+    autoFire: false,
+    moveSpeedMultiplier: 1.06,
+    soundId: 'shot_deagle',
+    bodyColorHex: 0x575b62,
+    accentColorHex: 0x23262b,
+  },
+};
+
+export interface MapBoxBlock {
+  id: string;
+  x: number;
+  z: number;
+  width: number;
+  depth: number;
+  height: number;
+  kind: 'wall' | 'building' | 'container' | 'cover' | 'platform' | 'tower';
+  colorHex: number;
+  walkableTop?: boolean;
 }
 
 export interface ArenaCollider {
@@ -109,6 +250,18 @@ export interface ArenaBreakablePropSpec {
   explosiveDamage?: number;
 }
 
+export type SurfaceMaterial = 'concrete' | 'metal';
+
+export interface SurfaceZone {
+  id: string;
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  material: SurfaceMaterial;
+  label?: string;
+}
+
 export interface ArenaDefinition {
   id: ArenaId;
   name: string;
@@ -121,527 +274,166 @@ export interface ArenaDefinition {
     maxZ: number;
     radius: number;
   };
+  blocks: MapBoxBlock[];
   colliders: ArenaCollider[];
   breakableProps: ArenaBreakablePropSpec[];
+  surfaceZones: SurfaceZone[];
+  spawnPoints: { x: number; z: number }[];
+  pickupSpots: { id: string; x: number; z: number; kind: 'ammo' | 'health' }[];
   ambientHex: number;
   fogHex: number;
 }
 
-export const CHARACTER_REGISTRY: Record<CharacterId, CharacterDefinition> = {
-  volt: {
-    id: 'volt',
-    name: 'VOLT',
-    title: 'Arc-Forged Striker',
-    codename: 'UNIT // VLT-09',
-    lore: 'An experimental high-output Colossus frame powered by an unstable arc-furnace core. Built for relentless close-range pressure, seismic ground-break strikes, and high-voltage plasma executions.',
-    palette: {
-      primary: '#f59e0b',
-      secondary: '#262930',
-      emissive: '#38bdf8',
-      accentHex: 0xd97706,
-      emissiveHex: 0x38bdf8,
-    },
-    stats: {
-      maxHp: 115,
-      maxStamina: 100,
-      maxPoise: 100,
-      staminaRegenPerSec: 26,
-      walkSpeed: 7.4,
-      sprintSpeed: 10.2,
-      dodgeDistance: 5.8,
-      dodgeCost: 18,
-      speedRating: 7,
-      powerRating: 9,
-      defenseRating: 8,
-    },
-    ability: {
-      name: 'Shockwave Nova',
-      cooldownMs: 7000,
-      staminaCost: 35,
-      description:
-        'Unleashes a 360-degree high-voltage reactor discharge that shatters nearby crates, fractures floor tiles, and launches enemies back.',
-    },
-    attacks: {
-      light_1: {
-        id: 'light_1',
-        name: 'Right Arc Slash',
-        damage: 10,
-        chipDamage: 2,
-        staminaCost: 10,
-        guardDamage: 12,
-        poiseDamage: 18,
-        windupMs: 105,
-        activeMs: 115,
-        recoveryMs: 155,
-        range: 3.55,
-        arcCos: 0.2,
-        knockback: 1.6,
-        hitstunMs: 240,
-        blockstunMs: 145,
-        forwardLunge: 1.55,
-        canChainInto: 'light_2',
-      },
-      light_2: {
-        id: 'light_2',
-        name: 'Left Cross Cleave',
-        damage: 13,
-        chipDamage: 3,
-        staminaCost: 12,
-        guardDamage: 16,
-        poiseDamage: 24,
-        windupMs: 115,
-        activeMs: 120,
-        recoveryMs: 170,
-        range: 3.7,
-        arcCos: 0.15,
-        knockback: 2.1,
-        hitstunMs: 270,
-        blockstunMs: 165,
-        forwardLunge: 1.75,
-        canChainInto: 'light_3',
-      },
-      light_3: {
-        id: 'light_3',
-        name: 'Reactor Vortex Uppercut',
-        damage: 19,
-        chipDamage: 4,
-        staminaCost: 15,
-        guardDamage: 24,
-        poiseDamage: 36,
-        windupMs: 150,
-        activeMs: 140,
-        recoveryMs: 245,
-        range: 4.0,
-        arcCos: 0.05,
-        knockback: 4.8,
-        hitstunMs: 340,
-        blockstunMs: 210,
-        forwardLunge: 2.2,
-        canChainInto: 'heavy',
-      },
-      heavy: {
-        id: 'heavy',
-        name: 'Tectonic Ground Break',
-        damage: 27,
-        chipDamage: 7,
-        staminaCost: 24,
-        guardDamage: 42,
-        poiseDamage: 56,
-        windupMs: 235,
-        activeMs: 165,
-        recoveryMs: 310,
-        range: 4.5,
-        arcCos: 0.0,
-        knockback: 6.4,
-        hitstunMs: 410,
-        blockstunMs: 260,
-        forwardLunge: 2.7,
-      },
-      dash_strike: {
-        id: 'dash_strike',
-        name: 'Overdrive Thruster Lunge',
-        damage: 18,
-        chipDamage: 4,
-        staminaCost: 18,
-        guardDamage: 24,
-        poiseDamage: 34,
-        windupMs: 115,
-        activeMs: 135,
-        recoveryMs: 205,
-        range: 4.4,
-        arcCos: 0.15,
-        knockback: 4.0,
-        hitstunMs: 310,
-        blockstunMs: 190,
-        forwardLunge: 3.6,
-        canChainInto: 'light_2',
-      },
-      aerial_slam: {
-        id: 'aerial_slam',
-        name: 'Meteor Foundry Slam',
-        damage: 25,
-        chipDamage: 6,
-        staminaCost: 22,
-        guardDamage: 36,
-        poiseDamage: 52,
-        windupMs: 145,
-        activeMs: 170,
-        recoveryMs: 270,
-        range: 4.5,
-        arcCos: -0.25,
-        knockback: 5.8,
-        hitstunMs: 380,
-        blockstunMs: 240,
-        forwardLunge: 2.3,
-      },
-      execution: {
-        id: 'execution',
-        name: 'Cataclysmic Core Execution',
-        damage: 38,
-        chipDamage: 12,
-        staminaCost: 15,
-        guardDamage: 65,
-        poiseDamage: 100,
-        windupMs: 175,
-        activeMs: 200,
-        recoveryMs: 300,
-        range: 4.6,
-        arcCos: 0.0,
-        knockback: 8.2,
-        hitstunMs: 480,
-        blockstunMs: 320,
-        forwardLunge: 3.1,
-      },
-      ability: {
-        id: 'ability',
-        name: 'Shockwave Nova',
-        damage: 24,
-        chipDamage: 7,
-        staminaCost: 35,
-        guardDamage: 40,
-        poiseDamage: 62,
-        windupMs: 180,
-        activeMs: 200,
-        recoveryMs: 280,
-        range: 5.8,
-        arcCos: -1.0, // Full 360 degree blast
-        knockback: 7.2,
-        hitstunMs: 390,
-        blockstunMs: 250,
-        forwardLunge: 0.9,
-      },
-    },
+export const TACTICAL_SURFACE_ZONES: SurfaceZone[] = [
+  // South Firing Line Steel Grating Deck (directly in front of player spawn at z=20 for Training & Arena)
+  {
+    id: 'south_firing_deck',
+    minX: -12,
+    maxX: 12,
+    minZ: 8.5,
+    maxZ: 18.8,
+    material: 'metal',
+    label: 'South Firing Deck',
   },
-  rift: {
-    id: 'rift',
-    name: 'RIFT',
-    title: 'Phase-Blade Stalker',
-    codename: 'UNIT // RFT-14',
-    lore: 'An agile reconnaissance Colossus retrofitted with twin phase-emitter blades and a plasma gravity-orb projector. Excels at rapid combos, lethal parry ripostes, and long-range plasma projections.',
-    palette: {
-      primary: '#38bdf8',
-      secondary: '#1e222a',
-      emissive: '#f43f5e',
-      accentHex: 0x0284c7,
-      emissiveHex: 0xf43f5e,
-    },
-    stats: {
-      maxHp: 105,
-      maxStamina: 115,
-      maxPoise: 90,
-      staminaRegenPerSec: 30,
-      walkSpeed: 8.0,
-      sprintSpeed: 10.8,
-      dodgeDistance: 6.3,
-      dodgeCost: 16,
-      speedRating: 10,
-      powerRating: 8,
-      defenseRating: 7,
-    },
-    ability: {
-      name: 'Gravity Plasma Orb',
-      cooldownMs: 6500,
-      staminaCost: 35,
-      description:
-        'Projects a high-energy gravity orb forward while phase-stepping, detonating on contact to crush guard posture and fracture the arena floor.',
-    },
-    attacks: {
-      light_1: {
-        id: 'light_1',
-        name: 'Quick Phase Slash',
-        damage: 9,
-        chipDamage: 2,
-        staminaCost: 9,
-        guardDamage: 11,
-        poiseDamage: 15,
-        windupMs: 100,
-        activeMs: 110,
-        recoveryMs: 150,
-        range: 3.45,
-        arcCos: 0.22,
-        knockback: 1.5,
-        hitstunMs: 220,
-        blockstunMs: 135,
-        forwardLunge: 1.6,
-        canChainInto: 'light_2',
-      },
-      light_2: {
-        id: 'light_2',
-        name: 'Twin Arc Reversal',
-        damage: 12,
-        chipDamage: 3,
-        staminaCost: 11,
-        guardDamage: 15,
-        poiseDamage: 20,
-        windupMs: 110,
-        activeMs: 115,
-        recoveryMs: 165,
-        range: 3.6,
-        arcCos: 0.18,
-        knockback: 2.0,
-        hitstunMs: 250,
-        blockstunMs: 155,
-        forwardLunge: 1.8,
-        canChainInto: 'light_3',
-      },
-      light_3: {
-        id: 'light_3',
-        name: 'Vortex Ripper Spin',
-        damage: 17,
-        chipDamage: 4,
-        staminaCost: 14,
-        guardDamage: 22,
-        poiseDamage: 32,
-        windupMs: 145,
-        activeMs: 135,
-        recoveryMs: 240,
-        range: 3.95,
-        arcCos: 0.05,
-        knockback: 4.4,
-        hitstunMs: 320,
-        blockstunMs: 200,
-        forwardLunge: 2.3,
-        canChainInto: 'heavy',
-      },
-      heavy: {
-        id: 'heavy',
-        name: 'Crimson Tectonic Cleave',
-        damage: 24,
-        chipDamage: 6,
-        staminaCost: 22,
-        guardDamage: 36,
-        poiseDamage: 48,
-        windupMs: 220,
-        activeMs: 150,
-        recoveryMs: 295,
-        range: 4.6,
-        arcCos: 0.15,
-        knockback: 5.6,
-        hitstunMs: 390,
-        blockstunMs: 245,
-        forwardLunge: 3.0,
-      },
-      dash_strike: {
-        id: 'dash_strike',
-        name: 'Phantom Jet Piercer',
-        damage: 17,
-        chipDamage: 4,
-        staminaCost: 16,
-        guardDamage: 22,
-        poiseDamage: 30,
-        windupMs: 110,
-        activeMs: 130,
-        recoveryMs: 200,
-        range: 4.45,
-        arcCos: 0.18,
-        knockback: 4.0,
-        hitstunMs: 300,
-        blockstunMs: 185,
-        forwardLunge: 3.8,
-        canChainInto: 'light_2',
-      },
-      aerial_slam: {
-        id: 'aerial_slam',
-        name: 'Skyfall Phase Cleave',
-        damage: 23,
-        chipDamage: 6,
-        staminaCost: 20,
-        guardDamage: 32,
-        poiseDamage: 46,
-        windupMs: 140,
-        activeMs: 165,
-        recoveryMs: 265,
-        range: 4.5,
-        arcCos: -0.2,
-        knockback: 5.5,
-        hitstunMs: 360,
-        blockstunMs: 230,
-        forwardLunge: 2.4,
-      },
-      execution: {
-        id: 'execution',
-        name: 'Rift Singularity Execution',
-        damage: 36,
-        chipDamage: 11,
-        staminaCost: 14,
-        guardDamage: 60,
-        poiseDamage: 100,
-        windupMs: 165,
-        activeMs: 195,
-        recoveryMs: 285,
-        range: 4.6,
-        arcCos: 0.0,
-        knockback: 7.8,
-        hitstunMs: 460,
-        blockstunMs: 300,
-        forwardLunge: 3.2,
-      },
-      ability: {
-        id: 'ability',
-        name: 'Gravity Plasma Orb',
-        damage: 23,
-        chipDamage: 6,
-        staminaCost: 35,
-        guardDamage: 38,
-        poiseDamage: 56,
-        windupMs: 165,
-        activeMs: 200,
-        recoveryMs: 260,
-        range: 6.5,
-        arcCos: 0.15,
-        knockback: 5.8,
-        hitstunMs: 370,
-        blockstunMs: 230,
-        forwardLunge: 2.6,
-      },
-    },
+  // Central Helipad / Tactical Steel Grating Platform
+  {
+    id: 'central_steel_deck',
+    minX: -9.5,
+    maxX: 9.5,
+    minZ: -9.5,
+    maxZ: 9.5,
+    material: 'metal',
+    label: 'Central Helipad Deck',
   },
-};
-
-const FOUNDRY_ARENA_COLLIDERS: ArenaCollider[] = [
-  // 4 Ledge Barricades at (±14, ±22) from fracture-foundry-arena-v4.html
-  { id: 'barricade_ne', x: 14, z: 22, radius: 1.8, height: 1.5, kind: 'pillar' },
-  { id: 'barricade_nw', x: -14, z: 22, radius: 1.8, height: 1.5, kind: 'pillar' },
-  { id: 'barricade_se', x: 14, z: -22, radius: 1.8, height: 1.5, kind: 'pillar' },
-  { id: 'barricade_sw', x: -14, z: -22, radius: 1.8, height: 1.5, kind: 'pillar' },
-  // East Conveyor Belt at x = 33, z in [-8, 8]
-  { id: 'conveyor_n', x: 33, z: -5, radius: 1.1, height: 1.5, kind: 'piston' },
-  { id: 'conveyor_c', x: 33, z: 0, radius: 1.1, height: 1.5, kind: 'piston' },
-  { id: 'conveyor_s', x: 33, z: 5, radius: 1.1, height: 1.5, kind: 'piston' },
+  // West Hangar & Shipping Container Steel Bay
+  {
+    id: 'west_hangar_deck',
+    minX: -40,
+    maxX: -12,
+    minZ: -18,
+    maxZ: 18,
+    material: 'metal',
+    label: 'West Hangar Bay',
+  },
+  // East Hangar & Shipping Container Steel Bay
+  {
+    id: 'east_hangar_deck',
+    minX: 12,
+    maxX: 40,
+    minZ: -18,
+    maxZ: 18,
+    material: 'metal',
+    label: 'East Hangar Bay',
+  },
+  // North Watchtower Steel Catwalk Apron
+  {
+    id: 'north_tower_deck',
+    minX: -12,
+    maxX: 12,
+    minZ: -50,
+    maxZ: -30,
+    material: 'metal',
+    label: 'North Watchtower Deck',
+  },
 ];
 
-function buildFoundryBreakableProps(): ArenaBreakablePropSpec[] {
-  const props: ArenaBreakablePropSpec[] = [
-    // 4 Breakable Crates right on the outer corners of the Central Dais (y = 1.2)
-    { id: 'crate_dais_nw', kind: 'crate', x: -8.2, z: -3.6, rotY: 0.25, radius: 0.95, height: 2.8, maxHp: 26 },
-    { id: 'crate_dais_ne', kind: 'crate', x: 8.2, z: -3.6, rotY: -0.35, radius: 0.95, height: 2.8, maxHp: 26 },
-    { id: 'crate_dais_sw', kind: 'crate', x: -8.2, z: 3.6, rotY: 0.45, radius: 0.95, height: 2.8, maxHp: 26 },
-    { id: 'crate_dais_se', kind: 'crate', x: 8.2, z: 3.6, rotY: -0.2, radius: 0.95, height: 2.8, maxHp: 26 },
-    // 6 Volatile Energy Barrels around the Dais ramps & flanks
-    {
-      id: 'barrel_nw',
-      kind: 'barrel',
-      x: -12.5,
-      z: -4.2,
-      rotY: 0,
-      radius: 0.78,
-      height: 1.5,
-      maxHp: 20,
-      explosiveRadius: 5.0,
-      explosiveDamage: 16,
-    },
-    {
-      id: 'barrel_ne',
-      kind: 'barrel',
-      x: 12.5,
-      z: -4.2,
-      rotY: 0,
-      radius: 0.78,
-      height: 1.5,
-      maxHp: 20,
-      explosiveRadius: 5.0,
-      explosiveDamage: 16,
-    },
-    {
-      id: 'barrel_sw',
-      kind: 'barrel',
-      x: -12.5,
-      z: 4.2,
-      rotY: 0,
-      radius: 0.78,
-      height: 1.5,
-      maxHp: 20,
-      explosiveRadius: 5.0,
-      explosiveDamage: 16,
-    },
-    {
-      id: 'barrel_se',
-      kind: 'barrel',
-      x: 12.5,
-      z: 4.2,
-      rotY: 0,
-      radius: 0.78,
-      height: 1.5,
-      maxHp: 20,
-      explosiveRadius: 5.0,
-      explosiveDamage: 16,
-    },
-    {
-      id: 'barrel_n',
-      kind: 'barrel',
-      x: 0,
-      z: -6.8,
-      rotY: 0,
-      radius: 0.78,
-      height: 1.5,
-      maxHp: 20,
-      explosiveRadius: 5.0,
-      explosiveDamage: 16,
-    },
-    {
-      id: 'barrel_s',
-      kind: 'barrel',
-      x: 0,
-      z: 6.8,
-      rotY: 0,
-      radius: 0.78,
-      height: 1.5,
-      maxHp: 20,
-      explosiveRadius: 5.0,
-      explosiveDamage: 16,
-    },
-  ];
+// Large 140m x 140m Clean Matte Tactical Compound ("Sector-09 Proving Grounds")
+export const TACTICAL_COMPOUND_BLOCKS: MapBoxBlock[] = [
+  // Central Twin Hangar Walls (with wide open combat lanes through center)
+  { id: 'hangar_w_n', x: -14, z: -12, width: 3.2, depth: 14, height: 6.2, kind: 'building', colorHex: 0x3a3f47 },
+  { id: 'hangar_w_s', x: -14, z: 12, width: 3.2, depth: 14, height: 6.2, kind: 'building', colorHex: 0x3a3f47 },
+  { id: 'hangar_e_n', x: 14, z: -12, width: 3.2, depth: 14, height: 6.2, kind: 'building', colorHex: 0x3a3f47 },
+  { id: 'hangar_e_s', x: 14, z: 12, width: 3.2, depth: 14, height: 6.2, kind: 'building', colorHex: 0x3a3f47 },
 
-  // Floor Crates from fracture-foundry-arena-v4.html
-  const crCoords = [
-    [14, 9],
-    [24, 6],
-    [20, -12],
-    [8, 14],
-    [26, -3],
-  ];
-  crCoords.forEach((p, idx) => {
-    for (const sx of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        const wx = sx * p[0];
-        const wz = sz * p[1];
-        const propId = `crate_${idx}_${sx > 0 ? 'e' : 'w'}_${sz > 0 ? 's' : 'n'}`;
-        props.push({
-          id: propId,
-          kind: 'crate',
-          x: wx,
-          z: wz,
-          rotY: 0,
-          radius: 1.25,
-          height: 2.2,
-          maxHp: 30,
-        });
-      }
-    }
-  });
+  // Central Low Tactical Cover Barriers (crouch / head-glitch cover)
+  { id: 'cov_c1', x: 0, z: -6.5, width: 6.5, depth: 1.2, height: 1.3, kind: 'cover', colorHex: 0x525862 },
+  { id: 'cov_c2', x: 0, z: 6.5, width: 6.5, depth: 1.2, height: 1.3, kind: 'cover', colorHex: 0x525862 },
+  { id: 'cov_c3', x: -6.5, z: 0, width: 1.2, depth: 5.5, height: 1.3, kind: 'cover', colorHex: 0x525862 },
+  { id: 'cov_c4', x: 6.5, z: 0, width: 1.2, depth: 5.5, height: 1.3, kind: 'cover', colorHex: 0x525862 },
 
-  return props;
-}
+  // North Complex & Watchtower Base
+  { id: 'north_bldg_1', x: -24, z: -36, width: 14, depth: 8, height: 5.5, kind: 'building', colorHex: 0x353a42 },
+  { id: 'north_bldg_2', x: 24, z: -36, width: 14, depth: 8, height: 5.5, kind: 'building', colorHex: 0x353a42 },
+  { id: 'north_tower', x: 0, z: -46, width: 8, depth: 8, height: 8.5, kind: 'tower', colorHex: 0x2e333b },
+  { id: 'north_cov_1', x: -10, z: -26, width: 5.5, depth: 1.3, height: 1.35, kind: 'cover', colorHex: 0x525862 },
+  { id: 'north_cov_2', x: 10, z: -26, width: 5.5, depth: 1.3, height: 1.35, kind: 'cover', colorHex: 0x525862 },
 
-const FOUNDRY_BREAKABLE_PROPS: ArenaBreakablePropSpec[] = buildFoundryBreakableProps();
+  // South Complex & Watchtower Base
+  { id: 'south_bldg_1', x: -24, z: 36, width: 14, depth: 8, height: 5.5, kind: 'building', colorHex: 0x353a42 },
+  { id: 'south_bldg_2', x: 24, z: 36, width: 14, depth: 8, height: 5.5, kind: 'building', colorHex: 0x353a42 },
+  { id: 'south_tower', x: 0, z: 46, width: 8, depth: 8, height: 8.5, kind: 'tower', colorHex: 0x2e333b },
+  { id: 'south_cov_1', x: -10, z: 26, width: 5.5, depth: 1.3, height: 1.35, kind: 'cover', colorHex: 0x525862 },
+  { id: 'south_cov_2', x: 10, z: 26, width: 5.5, depth: 1.3, height: 1.35, kind: 'cover', colorHex: 0x525862 },
 
-const FOUNDRY_ARENA_DEFINITION: ArenaDefinition = {
+  // West Shipping Container Yard (Flank Lanes)
+  { id: 'cont_w1', x: -36, z: -14, width: 4.2, depth: 11, height: 3.4, kind: 'container', colorHex: 0x3b4942 },
+  { id: 'cont_w2', x: -36, z: 14, width: 4.2, depth: 11, height: 3.4, kind: 'container', colorHex: 0x464d57 },
+  { id: 'cont_w3', x: -48, z: 0, width: 4.2, depth: 12, height: 3.4, kind: 'container', colorHex: 0x3f444c },
+  { id: 'cov_w1', x: -25, z: 0, width: 1.4, depth: 6.5, height: 1.35, kind: 'cover', colorHex: 0x525862 },
+
+  // East Shipping Container Yard (Flank Lanes)
+  { id: 'cont_e1', x: 36, z: -14, width: 4.2, depth: 11, height: 3.4, kind: 'container', colorHex: 0x464d57 },
+  { id: 'cont_e2', x: 36, z: 14, width: 4.2, depth: 11, height: 3.4, kind: 'container', colorHex: 0x3b4942 },
+  { id: 'cont_e3', x: 48, z: 0, width: 4.2, depth: 12, height: 3.4, kind: 'container', colorHex: 0x3f444c },
+  { id: 'cov_e1', x: 25, z: 0, width: 1.4, depth: 6.5, height: 1.35, kind: 'cover', colorHex: 0x525862 },
+
+  // Outer Corner Bunkers
+  { id: 'bunker_nw', x: -46, z: -42, width: 10, depth: 10, height: 4.5, kind: 'building', colorHex: 0x32373f },
+  { id: 'bunker_ne', x: 46, z: -42, width: 10, depth: 10, height: 4.5, kind: 'building', colorHex: 0x32373f },
+  { id: 'bunker_sw', x: -46, z: 42, width: 10, depth: 10, height: 4.5, kind: 'building', colorHex: 0x32373f },
+  { id: 'bunker_se', x: 46, z: 42, width: 10, depth: 10, height: 4.5, kind: 'building', colorHex: 0x32373f },
+];
+
+export const FOUNDRY_ARENA_DEFINITION: ArenaDefinition = {
   id: 'foundry_arena',
-  name: 'FRACTURE FOUNDRY ARENA',
-  subtitle: 'Sector 04 // Molten Smelting Crucible',
+  name: 'SECTOR-09 COMPOUND',
+  subtitle: '140m × 140m Tactical Proving Grounds',
   description:
-    'The official Fracture Foundry Arena v4 crucible with a raised 20×10m central safe dais, East/West stepped ramps, 12×8 destructible steel floor tiles over molten lava, 24 breakable industrial crates, 6 volatile energy barrels, and overhead gantry cranes.',
+    'Expansive open-air military compound featuring central twin hangars, shipping container yards, long sniper sightlines, and low concrete barricades.',
   bounds: {
-    minX: -32.8,
-    maxX: 32.8,
-    minZ: -22.8,
-    maxZ: 22.8,
-    radius: 34.0,
+    minX: -68,
+    maxX: 68,
+    minZ: -68,
+    maxZ: 68,
+    radius: 68,
   },
-  colliders: FOUNDRY_ARENA_COLLIDERS,
-  breakableProps: FOUNDRY_BREAKABLE_PROPS,
-  ambientHex: 0x334466,
-  fogHex: 0x1d1614,
+  blocks: TACTICAL_COMPOUND_BLOCKS,
+  colliders: [
+    { id: 'pil_nw', x: -20, z: -20, radius: 1.2, height: 5.5, kind: 'pillar' },
+    { id: 'pil_ne', x: 20, z: -20, radius: 1.2, height: 5.5, kind: 'pillar' },
+    { id: 'pil_sw', x: -20, z: 20, radius: 1.2, height: 5.5, kind: 'pillar' },
+    { id: 'pil_se', x: 20, z: 20, radius: 1.2, height: 5.5, kind: 'pillar' },
+  ],
+  breakableProps: [
+    { id: 'barrel_1', kind: 'barrel', x: -8, z: -15, rotY: 0, radius: 0.65, height: 1.4, maxHp: 45, explosiveRadius: 6.5, explosiveDamage: 65 },
+    { id: 'barrel_2', kind: 'barrel', x: 8, z: -15, rotY: 0, radius: 0.65, height: 1.4, maxHp: 45, explosiveRadius: 6.5, explosiveDamage: 65 },
+    { id: 'barrel_3', kind: 'barrel', x: -28, z: -8, rotY: 0, radius: 0.65, height: 1.4, maxHp: 45, explosiveRadius: 6.5, explosiveDamage: 65 },
+    { id: 'barrel_4', kind: 'barrel', x: 28, z: 8, rotY: 0, radius: 0.65, height: 1.4, maxHp: 45, explosiveRadius: 6.5, explosiveDamage: 65 },
+    { id: 'crate_1', kind: 'crate', x: -4, z: -18, rotY: 0.2, radius: 0.85, height: 1.3, maxHp: 60 },
+    { id: 'crate_2', kind: 'crate', x: 4, z: 18, rotY: -0.3, radius: 0.85, height: 1.3, maxHp: 60 },
+  ],
+  surfaceZones: TACTICAL_SURFACE_ZONES,
+  spawnPoints: [
+    { x: 0, z: -34 },
+    { x: -28, z: -24 },
+    { x: 28, z: -24 },
+    { x: -42, z: 0 },
+    { x: 42, z: 0 },
+    { x: -28, z: 24 },
+    { x: 28, z: 24 },
+    { x: -16, z: -44 },
+    { x: 16, z: -44 },
+    { x: 0, z: -56 },
+  ],
+  pickupSpots: [
+    { id: 'pk_ammo_c', x: 0, z: 0, kind: 'ammo' },
+    { id: 'pk_hp_w', x: -22, z: 0, kind: 'health' },
+    { id: 'pk_hp_e', x: 22, z: 0, kind: 'health' },
+    { id: 'pk_ammo_n', x: 0, z: -22, kind: 'ammo' },
+    { id: 'pk_ammo_s', x: 0, z: 22, kind: 'ammo' },
+  ],
+  ambientHex: 0xd4dbe2,
+  fogHex: 0xc8d2dc,
 };
 
 export const ARENA_REGISTRY: Record<ArenaId, ArenaDefinition> = {
@@ -649,11 +441,24 @@ export const ARENA_REGISTRY: Record<ArenaId, ArenaDefinition> = {
   iron_fortress: {
     ...FOUNDRY_ARENA_DEFINITION,
     id: 'iron_fortress',
+    name: 'OUTPOST SIGMA',
+    subtitle: 'Industrial Logistic Yard',
   },
   overgrown_colossus: {
     ...FOUNDRY_ARENA_DEFINITION,
     id: 'overgrown_colossus',
+    name: 'GARRISON DELTA',
+    subtitle: 'Long-Range Perimeter Base',
   },
+};
+
+// Kept minimal character metadata for backwards compatibility
+export const CHARACTER_REGISTRY: Record<
+  CharacterId,
+  { id: CharacterId; name: string; title: string }
+> = {
+  volt: { id: 'volt', name: 'RANGER-01', title: 'Tactical Operator' },
+  rift: { id: 'rift', name: 'HOSTILE', title: 'OpFor Unit' },
 };
 
 export const BOT_DIFFICULTIES: Record<
@@ -662,54 +467,216 @@ export const BOT_DIFFICULTIES: Record<
     label: string;
     description: string;
     reactionIntervalMs: number;
-    aggression: number;
-    blockChance: number;
-    parryChance: number;
-    dodgeChance: number;
-    comboFollowupChance: number;
+    accuracy: number;
+    moveSpeedMultiplier: number;
   }
 > = {
   easy: {
-    label: 'INITIATE',
-    description: 'Deliberate pacing with telegraphed attacks and generous punish windows.',
-    reactionIntervalMs: 460,
-    aggression: 0.34,
-    blockChance: 0.22,
-    parryChance: 0.04,
-    dodgeChance: 0.18,
-    comboFollowupChance: 0.28,
+    label: 'Recruit',
+    description: 'Slower enemy reaction time and wider shot dispersion.',
+    reactionIntervalMs: 520,
+    accuracy: 0.42,
+    moveSpeedMultiplier: 0.85,
   },
   normal: {
-    label: 'VANGUARD',
-    description: 'Balanced tactical AI that chains combos, blocks incoming pressure, and evades.',
-    reactionIntervalMs: 320,
-    aggression: 0.52,
-    blockChance: 0.44,
-    parryChance: 0.12,
-    dodgeChance: 0.36,
-    comboFollowupChance: 0.55,
+    label: 'Veteran',
+    description: 'Balanced tactical squads that flank and use cover.',
+    reactionIntervalMs: 340,
+    accuracy: 0.65,
+    moveSpeedMultiplier: 1.0,
   },
   hard: {
-    label: 'COLOSSUS PRIME',
-    description: 'High-intensity tactical AI capable of timed parries, whiff punishes, and executions.',
+    label: 'Spec Ops',
+    description: 'Fast target acquisition, tight burst accuracy, and aggressive pushing.',
     reactionIntervalMs: 210,
-    aggression: 0.72,
-    blockChance: 0.65,
-    parryChance: 0.24,
-    dodgeChance: 0.55,
-    comboFollowupChance: 0.78,
+    accuracy: 0.85,
+    moveSpeedMultiplier: 1.15,
   },
 };
 
-export interface KeyBindingsConfig {
-  lightAttack: string;
-  heavyAttack: string;
-  guard: string;
-  dodge: string;
-  ability: string;
-  lockOn: string;
-  sprint: string;
+export type LoadoutPairId = 'pair_1' | 'pair_2' | 'pair_3';
+
+export interface LoadoutPairOption {
+  id: LoadoutPairId;
+  weapons: [WeaponId, WeaponId];
 }
+
+export const LOADOUT_PAIRS: LoadoutPairOption[] = [
+  {
+    id: 'pair_1',
+    weapons: ['m4a1', 'awp'],
+  },
+  {
+    id: 'pair_2',
+    weapons: ['ak47', 'spas12'],
+  },
+  {
+    id: 'pair_3',
+    weapons: ['mp5', 'deagle'],
+  },
+];
+
+export const DEATHMATCH_DURATION_SECONDS = 300; // 5-minute Deathmatch
+
+export interface KeyBindingsConfig {
+  fire: string;
+  ads: string;
+  reload: string;
+  jump: string;
+  crouch: string;
+  slide: string;
+  sprint: string;
+  nextWeapon: string;
+}
+
+export type HudButtonId =
+  | 'joystick'
+  | 'fire'
+  | 'ads'
+  | 'reload'
+  | 'jump'
+  | 'crouch'
+  | 'slide'
+  | 'weaponBar'
+  | 'healthBar'
+  | 'killCounter';
+
+export interface HudButtonTransform {
+  offsetX: number; // horizontal offset in px (-480 to 480)
+  offsetY: number; // vertical offset in px (-480 to 480)
+  scale: number; // scale multiplier (0.5 to 1.7)
+  opacity: number; // opacity (0.15 to 1.0)
+}
+
+export type HudButtonsLayout = Record<HudButtonId, HudButtonTransform>;
+
+export const DEFAULT_HUD_BUTTONS_LAYOUT: HudButtonsLayout = {
+  joystick: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.92 },
+  fire: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.96 },
+  ads: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.92 },
+  reload: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.92 },
+  jump: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.92 },
+  crouch: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.92 },
+  slide: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.92 },
+  weaponBar: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.96 },
+  healthBar: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.96 },
+  killCounter: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.95 },
+};
+
+export const HUD_LAYOUT_PRESETS: Record<
+  'default' | 'claw' | 'compact' | 'large',
+  { label: string; description: string; layout: HudButtonsLayout }
+> = {
+  default: {
+    label: 'Standard',
+    description: 'Balanced two-thumb FPS layout.',
+    layout: { ...DEFAULT_HUD_BUTTONS_LAYOUT },
+  },
+  claw: {
+    label: '4-Finger Claw',
+    description: 'Elevated fire and scope controls.',
+    layout: {
+      joystick: { offsetX: 0, offsetY: -10, scale: 1.05, opacity: 0.9 },
+      fire: { offsetX: -14, offsetY: -18, scale: 1.1, opacity: 0.95 },
+      ads: { offsetX: -20, offsetY: -45, scale: 1.08, opacity: 0.95 },
+      reload: { offsetX: -10, offsetY: -10, scale: 1.0, opacity: 0.9 },
+      jump: { offsetX: -24, offsetY: -15, scale: 1.05, opacity: 0.9 },
+      crouch: { offsetX: -12, offsetY: 0, scale: 1.0, opacity: 0.9 },
+      slide: { offsetX: -16, offsetY: -12, scale: 1.05, opacity: 0.9 },
+      weaponBar: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.95 },
+      healthBar: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.95 },
+      killCounter: { offsetX: 0, offsetY: 0, scale: 1.0, opacity: 0.95 },
+    },
+  },
+  compact: {
+    label: 'Compact',
+    description: 'Smaller controls with lower opacity.',
+    layout: {
+      joystick: { offsetX: -10, offsetY: 8, scale: 0.88, opacity: 0.75 },
+      fire: { offsetX: 8, offsetY: 8, scale: 0.9, opacity: 0.8 },
+      ads: { offsetX: 8, offsetY: 6, scale: 0.88, opacity: 0.8 },
+      reload: { offsetX: 6, offsetY: 8, scale: 0.88, opacity: 0.8 },
+      jump: { offsetX: 6, offsetY: 8, scale: 0.88, opacity: 0.8 },
+      crouch: { offsetX: 6, offsetY: 8, scale: 0.88, opacity: 0.8 },
+      slide: { offsetX: 6, offsetY: 8, scale: 0.88, opacity: 0.8 },
+      weaponBar: { offsetX: 0, offsetY: 4, scale: 0.9, opacity: 0.85 },
+      healthBar: { offsetX: 0, offsetY: 4, scale: 0.9, opacity: 0.85 },
+      killCounter: { offsetX: 0, offsetY: 0, scale: 0.9, opacity: 0.85 },
+    },
+  },
+  large: {
+    label: 'Large',
+    description: 'Larger touch targets for fast shooting.',
+    layout: {
+      joystick: { offsetX: 6, offsetY: -6, scale: 1.18, opacity: 1.0 },
+      fire: { offsetX: -12, offsetY: -10, scale: 1.22, opacity: 1.0 },
+      ads: { offsetX: -14, offsetY: -16, scale: 1.18, opacity: 1.0 },
+      reload: { offsetX: -16, offsetY: -8, scale: 1.15, opacity: 1.0 },
+      jump: { offsetX: -22, offsetY: -8, scale: 1.15, opacity: 1.0 },
+      crouch: { offsetX: -16, offsetY: -4, scale: 1.12, opacity: 1.0 },
+      slide: { offsetX: -18, offsetY: -10, scale: 1.14, opacity: 1.0 },
+      weaponBar: { offsetX: 0, offsetY: -4, scale: 1.08, opacity: 1.0 },
+      healthBar: { offsetX: 0, offsetY: -2, scale: 1.08, opacity: 1.0 },
+      killCounter: { offsetX: 0, offsetY: 0, scale: 1.05, opacity: 1.0 },
+    },
+  },
+};
+
+export const HUD_BUTTON_INFO: Record<
+  HudButtonId,
+  { label: string; sub: string; defaultSize: string }
+> = {
+  fire: {
+    label: 'Fire Joystick Button',
+    sub: 'Hold & drag like a joystick to shoot + aim',
+    defaultSize: '84px',
+  },
+  ads: {
+    label: 'Scope / Optic',
+    sub: 'Toggle precision optical sight',
+    defaultSize: '56px',
+  },
+  reload: {
+    label: 'Reload',
+    sub: 'Reload active weapon magazine',
+    defaultSize: '52px',
+  },
+  jump: {
+    label: 'Jump',
+    sub: 'Leap over obstacles',
+    defaultSize: '52px',
+  },
+  crouch: {
+    label: 'Crouch',
+    sub: 'Low profile stance behind cover',
+    defaultSize: '48px',
+  },
+  slide: {
+    label: 'Slide',
+    sub: 'Slide in joystick direction or forward',
+    defaultSize: '52px',
+  },
+  joystick: {
+    label: 'Move Stick',
+    sub: '360° tactical movement thumbstick',
+    defaultSize: '124px',
+  },
+  weaponBar: {
+    label: '2-Gun Loadout Boxes',
+    sub: 'Tap to switch gun · Tap active gun to reload',
+    defaultSize: '210px',
+  },
+  healthBar: {
+    label: 'Health Bar (Bottom)',
+    sub: 'Bottom-center operator HP bar',
+    defaultSize: '220px',
+  },
+  killCounter: {
+    label: 'Top Kill & Timer Bar',
+    sub: '5-minute Deathmatch kills & clock',
+    defaultSize: '280px',
+  },
+};
 
 export interface GameSettings {
   masterVolume: number;
@@ -718,22 +685,27 @@ export interface GameSettings {
   particleQuality: 'low' | 'medium' | 'high';
   cameraDistance: number;
   touchSensitivity: number;
+  fireSensitivity: number;
   touchDeadzone: number;
   aimAssist: boolean;
   moveAssist: boolean;
   autoFullscreenLandscape: boolean;
   showControlHints: boolean;
+  hudGlobalScale: number;
+  hudGlobalOpacity: number;
+  buttonsLayout: HudButtonsLayout;
   keybindings: KeyBindingsConfig;
 }
 
 export const DEFAULT_KEYBINDINGS: KeyBindingsConfig = {
-  lightAttack: 'KeyJ',
-  heavyAttack: 'KeyK',
-  guard: 'KeyL',
-  dodge: 'KeyC',
-  ability: 'KeyE',
-  lockOn: 'Tab',
+  fire: 'KeyJ',
+  ads: 'KeyK',
+  reload: 'KeyR',
+  jump: 'Space',
+  crouch: 'KeyC',
+  slide: 'KeyV',
   sprint: 'ShiftLeft',
+  nextWeapon: 'KeyQ',
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -743,28 +715,26 @@ export const DEFAULT_SETTINGS: GameSettings = {
   particleQuality: 'high',
   cameraDistance: 5.2,
   touchSensitivity: 1.0,
+  fireSensitivity: 0.45,
   touchDeadzone: 0.12,
   aimAssist: true,
   moveAssist: true,
   autoFullscreenLandscape: true,
   showControlHints: true,
+  hudGlobalScale: 1.0,
+  hudGlobalOpacity: 0.95,
+  buttonsLayout: { ...DEFAULT_HUD_BUTTONS_LAYOUT },
   keybindings: { ...DEFAULT_KEYBINDINGS },
 };
 
 export interface TrainingConfig {
-  dummyBehavior: 'idle' | 'block_all' | 'counter_hit' | 'active_bot';
-  botDifficulty: BotDifficulty;
-  infiniteStamina: boolean;
-  playerInvulnerable: boolean;
-  instantCooldowns: boolean;
-  showHitboxInfo: boolean;
+  dummyBehavior: 'idle' | 'strafe' | 'combat';
+  infiniteAmmo: boolean;
+  autoRegenHp: boolean;
 }
 
 export const DEFAULT_TRAINING_CONFIG: TrainingConfig = {
-  dummyBehavior: 'idle',
-  botDifficulty: 'normal',
-  infiniteStamina: true,
-  playerInvulnerable: false,
-  instantCooldowns: true,
-  showHitboxInfo: true,
+  dummyBehavior: 'combat',
+  infiniteAmmo: false,
+  autoRegenHp: true,
 };

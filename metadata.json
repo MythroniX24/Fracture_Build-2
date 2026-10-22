@@ -1,6 +1,6 @@
 {
   "name": "FRACTURE — 3D Arena Fighting Game",
-  "description": "Skill-based 3D industrial fantasy arena fighting game featuring procedural Colossi fighters VOLT and RIFT, tactical melee combat, AI bots, training mode, and online multiplayer.",
+  "description": "First-person tactical 3D shooter set in a 140m military compound with 6 distinct firearms (M4A1, AK-47, MP5-K, SPAS-12, AWP, Desert Eagle), AI bots, firing range, and customizable HUD layout.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
