@@ -219,9 +219,9 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
         fireLastPos.current = { x: e.clientX, y: e.clientY };
         updateFireJoystickKnob(e.clientX, e.clientY);
         touchInputRef.current.attackDragX =
-          (touchInputRef.current.attackDragX || 0) + dx * 0.75;
+          (touchInputRef.current.attackDragX || 0) + dx * 1.15;
         touchInputRef.current.attackDragY =
-          (touchInputRef.current.attackDragY || 0) + dy * 0.75;
+          (touchInputRef.current.attackDragY || 0) + dy * 1.15;
         touchInputRef.current.lightHeld = true;
       } else if (lookPointersRef.current.has(e.pointerId)) {
         const prev = lookPointersRef.current.get(e.pointerId)!;

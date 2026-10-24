@@ -11,9 +11,14 @@ export interface ProceduralTextureSet {
   crateMap: THREE.CanvasTexture;
   muzzleFlashMap: THREE.CanvasTexture;
   bulletHoleMap: THREE.CanvasTexture;
+  bulletHoleMp5Map: THREE.CanvasTexture;
+  bulletHoleM4a1Map: THREE.CanvasTexture;
+  bulletHoleAk47Map: THREE.CanvasTexture;
+  bulletHoleDeagleMap: THREE.CanvasTexture;
+  bulletHoleShotgunMap: THREE.CanvasTexture;
+  bulletHoleAwpMap: THREE.CanvasTexture;
   bulletHoleRifleMap: THREE.CanvasTexture;
   bulletHoleSmgMap: THREE.CanvasTexture;
-  bulletHoleShotgunMap: THREE.CanvasTexture;
   bulletHoleSniperMap: THREE.CanvasTexture;
   bloodSplatterMap: THREE.CanvasTexture;
   dispose: () => void;
@@ -159,117 +164,264 @@ export function createProceduralTextureSet(maxAnisotropy = 4): ProceduralTexture
   const muzzleFlashMap = new THREE.CanvasTexture(mfCanvas);
   muzzleFlashMap.colorSpace = THREE.SRGBColorSpace;
 
-  // 6A. Rifle Bullet Decal (5.56 / 7.62mm Concrete Spall + Radial Cracks)
-  const bhRifleCanvas = document.createElement('canvas');
-  bhRifleCanvas.width = 128;
-  bhRifleCanvas.height = 128;
-  const rCtx = bhRifleCanvas.getContext('2d')!;
-  const rGrad = rCtx.createRadialGradient(64, 64, 4, 64, 64, 52);
-  rGrad.addColorStop(0, 'rgba(6, 8, 11, 0.98)');
-  rGrad.addColorStop(0.22, 'rgba(18, 22, 28, 0.92)');
-  rGrad.addColorStop(0.45, 'rgba(64, 70, 80, 0.65)');
-  rGrad.addColorStop(0.75, 'rgba(40, 44, 52, 0.25)');
-  rGrad.addColorStop(1, 'rgba(30, 34, 40, 0)');
-  rCtx.fillStyle = rGrad;
-  rCtx.fillRect(0, 0, 128, 128);
-  // Radial fracture lines
-  rCtx.strokeStyle = 'rgba(15, 18, 24, 0.78)';
-  rCtx.lineWidth = 1.6;
-  for (let i = 0; i < 7; i++) {
-    const ang = (i / 7) * Math.PI * 2 + 0.3;
-    const len = 24 + (i % 3) * 11;
-    rCtx.beginPath();
-    rCtx.moveTo(64 + Math.cos(ang) * 7, 64 + Math.sin(ang) * 7);
-    rCtx.lineTo(
-      64 + Math.cos(ang + 0.12) * (len * 0.55),
-      64 + Math.sin(ang + 0.12) * (len * 0.55)
-    );
-    rCtx.lineTo(64 + Math.cos(ang - 0.08) * len, 64 + Math.sin(ang - 0.08) * len);
-    rCtx.stroke();
+  // Helper to paint directional forward carbon burn streak & grazing gouge along +X
+  const drawDirectionalBurnStreak = (
+    ctx: CanvasRenderingContext2D,
+    cx: number,
+    cy: number,
+    length: number,
+    halfWidth: number,
+    opacity: number,
+    emberRGB: string
+  ) => {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(length / Math.max(1, halfWidth), 1);
+    const bGrad = ctx.createRadialGradient(halfWidth * 0.35, 0, 1, halfWidth * 0.45, 0, halfWidth);
+    bGrad.addColorStop(0, `rgba(10, 12, 16, ${opacity})`);
+    bGrad.addColorStop(0.32, `rgba(${emberRGB}, ${opacity * 0.42})`);
+    bGrad.addColorStop(0.65, `rgba(24, 28, 36, ${opacity * 0.45})`);
+    bGrad.addColorStop(1, 'rgba(20, 24, 30, 0)');
+    ctx.fillStyle = bGrad;
+    ctx.beginPath();
+    ctx.arc(halfWidth * 0.35, 0, halfWidth, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  };
+
+  // 6A. MP5-K (9mm Parabellum, 20 DMG) — Compact clean puncture, 4 hairline cracks, subtle amber pinpoint, light forward smudge
+  const bhMp5Canvas = document.createElement('canvas');
+  bhMp5Canvas.width = 256;
+  bhMp5Canvas.height = 256;
+  const mp5Ctx = bhMp5Canvas.getContext('2d')!;
+  drawDirectionalBurnStreak(mp5Ctx, 124, 128, 66, 26, 0.62, '245, 158, 11');
+  const mp5Grad = mp5Ctx.createRadialGradient(118, 128, 4, 122, 128, 62);
+  mp5Grad.addColorStop(0, 'rgba(4, 6, 9, 0.98)');
+  mp5Grad.addColorStop(0.18, 'rgba(245, 158, 11, 0.38)');
+  mp5Grad.addColorStop(0.32, 'rgba(22, 26, 34, 0.92)');
+  mp5Grad.addColorStop(0.56, 'rgba(135, 145, 160, 0.54)');
+  mp5Grad.addColorStop(0.82, 'rgba(45, 50, 58, 0.22)');
+  mp5Grad.addColorStop(1, 'rgba(45, 50, 58, 0)');
+  mp5Ctx.fillStyle = mp5Grad;
+  mp5Ctx.fillRect(0, 0, 256, 256);
+  mp5Ctx.strokeStyle = 'rgba(14, 18, 24, 0.72)';
+  mp5Ctx.lineWidth = 1.8;
+  for (let i = 0; i < 4; i++) {
+    const ang = (i / 4) * Math.PI * 2 + 0.4;
+    const len = 34 + (i % 2) * 14;
+    mp5Ctx.beginPath();
+    mp5Ctx.moveTo(118 + Math.cos(ang) * 10, 128 + Math.sin(ang) * 10);
+    mp5Ctx.lineTo(118 + Math.cos(ang + 0.1) * len, 128 + Math.sin(ang + 0.1) * len);
+    mp5Ctx.stroke();
   }
-  const bulletHoleRifleMap = new THREE.CanvasTexture(bhRifleCanvas);
-  bulletHoleRifleMap.colorSpace = THREE.SRGBColorSpace;
+  const bulletHoleMp5Map = new THREE.CanvasTexture(bhMp5Canvas);
+  bulletHoleMp5Map.colorSpace = THREE.SRGBColorSpace;
+  bulletHoleMp5Map.anisotropy = maxAnisotropy;
 
-  // 6B. SMG / Pistol Decal (Clean 9mm / .50AE Puncture with Metallic Rim)
-  const bhSmgCanvas = document.createElement('canvas');
-  bhSmgCanvas.width = 128;
-  bhSmgCanvas.height = 128;
-  const sCtx = bhSmgCanvas.getContext('2d')!;
-  const sGrad = sCtx.createRadialGradient(64, 64, 3, 64, 64, 38);
-  sGrad.addColorStop(0, 'rgba(5, 7, 10, 0.98)');
-  sGrad.addColorStop(0.26, 'rgba(24, 28, 36, 0.9)');
-  sGrad.addColorStop(0.48, 'rgba(130, 140, 155, 0.55)');
-  sGrad.addColorStop(0.75, 'rgba(45, 50, 58, 0.2)');
-  sGrad.addColorStop(1, 'rgba(45, 50, 58, 0)');
-  sCtx.fillStyle = sGrad;
-  sCtx.fillRect(0, 0, 128, 128);
-  const bulletHoleSmgMap = new THREE.CanvasTexture(bhSmgCanvas);
-  bulletHoleSmgMap.colorSpace = THREE.SRGBColorSpace;
+  // 6B. M4A1 Carbine (5.56mm NATO, 26 DMG) — Crisp high-velocity tactical crater, 6 radial cracks, warm amber-orange ember ring
+  const bhM4Canvas = document.createElement('canvas');
+  bhM4Canvas.width = 256;
+  bhM4Canvas.height = 256;
+  const m4Ctx = bhM4Canvas.getContext('2d')!;
+  drawDirectionalBurnStreak(m4Ctx, 122, 128, 82, 34, 0.74, '249, 115, 22');
+  const m4Grad = m4Ctx.createRadialGradient(116, 128, 5, 120, 128, 78);
+  m4Grad.addColorStop(0, 'rgba(5, 7, 10, 0.99)');
+  m4Grad.addColorStop(0.18, 'rgba(251, 146, 60, 0.52)');
+  m4Grad.addColorStop(0.32, 'rgba(18, 22, 29, 0.94)');
+  m4Grad.addColorStop(0.55, 'rgba(82, 92, 106, 0.65)');
+  m4Grad.addColorStop(0.82, 'rgba(38, 44, 52, 0.25)');
+  m4Grad.addColorStop(1, 'rgba(30, 34, 40, 0)');
+  m4Ctx.fillStyle = m4Grad;
+  m4Ctx.fillRect(0, 0, 256, 256);
+  m4Ctx.strokeStyle = 'rgba(12, 15, 21, 0.82)';
+  m4Ctx.lineWidth = 2.4;
+  for (let i = 0; i < 6; i++) {
+    const ang = (i / 6) * Math.PI * 2 + 0.22;
+    const len = 46 + (i % 3) * 16;
+    m4Ctx.beginPath();
+    m4Ctx.moveTo(116 + Math.cos(ang) * 12, 128 + Math.sin(ang) * 12);
+    m4Ctx.lineTo(
+      116 + Math.cos(ang + 0.12) * (len * 0.55),
+      128 + Math.sin(ang + 0.12) * (len * 0.55)
+    );
+    m4Ctx.lineTo(116 + Math.cos(ang - 0.08) * len, 128 + Math.sin(ang - 0.08) * len);
+    m4Ctx.stroke();
+  }
+  const bulletHoleM4a1Map = new THREE.CanvasTexture(bhM4Canvas);
+  bulletHoleM4a1Map.colorSpace = THREE.SRGBColorSpace;
+  bulletHoleM4a1Map.anisotropy = maxAnisotropy;
 
-  // 6C. Shotgun Buckshot Decal (Cluster of Pellet Pits & Scorch)
+  // 6C. AK-47 (7.62x39mm Heavy Rifle, 34 DMG) — Deep jagged concrete spall crater, 9 branched cracks, intense orange-red ember core
+  const bhAkCanvas = document.createElement('canvas');
+  bhAkCanvas.width = 256;
+  bhAkCanvas.height = 256;
+  const akCtx = bhAkCanvas.getContext('2d')!;
+  drawDirectionalBurnStreak(akCtx, 120, 128, 96, 42, 0.84, '234, 88, 12');
+  const akGrad = akCtx.createRadialGradient(114, 128, 6, 118, 128, 92);
+  akGrad.addColorStop(0, 'rgba(4, 5, 8, 1)');
+  akGrad.addColorStop(0.2, 'rgba(234, 88, 12, 0.65)');
+  akGrad.addColorStop(0.35, 'rgba(15, 18, 24, 0.96)');
+  akGrad.addColorStop(0.58, 'rgba(68, 76, 88, 0.72)');
+  akGrad.addColorStop(0.84, 'rgba(32, 36, 44, 0.3)');
+  akGrad.addColorStop(1, 'rgba(24, 28, 34, 0)');
+  akCtx.fillStyle = akGrad;
+  akCtx.fillRect(0, 0, 256, 256);
+  // Jagged concrete spall chunks
+  for (let i = 0; i < 8; i++) {
+    const ang = (i / 8) * Math.PI * 2 + 0.18;
+    const dist = 26 + (i % 3) * 11;
+    akCtx.fillStyle = i % 2 === 0 ? 'rgba(22, 26, 34, 0.78)' : 'rgba(96, 106, 120, 0.55)';
+    akCtx.beginPath();
+    akCtx.arc(114 + Math.cos(ang) * dist, 128 + Math.sin(ang) * dist, 5 + (i % 3) * 2, 0, Math.PI * 2);
+    akCtx.fill();
+  }
+  akCtx.strokeStyle = 'rgba(10, 12, 18, 0.88)';
+  akCtx.lineWidth = 2.8;
+  for (let i = 0; i < 9; i++) {
+    const ang = (i / 9) * Math.PI * 2 + 0.14;
+    const len = 58 + (i % 3) * 18;
+    const midX = 114 + Math.cos(ang + 0.14) * (len * 0.52);
+    const midY = 128 + Math.sin(ang + 0.14) * (len * 0.52);
+    akCtx.beginPath();
+    akCtx.moveTo(114 + Math.cos(ang) * 11, 128 + Math.sin(ang) * 11);
+    akCtx.lineTo(midX, midY);
+    akCtx.lineTo(114 + Math.cos(ang - 0.1) * len, 128 + Math.sin(ang - 0.1) * len);
+    akCtx.stroke();
+    if (i % 2 === 0) {
+      akCtx.beginPath();
+      akCtx.moveTo(midX, midY);
+      akCtx.lineTo(
+        midX + Math.cos(ang + 0.55) * (len * 0.35),
+        midY + Math.sin(ang + 0.55) * (len * 0.35)
+      );
+      akCtx.stroke();
+    }
+  }
+  const bulletHoleAk47Map = new THREE.CanvasTexture(bhAkCanvas);
+  bulletHoleAk47Map.colorSpace = THREE.SRGBColorSpace;
+  bulletHoleAk47Map.anisotropy = maxAnisotropy;
+
+  // 6D. Desert Eagle (.50 AE Heavy Magnum, 54 DMG) — Wide blunt-force shock crater, double pulverized rings, 8 thick cracks, golden-amber thermal glow
+  const bhDeagleCanvas = document.createElement('canvas');
+  bhDeagleCanvas.width = 256;
+  bhDeagleCanvas.height = 256;
+  const dgCtx = bhDeagleCanvas.getContext('2d')!;
+  drawDirectionalBurnStreak(dgCtx, 118, 128, 98, 48, 0.85, '251, 191, 36');
+  const dgGrad = dgCtx.createRadialGradient(114, 128, 7, 116, 128, 96);
+  dgGrad.addColorStop(0, 'rgba(3, 5, 8, 1)');
+  dgGrad.addColorStop(0.22, 'rgba(251, 191, 36, 0.68)');
+  dgGrad.addColorStop(0.36, 'rgba(18, 22, 30, 0.95)');
+  dgGrad.addColorStop(0.54, 'rgba(148, 163, 184, 0.64)');
+  dgGrad.addColorStop(0.72, 'rgba(30, 36, 44, 0.52)');
+  dgGrad.addColorStop(1, 'rgba(30, 36, 44, 0)');
+  dgCtx.fillStyle = dgGrad;
+  dgCtx.fillRect(0, 0, 256, 256);
+  // Double concentric pulverized shock rings
+  dgCtx.strokeStyle = 'rgba(203, 213, 225, 0.42)';
+  dgCtx.lineWidth = 3.2;
+  dgCtx.beginPath();
+  dgCtx.arc(114, 128, 34, 0, Math.PI * 2);
+  dgCtx.stroke();
+  dgCtx.strokeStyle = 'rgba(15, 23, 42, 0.65)';
+  dgCtx.lineWidth = 2.6;
+  dgCtx.beginPath();
+  dgCtx.arc(114, 128, 52, 0, Math.PI * 2);
+  dgCtx.stroke();
+  for (let i = 0; i < 8; i++) {
+    const ang = (i / 8) * Math.PI * 2 + 0.25;
+    const len = 62 + (i % 2) * 18;
+    dgCtx.beginPath();
+    dgCtx.moveTo(114 + Math.cos(ang) * 14, 128 + Math.sin(ang) * 14);
+    dgCtx.lineTo(114 + Math.cos(ang - 0.07) * len, 128 + Math.sin(ang - 0.07) * len);
+    dgCtx.stroke();
+  }
+  const bulletHoleDeagleMap = new THREE.CanvasTexture(bhDeagleCanvas);
+  bulletHoleDeagleMap.colorSpace = THREE.SRGBColorSpace;
+  bulletHoleDeagleMap.anisotropy = maxAnisotropy;
+
+  // 6E. SPAS-12 (12-Gauge Buckshot Pellet Gouge + Satellite Chip Cluster & Powder Burn)
   const bhSgCanvas = document.createElement('canvas');
-  bhSgCanvas.width = 128;
-  bhSgCanvas.height = 128;
+  bhSgCanvas.width = 256;
+  bhSgCanvas.height = 256;
   const sgCtx = bhSgCanvas.getContext('2d')!;
-  const sgHalo = sgCtx.createRadialGradient(64, 64, 8, 64, 64, 56);
-  sgHalo.addColorStop(0, 'rgba(28, 32, 38, 0.55)');
-  sgHalo.addColorStop(0.65, 'rgba(48, 52, 60, 0.28)');
+  drawDirectionalBurnStreak(sgCtx, 120, 128, 86, 44, 0.76, '251, 146, 60');
+  const sgHalo = sgCtx.createRadialGradient(118, 128, 12, 122, 128, 98);
+  sgHalo.addColorStop(0, 'rgba(20, 24, 30, 0.78)');
+  sgHalo.addColorStop(0.55, 'rgba(42, 48, 58, 0.42)');
   sgHalo.addColorStop(1, 'rgba(48, 52, 60, 0)');
   sgCtx.fillStyle = sgHalo;
-  sgCtx.fillRect(0, 0, 128, 128);
+  sgCtx.fillRect(0, 0, 256, 256);
   const pelletOffsets = [
-    [0, 0],
-    [-16, -12],
-    [18, -9],
-    [-12, 16],
-    [15, 14],
-    [3, -21],
-    [-22, 4],
+    [0, 0, 24],
+    [-26, -18, 15],
+    [30, -14, 16],
+    [-20, 24, 14],
+    [26, 22, 15],
+    [6, -34, 13],
+    [-36, 6, 13],
   ];
-  for (const [px, py] of pelletOffsets) {
-    const cx = 64 + px;
-    const cy = 64 + py;
-    const pGrad = sgCtx.createRadialGradient(cx, cy, 1.5, cx, cy, 11);
-    pGrad.addColorStop(0, 'rgba(8, 10, 14, 0.96)');
-    pGrad.addColorStop(0.45, 'rgba(35, 40, 48, 0.78)');
+  for (const [px, py, rad] of pelletOffsets) {
+    const cx = 118 + px;
+    const cy = 128 + py;
+    const pGrad = sgCtx.createRadialGradient(cx, cy, 2, cx, cy, rad);
+    pGrad.addColorStop(0, 'rgba(5, 7, 11, 0.98)');
+    pGrad.addColorStop(0.28, 'rgba(251, 146, 60, 0.44)');
+    pGrad.addColorStop(0.52, 'rgba(32, 37, 46, 0.85)');
     pGrad.addColorStop(1, 'rgba(65, 70, 80, 0)');
     sgCtx.fillStyle = pGrad;
     sgCtx.beginPath();
-    sgCtx.arc(cx, cy, 11, 0, Math.PI * 2);
+    sgCtx.arc(cx, cy, rad, 0, Math.PI * 2);
     sgCtx.fill();
   }
   const bulletHoleShotgunMap = new THREE.CanvasTexture(bhSgCanvas);
   bulletHoleShotgunMap.colorSpace = THREE.SRGBColorSpace;
+  bulletHoleShotgunMap.anisotropy = maxAnisotropy;
 
-  // 6D. Sniper .338 Lapua Heavy Impact Crater with Deep Fracture Web
-  const bhSnCanvas = document.createElement('canvas');
-  bhSnCanvas.width = 128;
-  bhSnCanvas.height = 128;
-  const snCtx = bhSnCanvas.getContext('2d')!;
-  const snGrad = snCtx.createRadialGradient(64, 64, 5, 64, 64, 60);
-  snGrad.addColorStop(0, 'rgba(4, 5, 8, 1)');
-  snGrad.addColorStop(0.18, 'rgba(255, 120, 30, 0.55)');
-  snGrad.addColorStop(0.32, 'rgba(16, 20, 26, 0.94)');
-  snGrad.addColorStop(0.62, 'rgba(78, 86, 98, 0.52)');
-  snGrad.addColorStop(1, 'rgba(30, 34, 42, 0)');
+  // 6F. AWP (.338 Lapua Magnum, 105 DMG) — Massive armor-piercing crater, molten white-orange core, 12 deep structural cracks & long +X scorch tail
+  const bhAwpCanvas = document.createElement('canvas');
+  bhAwpCanvas.width = 256;
+  bhAwpCanvas.height = 256;
+  const snCtx = bhAwpCanvas.getContext('2d')!;
+  drawDirectionalBurnStreak(snCtx, 116, 128, 118, 56, 0.94, '255, 120, 25');
+  const snGrad = snCtx.createRadialGradient(110, 128, 6, 114, 128, 112);
+  snGrad.addColorStop(0, 'rgba(255, 245, 210, 0.98)');
+  snGrad.addColorStop(0.1, 'rgba(255, 115, 20, 0.92)');
+  snGrad.addColorStop(0.24, 'rgba(6, 8, 12, 0.98)');
+  snGrad.addColorStop(0.46, 'rgba(20, 25, 34, 0.92)');
+  snGrad.addColorStop(0.68, 'rgba(90, 100, 116, 0.58)');
+  snGrad.addColorStop(1, 'rgba(28, 32, 40, 0)');
   snCtx.fillStyle = snGrad;
-  snCtx.fillRect(0, 0, 128, 128);
-  snCtx.strokeStyle = 'rgba(10, 12, 16, 0.9)';
-  snCtx.lineWidth = 2.2;
-  for (let i = 0; i < 11; i++) {
-    const ang = (i / 11) * Math.PI * 2 + 0.15;
-    const len = 34 + (i % 3) * 12;
+  snCtx.fillRect(0, 0, 256, 256);
+  snCtx.strokeStyle = 'rgba(8, 10, 15, 0.94)';
+  snCtx.lineWidth = 3.4;
+  for (let i = 0; i < 12; i++) {
+    const ang = (i / 12) * Math.PI * 2 + 0.11;
+    const len = 76 + (i % 3) * 22;
+    const mx = 110 + Math.cos(ang + 0.15) * (len * 0.48);
+    const my = 128 + Math.sin(ang + 0.15) * (len * 0.48);
     snCtx.beginPath();
-    snCtx.moveTo(64 + Math.cos(ang) * 6, 64 + Math.sin(ang) * 6);
-    snCtx.lineTo(
-      64 + Math.cos(ang + 0.16) * (len * 0.5),
-      64 + Math.sin(ang + 0.16) * (len * 0.5)
-    );
-    snCtx.lineTo(64 + Math.cos(ang - 0.1) * len, 64 + Math.sin(ang - 0.1) * len);
+    snCtx.moveTo(110 + Math.cos(ang) * 12, 128 + Math.sin(ang) * 12);
+    snCtx.lineTo(mx, my);
+    snCtx.lineTo(110 + Math.cos(ang - 0.1) * len, 128 + Math.sin(ang - 0.1) * len);
     snCtx.stroke();
+    // Secondary branched fractures
+    snCtx.lineWidth = 2.0;
+    snCtx.beginPath();
+    snCtx.moveTo(mx, my);
+    snCtx.lineTo(
+      mx + Math.cos(ang - 0.48) * (len * 0.36),
+      my + Math.sin(ang - 0.48) * (len * 0.36)
+    );
+    snCtx.stroke();
+    snCtx.lineWidth = 3.4;
   }
-  const bulletHoleSniperMap = new THREE.CanvasTexture(bhSnCanvas);
-  bulletHoleSniperMap.colorSpace = THREE.SRGBColorSpace;
+  const bulletHoleAwpMap = new THREE.CanvasTexture(bhAwpCanvas);
+  bulletHoleAwpMap.colorSpace = THREE.SRGBColorSpace;
+  bulletHoleAwpMap.anisotropy = maxAnisotropy;
+
+  const bulletHoleRifleMap = bulletHoleM4a1Map;
+  const bulletHoleSmgMap = bulletHoleMp5Map;
+  const bulletHoleSniperMap = bulletHoleAwpMap;
 
   // 7. Realistic Crimson Blood Splatter Decal Texture
   const blCanvas = document.createElement('canvas');
@@ -359,10 +511,15 @@ export function createProceduralTextureSet(maxAnisotropy = 4): ProceduralTexture
     containerMap,
     crateMap,
     muzzleFlashMap,
-    bulletHoleMap: bulletHoleRifleMap,
+    bulletHoleMap: bulletHoleM4a1Map,
+    bulletHoleMp5Map,
+    bulletHoleM4a1Map,
+    bulletHoleAk47Map,
+    bulletHoleDeagleMap,
+    bulletHoleShotgunMap,
+    bulletHoleAwpMap,
     bulletHoleRifleMap,
     bulletHoleSmgMap,
-    bulletHoleShotgunMap,
     bulletHoleSniperMap,
     bloodSplatterMap,
     dispose: () => {
@@ -374,10 +531,12 @@ export function createProceduralTextureSet(maxAnisotropy = 4): ProceduralTexture
       containerMap.dispose();
       crateMap.dispose();
       muzzleFlashMap.dispose();
-      bulletHoleRifleMap.dispose();
-      bulletHoleSmgMap.dispose();
+      bulletHoleMp5Map.dispose();
+      bulletHoleM4a1Map.dispose();
+      bulletHoleAk47Map.dispose();
+      bulletHoleDeagleMap.dispose();
       bulletHoleShotgunMap.dispose();
-      bulletHoleSniperMap.dispose();
+      bulletHoleAwpMap.dispose();
       bloodSplatterMap.dispose();
     },
   };

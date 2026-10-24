@@ -92,122 +92,6 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
 
   return (
     <>
-      {/* =================================================================== */}
-      {/* 1. CLEAN MATTE TACTICAL MAIN MENU                                   */}
-      {/* =================================================================== */}
-      {screenState === 'main_menu' && (
-        <div
-          className="fixed inset-0 z-20 flex flex-col justify-between p-6 sm:p-10 pointer-events-none select-none"
-          style={{
-            background:
-              'linear-gradient(90deg, rgba(12,14,18,0.88) 0%, rgba(12,14,18,0.52) 52%, rgba(12,14,18,0.10) 100%)',
-          }}
-        >
-          {/* Top Brand Emblem */}
-          <div className="flex items-center gap-3">
-            <svg
-              className="w-7 h-7 text-zinc-100"
-              viewBox="0 0 32 32"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.2"
-            >
-              <polygon points="16,3 29,10 29,22 16,29 3,22 3,10" />
-              <line x1="16" y1="8" x2="16" y2="24" />
-              <line x1="8" y1="16" x2="24" y2="16" />
-            </svg>
-            <span className="font-display font-bold text-sm tracking-[0.22em] text-zinc-200 uppercase">
-              SECTOR-09 · 5-MIN DEATHMATCH
-            </span>
-          </div>
-
-          {/* Left-Third Focal Column: Title, Difficulty, & Primary Actions */}
-          <div className="my-auto max-w-md flex flex-col items-start gap-5 pointer-events-auto">
-            <div>
-              <h1 className="font-display font-black text-5xl sm:text-6xl tracking-tight text-zinc-100 leading-none">
-                FRACTURE
-              </h1>
-              <p className="mt-1.5 text-sm text-zinc-400">
-                5-Minute Tactical Arena First-Person Deathmatch
-              </p>
-            </div>
-
-            {/* Difficulty Segmented Selector */}
-            <div className="w-full sm:w-80 bg-[#12141a]/95 border border-white/15 rounded-xl px-4 py-2.5 flex items-center justify-between shadow-xl">
-              <span className="text-xs font-medium text-zinc-400">AI Difficulty</span>
-              <div className="flex items-center gap-1">
-                {(['easy', 'normal', 'hard'] as BotDifficulty[]).map((d) => (
-                  <button
-                    key={d}
-                    type="button"
-                    onClick={() => {
-                      soundEngine.play('ui_click');
-                      onSelectDifficulty(d);
-                    }}
-                    className={`px-2.5 py-1 rounded text-xs font-medium capitalize transition-colors cursor-pointer ${
-                      botDifficulty === d
-                        ? 'bg-zinc-200 text-zinc-950 font-semibold'
-                        : 'text-zinc-400 hover:text-zinc-200'
-                    }`}
-                  >
-                    {d}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* <= 3 Primary Menu Actions */}
-            <nav className="flex flex-col gap-2.5 w-full sm:w-80">
-              <button
-                type="button"
-                data-start="true"
-                onClick={() => {
-                  soundEngine.unlock();
-                  soundEngine.play('ui_confirm');
-                  onSelectMode('bot');
-                  onStartCombat();
-                }}
-                className="w-full py-3.5 px-5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 font-display font-bold text-base tracking-wide flex items-center justify-between transition-transform active:scale-98 cursor-pointer"
-              >
-                <span>Start Deathmatch</span>
-                <span className="font-mono text-xs font-bold">05:00 →</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  soundEngine.unlock();
-                  soundEngine.play('ui_click');
-                  onSelectMode('training');
-                  onStartCombat();
-                }}
-                className="w-full py-3 px-5 rounded-xl bg-[#14171e] hover:bg-zinc-800 border border-white/15 text-zinc-200 font-display font-semibold text-sm flex items-center justify-between transition-colors cursor-pointer"
-              >
-                <span>Firing Range</span>
-                <span className="font-mono text-xs text-zinc-400">Practice</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  soundEngine.unlock();
-                  soundEngine.play('ui_click');
-                  onOpenSettings(true);
-                }}
-                className="w-full py-3 px-5 rounded-xl bg-[#14171e] hover:bg-zinc-800 border border-white/15 text-zinc-200 font-display font-semibold text-sm flex items-center justify-between transition-colors cursor-pointer"
-              >
-                <span>Settings</span>
-                <span className="font-mono text-xs text-zinc-400">Configure</span>
-              </button>
-            </nav>
-          </div>
-
-          {/* Flat Inline Control Hint Line */}
-          <div className="text-xs font-mono text-zinc-400">
-            WASD Move · Hold &amp; Drag Fire Button · V Slide · Right-Click Scope · R Reload · Esc Pause
-          </div>
-        </div>
-      )}
 
       {/* =================================================================== */}
       {/* 2. PAUSE MODAL                                                      */}
@@ -385,7 +269,7 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
       )}
 
       {/* =================================================================== */}
-      {/* 4. CLEAN MATTE SETTINGS MODAL                                       */}
+      {/* 4. UNIFIED SETTINGS MODAL (Shared between Lobby & In-Game)          */}
       {/* =================================================================== */}
       {settingsOpen && (
         <div
@@ -393,11 +277,18 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
           aria-label="Settings"
           onKeyDown={handleKeyCapture}
           tabIndex={-1}
-          className="fixed inset-0 z-50 bg-[#0b0d12]/80 flex items-center justify-center p-4 select-none"
+          className="fixed inset-0 z-50 bg-[#0b0d12]/85 backdrop-blur-md flex items-center justify-center p-4 select-none"
         >
-          <div className="w-full max-w-md bg-[#14171e] border border-white/15 rounded-2xl p-5 sm:p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+          <div className="w-full max-w-2xl bg-[#111726] border border-white/15 rounded-2xl p-5 sm:p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="font-display font-bold text-lg text-zinc-100">Settings</h3>
+              <div>
+                <h3 className="font-display font-bold text-lg text-zinc-100 uppercase tracking-wide">
+                  Game Settings
+                </h3>
+                <p className="text-[11px] text-slate-400">
+                  Synced across Main Lobby &amp; In-Game Combat
+                </p>
+              </div>
               <button
                 type="button"
                 aria-label="Close Settings"
@@ -413,204 +304,16 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
               </button>
             </div>
 
-            {/* Graphics Quality */}
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-zinc-300">Graphics Quality</span>
-              <div className="flex gap-1 bg-[#0e1015] p-1 rounded-lg border border-white/10">
-                {(['low', 'medium', 'high'] as const).map((q) => (
-                  <button
-                    key={q}
-                    type="button"
-                    onClick={() => onUpdateSettings({ graphicsQuality: q })}
-                    className={`px-3 py-1 rounded text-xs font-medium capitalize cursor-pointer ${
-                      settings.graphicsQuality === q
-                        ? 'bg-zinc-100 text-zinc-950 font-semibold'
-                        : 'text-zinc-400 hover:text-zinc-200'
-                    }`}
-                  >
-                    {q}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Camera Aim Sensitivity */}
-            <label className="flex flex-col gap-1">
-              <div className="flex justify-between text-xs text-zinc-300">
-                <span>Camera Aim Sensitivity</span>
-                <span className="font-mono text-zinc-100 tabular-nums">
-                  {Math.round(settings.touchSensitivity * 100)}%
-                </span>
-              </div>
-              <input
-                type="range"
-                aria-label="Camera Aim Sensitivity"
-                min={0.2}
-                max={2.0}
-                step={0.05}
-                value={settings.touchSensitivity}
-                onChange={(e) =>
-                  onUpdateSettings({ touchSensitivity: parseFloat(e.target.value) })
-                }
-                className="w-full accent-zinc-100 cursor-pointer"
-              />
-            </label>
-
-            {/* Firing Sensitivity (Fire Button Joystick Aim) */}
-            <label className="flex flex-col gap-1">
-              <div className="flex justify-between text-xs text-zinc-300">
-                <span>Firing Sensitivity</span>
-                <span className="font-mono text-amber-300 tabular-nums">
-                  {Math.round((settings.fireSensitivity ?? 0.45) * 100)}%
-                </span>
-              </div>
-              <input
-                type="range"
-                aria-label="Firing Sensitivity"
-                min={0.1}
-                max={2.0}
-                step={0.05}
-                value={settings.fireSensitivity ?? 0.45}
-                onChange={(e) =>
-                  onUpdateSettings({ fireSensitivity: parseFloat(e.target.value) })
-                }
-                className="w-full accent-amber-400 cursor-pointer"
-              />
-            </label>
-
-            {/* Audio Volume */}
-            <label className="flex flex-col gap-1">
-              <div className="flex justify-between text-xs text-zinc-300">
-                <span>Audio Volume</span>
-                <span className="font-mono text-zinc-100 tabular-nums">
-                  {Math.round(settings.masterVolume * 100)}%
-                </span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={settings.masterVolume}
-                onChange={(e) =>
-                  onUpdateSettings({ masterVolume: parseFloat(e.target.value) })
-                }
-                className="w-full accent-zinc-100 cursor-pointer"
-              />
-            </label>
-
-            {/* Fullscreen & Mobile Landscape */}
-            <div className="flex items-center justify-between border-t border-white/10 pt-3">
-              <span className="text-xs font-medium text-zinc-300">
-                Fullscreen &amp; Landscape
-              </span>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() =>
-                    onUpdateSettings({
-                      autoFullscreenLandscape: !settings.autoFullscreenLandscape,
-                    })
-                  }
-                  className={`px-2.5 py-1 rounded-lg text-xs font-medium cursor-pointer ${
-                    settings.autoFullscreenLandscape
-                      ? 'bg-zinc-200 text-zinc-950 font-semibold'
-                      : 'bg-zinc-800 text-zinc-400'
-                  }`}
-                >
-                  {settings.autoFullscreenLandscape ? 'Auto: On' : 'Auto: Off'}
-                </button>
-                <button
-                  type="button"
-                  data-fullscreen-toggle="true"
-                  onClick={() => {
-                    soundEngine.play('ui_click');
-                    onToggleFullscreen();
-                  }}
-                  className="px-3 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-200 cursor-pointer"
-                >
-                  {isFullscreen ? 'Exit' : 'Fullscreen'}
-                </button>
-              </div>
-            </div>
-
-            {/* Keybindings */}
-            <div className="border-t border-white/10 pt-3 flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-zinc-300">Keyboard Bindings</span>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onUpdateSettings({ keybindings: { ...DEFAULT_KEYBINDINGS } })
-                  }
-                  className="text-xs font-mono text-zinc-400 hover:text-zinc-100 cursor-pointer"
-                >
-                  Reset
-                </button>
-              </div>
-              <div className="grid grid-cols-2 gap-1.5">
-                {(
-                  [
-                    ['fire', 'Fire'],
-                    ['ads', 'Scope'],
-                    ['reload', 'Reload'],
-                    ['jump', 'Jump'],
-                    ['crouch', 'Crouch'],
-                    ['slide', 'Slide'],
-                    ['nextWeapon', 'Switch Gun'],
-                  ] as [keyof KeyBindingsConfig, string][]
-                ).map(([key, label]) => (
-                  <button
-                    key={String(key)}
-                    type="button"
-                    onClick={() => setRebindingKey(key)}
-                    className={`px-3 py-2 rounded-lg border text-xs flex items-center justify-between cursor-pointer ${
-                      rebindingKey === key
-                        ? 'border-white bg-zinc-800 text-white'
-                        : 'border-white/10 bg-[#0e1015] text-zinc-300 hover:border-white/25'
-                    }`}
-                  >
-                    <span>{label}</span>
-                    <span className="font-mono font-semibold text-zinc-100">
-                      {rebindingKey === key
-                        ? '...'
-                        : (settings.keybindings[key] || '').replace('Key', '')}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Touch Controls Layout Customizer */}
-            <div className="border-t border-white/10 pt-3 flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-zinc-300">Touch Controls</span>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onUpdateSettings({
-                      buttonsLayout: { ...DEFAULT_HUD_BUTTONS_LAYOUT },
-                      hudGlobalScale: 1.0,
-                      hudGlobalOpacity: 0.95,
-                    })
-                  }
-                  className="text-xs font-mono text-zinc-400 hover:text-zinc-100 cursor-pointer"
-                >
-                  Reset Layout
-                </button>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => {
-                  soundEngine.play('ui_confirm');
-                  onOpenLayoutEditor();
-                }}
-                className="w-full py-3 px-4 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/15 text-zinc-100 font-medium text-sm flex items-center justify-center transition-colors cursor-pointer"
-              >
-                Customize Controls
-              </button>
-            </div>
+            <SharedSettingsPanel
+              settings={settings}
+              isFullscreen={isFullscreen}
+              onUpdateSettings={onUpdateSettings}
+              onToggleFullscreen={onToggleFullscreen}
+              onOpenLayoutEditor={() => {
+                onOpenSettings(false);
+                onOpenLayoutEditor();
+              }}
+            />
 
             <button
               type="button"
@@ -623,5 +326,332 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
         </div>
       )}
     </>
+  );
+};
+
+export interface SharedSettingsPanelProps {
+  settings: GameSettings;
+  isFullscreen: boolean;
+  onUpdateSettings: (partial: Partial<GameSettings>) => void;
+  onToggleFullscreen: () => void;
+  onOpenLayoutEditor: () => void;
+}
+
+export const SharedSettingsPanel: React.FC<SharedSettingsPanelProps> = ({
+  settings,
+  isFullscreen,
+  onUpdateSettings,
+  onToggleFullscreen,
+  onOpenLayoutEditor,
+}) => {
+  const [rebindingKey, setRebindingKey] = useState<keyof KeyBindingsConfig | null>(null);
+
+  const handleKeyCapture = (e: React.KeyboardEvent) => {
+    if (!rebindingKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onUpdateSettings({
+      keybindings: {
+        ...settings.keybindings,
+        [rebindingKey]: e.code,
+      },
+    });
+    setRebindingKey(null);
+  };
+
+  return (
+    <div
+      onKeyDown={handleKeyCapture}
+      tabIndex={-1}
+      className="grid grid-cols-1 md:grid-cols-2 gap-4 outline-none"
+    >
+      {/* Left Column: Audio, Graphics & Display */}
+      <div className="flex flex-col gap-3.5 bg-slate-950/60 border border-white/10 rounded-xl p-4">
+        <div className="text-[11px] font-bold uppercase tracking-wider text-sky-400">
+          Audio &amp; Graphics
+        </div>
+
+        {/* Audio Volume */}
+        <label className="flex flex-col gap-1.5">
+          <div className="flex justify-between text-xs text-zinc-300">
+            <span>Audio Volume</span>
+            <span className="font-mono text-sky-400 font-bold tabular-nums">
+              {Math.round(settings.masterVolume * 100)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            aria-label="Audio Volume"
+            min={0}
+            max={1}
+            step={0.05}
+            value={settings.masterVolume}
+            onChange={(e) =>
+              onUpdateSettings({ masterVolume: parseFloat(e.target.value) })
+            }
+            className="w-full accent-sky-400 cursor-pointer"
+          />
+        </label>
+
+        {/* Mute Audio */}
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-zinc-300">Mute All Audio</span>
+          <button
+            type="button"
+            onClick={() => onUpdateSettings({ muted: !settings.muted })}
+            className={`px-3 py-1 rounded-lg text-xs font-bold uppercase cursor-pointer ${
+              settings.muted
+                ? 'bg-rose-600 text-white'
+                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            {settings.muted ? 'Muted' : 'Active'}
+          </button>
+        </div>
+
+        {/* Graphics Quality */}
+        <div className="flex items-center justify-between pt-2 border-t border-white/10">
+          <span className="text-xs font-medium text-zinc-300">Graphics Quality</span>
+          <div className="flex gap-1 bg-[#0e1015] p-1 rounded-lg border border-white/10">
+            {(['low', 'medium', 'high'] as const).map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => onUpdateSettings({ graphicsQuality: q })}
+                className={`px-2.5 py-1 rounded text-xs font-medium capitalize cursor-pointer ${
+                  settings.graphicsQuality === q
+                    ? 'bg-sky-500 text-white font-semibold'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Particle Quality */}
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-zinc-300">Particle Density</span>
+          <div className="flex gap-1 bg-[#0e1015] p-1 rounded-lg border border-white/10">
+            {(['low', 'medium', 'high'] as const).map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => onUpdateSettings({ particleQuality: q })}
+                className={`px-2.5 py-1 rounded text-xs font-medium capitalize cursor-pointer ${
+                  settings.particleQuality === q
+                    ? 'bg-sky-500 text-white font-semibold'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Fullscreen & Mobile Landscape */}
+        <div className="flex items-center justify-between border-t border-white/10 pt-2.5">
+          <span className="text-xs font-medium text-zinc-300">
+            Fullscreen &amp; Landscape
+          </span>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() =>
+                onUpdateSettings({
+                  autoFullscreenLandscape: !settings.autoFullscreenLandscape,
+                })
+              }
+              className={`px-2.5 py-1 rounded-lg text-xs font-medium cursor-pointer ${
+                settings.autoFullscreenLandscape
+                  ? 'bg-emerald-500/20 border border-emerald-400/50 text-emerald-200 font-semibold'
+                  : 'bg-zinc-800 text-zinc-400'
+              }`}
+            >
+              {settings.autoFullscreenLandscape ? 'Auto: On' : 'Auto: Off'}
+            </button>
+            <button
+              type="button"
+              data-fullscreen-toggle="true"
+              onClick={() => {
+                soundEngine.play('ui_click');
+                onToggleFullscreen();
+              }}
+              className="px-3 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-xs font-medium text-zinc-200 cursor-pointer"
+            >
+              {isFullscreen ? 'Exit' : 'Fullscreen'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Right Column: Sensitivity, Assist & Controls */}
+      <div className="flex flex-col gap-3.5 bg-slate-950/60 border border-white/10 rounded-xl p-4">
+        <div className="text-[11px] font-bold uppercase tracking-wider text-amber-400">
+          Sensitivity &amp; Controls
+        </div>
+
+        {/* Camera Aim Sensitivity */}
+        <label className="flex flex-col gap-1.5">
+          <div className="flex justify-between text-xs text-zinc-300">
+            <span>Camera Aim Sensitivity</span>
+            <span className="font-mono text-zinc-100 font-bold tabular-nums">
+              {Math.round(settings.touchSensitivity * 100)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            aria-label="Camera Aim Sensitivity"
+            min={0.2}
+            max={2.0}
+            step={0.05}
+            value={settings.touchSensitivity}
+            onChange={(e) =>
+              onUpdateSettings({ touchSensitivity: parseFloat(e.target.value) })
+            }
+            className="w-full accent-sky-400 cursor-pointer"
+          />
+        </label>
+
+        {/* Firing Sensitivity */}
+        <label className="flex flex-col gap-1.5">
+          <div className="flex justify-between text-xs text-zinc-300">
+            <span>Firing Sensitivity</span>
+            <span className="font-mono text-amber-300 font-bold tabular-nums">
+              {Math.round((settings.fireSensitivity ?? 1.0) * 100)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            aria-label="Firing Sensitivity"
+            min={0.1}
+            max={2.0}
+            step={0.05}
+            value={settings.fireSensitivity ?? 1.0}
+            onChange={(e) =>
+              onUpdateSettings({ fireSensitivity: parseFloat(e.target.value) })
+            }
+            className="w-full accent-amber-400 cursor-pointer"
+          />
+        </label>
+
+        {/* Aim Assist, Move Assist, Control Hints */}
+        <div className="grid grid-cols-3 gap-1.5 pt-2 border-t border-white/10">
+          <button
+            type="button"
+            onClick={() => onUpdateSettings({ aimAssist: !settings.aimAssist })}
+            className={`px-2 py-1.5 rounded-lg border text-[11px] font-semibold cursor-pointer ${
+              settings.aimAssist
+                ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
+                : 'bg-slate-900 border-white/10 text-slate-400'
+            }`}
+          >
+            Aim Assist: {settings.aimAssist ? 'ON' : 'OFF'}
+          </button>
+          <button
+            type="button"
+            onClick={() => onUpdateSettings({ moveAssist: !settings.moveAssist })}
+            className={`px-2 py-1.5 rounded-lg border text-[11px] font-semibold cursor-pointer ${
+              settings.moveAssist
+                ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
+                : 'bg-slate-900 border-white/10 text-slate-400'
+            }`}
+          >
+            Move Assist: {settings.moveAssist ? 'ON' : 'OFF'}
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              onUpdateSettings({ showControlHints: !settings.showControlHints })
+            }
+            className={`px-2 py-1.5 rounded-lg border text-[11px] font-semibold cursor-pointer ${
+              settings.showControlHints
+                ? 'bg-sky-500/20 border-sky-400/50 text-sky-200'
+                : 'bg-slate-900 border-white/10 text-slate-400'
+            }`}
+          >
+            Hints: {settings.showControlHints ? 'ON' : 'OFF'}
+          </button>
+        </div>
+
+        {/* Touch Controls Layout Customizer */}
+        <div className="border-t border-white/10 pt-2.5 flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              soundEngine.play('ui_confirm');
+              onOpenLayoutEditor();
+            }}
+            className="flex-1 py-2 px-3 rounded-lg bg-sky-600/25 hover:bg-sky-600/35 border border-sky-400/40 text-sky-100 font-semibold text-xs flex items-center justify-center transition-colors cursor-pointer"
+          >
+            Customize Touch HUD
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              onUpdateSettings({
+                buttonsLayout: { ...DEFAULT_HUD_BUTTONS_LAYOUT },
+                hudGlobalScale: 1.0,
+                hudGlobalOpacity: 0.95,
+              })
+            }
+            className="px-2.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-white/10 text-[11px] font-mono text-zinc-300 cursor-pointer"
+          >
+            Reset HUD
+          </button>
+        </div>
+      </div>
+
+      {/* Bottom Full-Width Row: Keyboard Bindings */}
+      <div className="md:col-span-2 bg-slate-950/60 border border-white/10 rounded-xl p-4 flex flex-col gap-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-zinc-300">
+            Keyboard Bindings (Click any action then press a key)
+          </span>
+          <button
+            type="button"
+            onClick={() =>
+              onUpdateSettings({ keybindings: { ...DEFAULT_KEYBINDINGS } })
+            }
+            className="text-xs font-mono text-sky-400 hover:text-sky-300 cursor-pointer"
+          >
+            Reset Keys
+          </button>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-1.5">
+          {(
+            [
+              ['fire', 'Fire'],
+              ['ads', 'Scope'],
+              ['reload', 'Reload'],
+              ['jump', 'Jump'],
+              ['crouch', 'Crouch'],
+              ['slide', 'Slide'],
+              ['nextWeapon', 'Switch Gun'],
+            ] as [keyof KeyBindingsConfig, string][]
+          ).map(([key, label]) => (
+            <button
+              key={String(key)}
+              type="button"
+              onClick={() => setRebindingKey(key)}
+              className={`px-2.5 py-2 rounded-lg border text-xs flex flex-col items-start gap-0.5 cursor-pointer ${
+                rebindingKey === key
+                  ? 'border-sky-400 bg-sky-500/20 text-white'
+                  : 'border-white/10 bg-[#0e1015] text-zinc-300 hover:border-white/25'
+              }`}
+            >
+              <span className="text-[10px] text-slate-400">{label}</span>
+              <span className="font-mono font-bold text-zinc-100">
+                {rebindingKey === key
+                  ? 'Press key...'
+                  : (settings.keybindings[key] || '').replace('Key', '')}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 };

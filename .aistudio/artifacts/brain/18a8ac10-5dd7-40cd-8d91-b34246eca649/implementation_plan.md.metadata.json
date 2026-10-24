@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for 6 weapon-specific ballistic gunshot impact marks scaled by caliber/power, true 360° grazing-angle oval gouge & directional burn streak projection, and strict wall-face boundary clamping so decals never float in mid-air.",
+  "updatedAt":  "2026-10-22T13:06:53.603839831Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

@@ -33,20 +33,249 @@ export type SoundEffectType =
   | 'ko'
   | 'ko_slowmo';
 
+export type FootstepCategory =
+  | 'concrete'
+  | 'metal'
+  | 'tile'
+  | 'gravel'
+  | 'wood'
+  | 'grass'
+  | 'water'
+  | 'bones'
+  | 'dog'
+  | 'mech';
+
+/**
+ * Complete manifest of the uploaded /footsteps/ OGG audio library:
+ * - 'concrete' uses /footsteps/boots/0.ogg .. 8.ogg (Derived from footstep-concrete.wav by swuing)
+ * - 'metal' uses /footsteps/metal/0.ogg .. 7.ogg (Derived from fboots on aluminum ladder 01 by Eelke)
+ * - Plus tile, gravel, wood, grass, water, bones, dog, and mech packs
+ */
+export const FOOTSTEP_SOUND_MANIFEST: Record<FootstepCategory, string[]> = {
+  concrete: Array.from({ length: 9 }, (_, i) => `/footsteps/boots/${i}.ogg`),
+  metal: Array.from({ length: 8 }, (_, i) => `/footsteps/metal/${i}.ogg`),
+  tile: Array.from({ length: 9 }, (_, i) => `/footsteps/tile/${i}.ogg`),
+  gravel: Array.from({ length: 10 }, (_, i) => `/footsteps/gravel/${i}.ogg`),
+  wood: Array.from({ length: 9 }, (_, i) => `/footsteps/wood/${i}.ogg`),
+  grass: Array.from({ length: 9 }, (_, i) => `/footsteps/grass/${i}.ogg`),
+  water: Array.from({ length: 5 }, (_, i) => `/footsteps/water/${i}.ogg`),
+  bones: Array.from({ length: 10 }, (_, i) => `/footsteps/bones/${i}.ogg`),
+  dog: Array.from({ length: 8 }, (_, i) => `/footsteps/dog/${i}.ogg`),
+  mech: ['/footsteps/mech/0.ogg'],
+};
+
+export type FootstepSoundId =
+  | 'footstep_concrete'
+  | 'footstep_metal'
+  | 'footstep_tile'
+  | 'footstep_gravel'
+  | 'footstep_wood'
+  | 'footstep_grass'
+  | 'footstep_water'
+  | 'footstep_bones'
+  | 'footstep_dog'
+  | 'footstep_mech';
+
 class SoundEngine {
   private ctx: AudioContext | null = null;
   private masterVolume = 0.7;
   private muted = false;
-  public lastFootstepSurface: 'concrete' | 'metal' | null = null;
+  public lastFootstepSurface: FootstepCategory | null = null;
+  public lastFootstepSampleIndex = -1;
   public footstepPlayCount = 0;
 
-  private concreteBuffers: AudioBuffer[] = [];
-  private metalBuffers: AudioBuffer[] = [];
-  private foleyBuilt = false;
+  private rawFootstepData = new Map<FootstepCategory, (ArrayBuffer | null)[]>();
+  private decodedFootstepBuffers = new Map<FootstepCategory, (AudioBuffer | null)[]>();
+  private htmlAudioBank = new Map<FootstepCategory, HTMLAudioElement[]>();
+  private shuffleBags = new Map<FootstepCategory, number[]>();
+  private lastPlayedIndexByCategory = new Map<FootstepCategory, number>();
+  private playedHistoryByCategory = new Map<FootstepCategory, number[]>();
+  private preloadStarted = false;
+  private decodingCategories = new Set<FootstepCategory>();
+
+  constructor() {
+    if (typeof window !== 'undefined') {
+      this.preloadFootstepFiles();
+    }
+  }
+
+  /**
+   * Draws the next sample index (0 .. N-1) for a given material using a Fisher-Yates
+   * non-repeating shuffle bag. Guarantees every single sound file in the folder is used
+   * in random order before reshuffling, and prevents back-to-back repeats across bag boundaries.
+   */
+  public nextShuffledSampleIndex(category: FootstepCategory): number {
+    const urls = FOOTSTEP_SOUND_MANIFEST[category] || FOOTSTEP_SOUND_MANIFEST.concrete;
+    const count = urls.length;
+    if (count <= 1) {
+      this.lastPlayedIndexByCategory.set(category, 0);
+      this.recordPlayedIndex(category, 0);
+      return 0;
+    }
+
+    let bag = this.shuffleBags.get(category);
+    if (!bag || bag.length === 0) {
+      bag = Array.from({ length: count }, (_, i) => i);
+      // Fisher-Yates shuffle
+      for (let i = bag.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = bag[i];
+        bag[i] = bag[j];
+        bag[j] = tmp;
+      }
+      // We pop from the end of `bag`, so `bag[bag.length - 1]` is the next index to play.
+      // Ensure it never repeats the last played index from the previous cycle.
+      const lastIdx = this.lastPlayedIndexByCategory.get(category);
+      if (lastIdx !== undefined && bag[bag.length - 1] === lastIdx) {
+        const swapPos = Math.floor(Math.random() * (bag.length - 1));
+        const tmp = bag[bag.length - 1];
+        bag[bag.length - 1] = bag[swapPos];
+        bag[swapPos] = tmp;
+      }
+      this.shuffleBags.set(category, bag);
+    }
+
+    const chosenIndex = bag.pop()!;
+    this.lastPlayedIndexByCategory.set(category, chosenIndex);
+    this.recordPlayedIndex(category, chosenIndex);
+    return chosenIndex;
+  }
+
+  private recordPlayedIndex(category: FootstepCategory, index: number): void {
+    let hist = this.playedHistoryByCategory.get(category);
+    if (!hist) {
+      hist = [];
+      this.playedHistoryByCategory.set(category, hist);
+    }
+    hist.push(index);
+    if (hist.length > 64) {
+      hist.shift();
+    }
+  }
+
+  public getPlayedHistory(category: FootstepCategory): number[] {
+    return [...(this.playedHistoryByCategory.get(category) || [])];
+  }
+
+  private preloadFootstepFiles(): void {
+    if (this.preloadStarted || typeof window === 'undefined') return;
+    this.preloadStarted = true;
+
+    const categories = Object.keys(FOOTSTEP_SOUND_MANIFEST) as FootstepCategory[];
+    for (const category of categories) {
+      const urls = FOOTSTEP_SOUND_MANIFEST[category];
+      const rawArr: (ArrayBuffer | null)[] = new Array(urls.length).fill(null);
+      const decArr: (AudioBuffer | null)[] = new Array(urls.length).fill(null);
+      const audioEls: HTMLAudioElement[] = [];
+
+      this.rawFootstepData.set(category, rawArr);
+      this.decodedFootstepBuffers.set(category, decArr);
+
+      // Eagerly preload and decode ALL uploaded footstep packs so every material & variation is ready immediately
+      for (let i = 0; i < urls.length; i++) {
+        const url = urls[i];
+        if (typeof Audio !== 'undefined') {
+          const el = new Audio();
+          el.preload = 'auto';
+          el.src = url;
+          audioEls.push(el);
+        }
+
+        if (typeof fetch === 'function') {
+          this.fetchAndDecodeSample(category, i, url);
+        }
+      }
+
+      this.htmlAudioBank.set(category, audioEls);
+    }
+  }
+
+  private fetchAndDecodeSample(
+    category: FootstepCategory,
+    index: number,
+    url: string
+  ): void {
+    fetch(url)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.arrayBuffer();
+      })
+      .then((arrayBuf) => {
+        const rawArr = this.rawFootstepData.get(category);
+        if (rawArr) {
+          rawArr[index] = arrayBuf;
+        }
+        if (this.ctx) {
+          this.decodeSingleBuffer(this.ctx, category, index, arrayBuf);
+        }
+      })
+      .catch(() => {
+        // Ignore network errors in headless/offline test environments
+      });
+  }
+
+  private decodeSingleBuffer(
+    ctx: AudioContext,
+    category: FootstepCategory,
+    index: number,
+    rawBuf: ArrayBuffer
+  ): void {
+    const decArr = this.decodedFootstepBuffers.get(category);
+    if (!decArr || decArr[index]) return;
+
+    try {
+      // Clone ArrayBuffer so decodeAudioData never detaches the cached buffer
+      const copy = rawBuf.slice(0);
+      ctx
+        .decodeAudioData(copy)
+        .then((audioBuffer) => {
+          // Peak-normalize each decoded variation (0..N-1) to 0.88 so quiet recordings (e.g. gravel/8, metal/1)
+          // and hot recordings (e.g. tile/0, water/3) play at a consistent, balanced level
+          for (let ch = 0; ch < audioBuffer.numberOfChannels; ch++) {
+            const data = audioBuffer.getChannelData(ch);
+            let peak = 0;
+            for (let i = 0; i < data.length; i++) {
+              const abs = Math.abs(data[i]);
+              if (abs > peak) peak = abs;
+            }
+            if (peak > 0.05 && Math.abs(peak - 0.88) > 0.03) {
+              const scale = 0.88 / peak;
+              for (let i = 0; i < data.length; i++) {
+                data[i] *= scale;
+              }
+            }
+          }
+          decArr[index] = audioBuffer;
+        })
+        .catch(() => {});
+    } catch {
+      // ignore
+    }
+  }
+
+  private ensureCategoryDecoded(ctx: AudioContext, category: FootstepCategory): void {
+    const urls = FOOTSTEP_SOUND_MANIFEST[category];
+    const rawArr = this.rawFootstepData.get(category);
+    const decArr = this.decodedFootstepBuffers.get(category);
+    if (!urls || !rawArr || !decArr) return;
+
+    for (let i = 0; i < urls.length; i++) {
+      if (decArr[i]) continue;
+      const raw = rawArr[i];
+      if (raw) {
+        this.decodeSingleBuffer(ctx, category, i, raw);
+      } else if (!this.decodingCategories.has(category)) {
+        this.fetchAndDecodeSample(category, i, urls[i]);
+      }
+    }
+    this.decodingCategories.add(category);
+  }
 
   private ensureContext(): AudioContext | null {
     if (this.muted || this.masterVolume <= 0.01) return null;
     if (typeof window === 'undefined') return null;
+
+    this.preloadFootstepFiles();
 
     if (!this.ctx) {
       const AudioCtx =
@@ -65,176 +294,14 @@ class SoundEngine {
       this.ctx.resume().catch(() => {});
     }
 
-    if (this.ctx && !this.foleyBuilt) {
-      this.buildFoleyFootstepBank(this.ctx);
+    if (this.ctx) {
+      const categories = Object.keys(FOOTSTEP_SOUND_MANIFEST) as FootstepCategory[];
+      for (const category of categories) {
+        this.ensureCategoryDecoded(this.ctx, category);
+      }
     }
 
     return this.ctx;
-  }
-
-  /**
-   * Builds 8 studio-grade PCM foley footstep samples (4 Concrete + 4 Steel Grating variations)
-   * using physical impulse modeling (heel impact + sole roll + micro-grit grains + damped plate modes)
-   * with zero synthetic sine-sweep oscillators. Also supports optional external WAV sample overrides.
-   */
-  private buildFoleyFootstepBank(ctx: AudioContext): void {
-    this.foleyBuilt = true;
-    const sr = ctx.sampleRate;
-
-    // Deterministic pseudo-random generator for consistent, rich foley grain textures across 4 variations
-    let seed = 133791;
-    const nextRand = () => {
-      seed = (seed * 1664525 + 1013904223) >>> 0;
-      return seed / 4294967296;
-    };
-    const nextSigned = () => nextRand() * 2 - 1;
-
-    // 1. Build 4 Concrete Tactical Boot Foley Variations (~115ms each)
-    for (let v = 0; v < 4; v++) {
-      const dur = 0.115;
-      const len = Math.floor(sr * dur);
-      const buf = ctx.createBuffer(1, len, sr);
-      const out = buf.getChannelData(0);
-
-      // State variables for 2-pole lowpass (heel thump) and bandpass (asphalt grit)
-      let lp1 = 0;
-      let lp2 = 0;
-      let bp1 = 0;
-      let bp2 = 0;
-      let clothLp = 0;
-
-      const heelToneHz = 62 + v * 4.5;
-      const toeDelaySec = 0.022 + (v % 2) * 0.004;
-
-      // Pre-place 36 discrete asphalt/sand micro-grit crackle impulses across heel & sole roll
-      const gritImpulses = new Float32Array(len);
-      for (let g = 0; g < 36; g++) {
-        const gt = 0.003 + nextRand() * 0.064;
-        const idx = Math.min(len - 2, Math.floor(gt * sr));
-        const amp = (0.45 + nextRand() * 0.55) * (gt < 0.025 ? 1.0 : 0.72);
-        gritImpulses[idx] += (nextRand() > 0.5 ? 1 : -1) * amp;
-        gritImpulses[idx + 1] -= (nextRand() > 0.5 ? 0.6 : -0.6) * amp;
-      }
-
-      for (let i = 0; i < len; i++) {
-        const t = i / sr;
-        const wn = nextSigned();
-
-        // Layer A: Heavy rubber boot heel strike (lowpass filtered brown noise + damped half-cycle pressure thud)
-        const heelEnv = Math.exp(-t * 145) * Math.min(1, t / 0.0018);
-        lp1 += 0.042 * (wn - lp1);
-        lp2 += 0.042 * (lp1 - lp2);
-        const pressurePulse =
-          Math.sin(2 * Math.PI * heelToneHz * t) * Math.exp(-t * 165);
-        const heelSample = (lp2 * 2.8 + pressurePulse * 0.55) * heelEnv;
-
-        // Layer B: Sole roll & toe push-off thump (~22ms after heel)
-        const dtToe = Math.max(0, t - toeDelaySec);
-        const toeEnv =
-          t >= toeDelaySec
-            ? Math.exp(-dtToe * 175) * Math.min(1, dtToe / 0.0025)
-            : 0;
-        const toeSample = lp2 * 1.65 * toeEnv;
-
-        // Layer C: Gritty concrete / stone micro-grain scuff
-        const scuffWindow =
-          Math.exp(-Math.pow((t - 0.024) / 0.026, 2)) * 0.85 +
-          Math.exp(-t * 58) * 0.35;
-        const gritDrive = gritImpulses[i] * 2.4 + wn * 0.42 * scuffWindow;
-        bp1 += 0.28 * (gritDrive - bp1);
-        bp2 += 0.08 * (bp1 - bp2);
-        const gritBand = bp1 - bp2;
-
-        // Layer D: Subtle tactical trouser / boot leather flex
-        clothLp += 0.11 * (wn - clothLp);
-        const clothEnv = Math.exp(-t * 36) * Math.sin(Math.min(Math.PI, (t / 0.09) * Math.PI));
-        const clothSample = (clothLp - lp1) * 0.14 * clothEnv;
-
-        // Combine & soft-clip with warm analog saturation
-        const raw = heelSample * 0.95 + toeSample * 0.65 + gritBand * 0.62 + clothSample;
-        out[i] = Math.tanh(raw * 1.45) * 0.88;
-      }
-
-      this.concreteBuffers.push(buf);
-    }
-
-    // 2. Build 4 Metal Grating / Steel Deck Foley Variations (~125ms each)
-    for (let v = 0; v < 4; v++) {
-      const dur = 0.125;
-      const len = Math.floor(sr * dur);
-      const buf = ctx.createBuffer(1, len, sr);
-      const out = buf.getChannelData(0);
-
-      let lp1 = 0;
-      let lp2 = 0;
-      let hpState = 0;
-
-      // Damped industrial steel plate modal frequencies (inharmonic, fast decay — no synth whistle!)
-      const modes = [
-        { freq: 142 + v * 6, decay: 95, amp: 0.48 },
-        { freq: 318 + v * 11, decay: 115, amp: 0.34 },
-        { freq: 512 + v * 17, decay: 135, amp: 0.26 },
-        { freq: 845 + v * 23, decay: 155, amp: 0.20 },
-        { freq: 1380 + v * 35, decay: 185, amp: 0.15 },
-        { freq: 2290 + v * 48, decay: 220, amp: 0.11 },
-      ];
-      const toeDelaySec = 0.019 + (v % 2) * 0.0035;
-
-      // Micro-metallic lug contact clicks
-      const lugClicks = new Float32Array(len);
-      for (let c = 0; c < 22; c++) {
-        const ct = 0.001 + nextRand() * 0.042;
-        const idx = Math.min(len - 2, Math.floor(ct * sr));
-        lugClicks[idx] += (nextRand() > 0.5 ? 1 : -1) * (0.5 + nextRand() * 0.5);
-      }
-
-      for (let i = 0; i < len; i++) {
-        const t = i / sr;
-        const wn = nextSigned();
-
-        // Layer A: Heavy rubber boot heel striking thick steel deck plate
-        const heelEnv = Math.exp(-t * 135) * Math.min(1, t / 0.0012);
-        lp1 += 0.065 * (wn - lp1);
-        lp2 += 0.065 * (lp1 - lp2);
-        const bootThud = lp2 * 2.5 * heelEnv;
-
-        // Layer B: Damped steel plate modal clatter (modulated by broadband noise so it sounds mechanical, not tonal)
-        let modalSum = 0;
-        const noiseMod = 0.72 + 0.28 * wn;
-        for (let m = 0; m < modes.length; m++) {
-          const md = modes[m];
-          modalSum +=
-            Math.sin(2 * Math.PI * md.freq * t) *
-            Math.exp(-t * md.decay) *
-            md.amp;
-        }
-        // Secondary toe-tap on steel diamond lug
-        let toeModal = 0;
-        if (t >= toeDelaySec) {
-          const dtToe = t - toeDelaySec;
-          toeModal =
-            (Math.sin(2 * Math.PI * modes[1].freq * 1.08 * dtToe) * 0.25 +
-              Math.sin(2 * Math.PI * modes[3].freq * 1.05 * dtToe) * 0.16 +
-              wn * 0.35) *
-            Math.exp(-dtToe * 165);
-        }
-
-        // Layer C: Crisp diamond-plate lug transient scuff
-        hpState += 0.22 * (wn + lugClicks[i] * 1.8 - hpState);
-        const hiTransient =
-          (wn + lugClicks[i] * 1.8 - hpState) *
-          (Math.exp(-t * 170) * 0.65 + Math.exp(-Math.pow((t - toeDelaySec) / 0.012, 2)) * 0.35);
-
-        const raw =
-          bootThud * 0.92 +
-          modalSum * noiseMod * 0.85 +
-          toeModal * 0.75 +
-          hiTransient * 0.42;
-        out[i] = Math.tanh(raw * 1.55) * 0.86;
-      }
-
-      this.metalBuffers.push(buf);
-    }
   }
 
   public unlock(): void {
@@ -246,90 +313,149 @@ class SoundEngine {
     this.muted = muted;
   }
 
-  public playFootstep(
-    surface: 'concrete' | 'metal',
-    intensity: 'walk' | 'sprint' | 'crouch' | 'land' = 'walk',
-    stepIndex = 0
+  private getMaterialGainTrim(category: FootstepCategory): number {
+    switch (category) {
+      case 'concrete':
+        return 0.95;
+      case 'metal':
+        return 1.05;
+      case 'tile':
+        return 0.84;
+      case 'gravel':
+        return 0.96;
+      case 'wood':
+        return 0.76;
+      case 'grass':
+        return 0.74;
+      case 'water':
+        return 0.85;
+      default:
+        return 0.9;
+    }
+  }
+
+  private playSingleFootstepSample(
+    category: FootstepCategory,
+    sampleIdx: number,
+    gainLevel: number,
+    playbackRate: number,
+    delaySec = 0
   ): void {
-    this.lastFootstepSurface = surface;
+    const ctx = this.ensureContext();
+    if (ctx) {
+      this.ensureCategoryDecoded(ctx, category);
+    }
+
+    const decArr = this.decodedFootstepBuffers.get(category);
+    const exactBuffer = decArr ? decArr[sampleIdx] : null;
+    const finalGain = Math.max(
+      0,
+      Math.min(1.35, gainLevel * this.getMaterialGainTrim(category))
+    );
+
+    if (ctx && exactBuffer) {
+      try {
+        const startTime = ctx.currentTime + delaySec;
+        const src = ctx.createBufferSource();
+        src.buffer = exactBuffer;
+        src.playbackRate.setValueAtTime(playbackRate, startTime);
+
+        // Subtle material-appropriate acoustic shaping so footsteps sit naturally in the 3D mix
+        const filter = ctx.createBiquadFilter();
+        if (category === 'concrete') {
+          filter.type = 'lowshelf';
+          filter.frequency.setValueAtTime(160, startTime);
+          filter.gain.setValueAtTime(2.2, startTime);
+        } else if (category === 'wood' || category === 'grass') {
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(5200, startTime);
+        } else {
+          filter.type = 'lowpass';
+          filter.frequency.setValueAtTime(7500, startTime);
+        }
+
+        const gainNode = ctx.createGain();
+        gainNode.gain.setValueAtTime(finalGain, startTime);
+
+        src.connect(filter);
+        filter.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        src.start(startTime);
+        return;
+      } catch {
+        // Fall through to HTMLAudioElement playback
+      }
+    }
+
+    // Immediate HTMLAudioElement playback of the exact sampleIdx OGG file if Web Audio buffer is still decoding
+    const audioEls = this.htmlAudioBank.get(category);
+    if (audioEls && audioEls.length > 0) {
+      const baseEl = audioEls[sampleIdx % audioEls.length];
+      const triggerHtmlAudio = () => {
+        try {
+          const clone = baseEl.cloneNode(true) as HTMLAudioElement;
+          clone.volume = Math.max(0, Math.min(1, finalGain));
+          clone.playbackRate = Math.max(0.5, Math.min(2.0, playbackRate));
+          void clone.play().catch(() => {});
+        } catch {
+          // ignore
+        }
+      };
+
+      if (delaySec > 0 && typeof window !== 'undefined') {
+        window.setTimeout(triggerHtmlAudio, Math.round(delaySec * 1000));
+      } else {
+        triggerHtmlAudio();
+      }
+    }
+  }
+
+  public playFootstep(
+    surface: FootstepCategory = 'concrete',
+    intensity: 'walk' | 'sprint' | 'crouch' | 'land' = 'walk',
+    _stepIndex = 0
+  ): void {
+    const validSurface: FootstepCategory =
+      surface in FOOTSTEP_SOUND_MANIFEST ? surface : 'concrete';
+    this.lastFootstepSurface = validSurface;
     this.footstepPlayCount += 1;
 
-    const ctx = this.ensureContext();
-    if (!ctx) return;
+    // Always advance the randomized shuffle bag so every variation (0..N-1) is selected in random non-repeating order
+    const idx = this.nextShuffledSampleIndex(validSurface);
+    this.lastFootstepSampleIndex = idx;
 
-    try {
-      const now = ctx.currentTime;
-      const bank = surface === 'metal' ? this.metalBuffers : this.concreteBuffers;
-      if (bank.length === 0) return;
+    if (this.muted || this.masterVolume <= 0.01) return;
+    if (typeof window === 'undefined') return;
 
-      const intensityScale =
-        intensity === 'land'
-          ? 1.35
-          : intensity === 'sprint'
-          ? 1.15
-          : intensity === 'crouch'
-          ? 0.45
-          : 0.85;
-      const vol = this.masterVolume * 0.36 * intensityScale;
+    const urls = FOOTSTEP_SOUND_MANIFEST[validSurface];
+    if (!urls || urls.length === 0) return;
 
-      // Pick variation based on stepIndex and alternate left/right boot playback rate subtly
-      const buf = bank[Math.abs(stepIndex) % bank.length];
-      const src = ctx.createBufferSource();
-      src.buffer = buf;
+    const intensityScale =
+      intensity === 'land'
+        ? 1.12
+        : intensity === 'sprint'
+        ? 0.98
+        : intensity === 'crouch'
+        ? 0.46
+        : 0.82;
+    const vol = this.masterVolume * 0.88 * intensityScale;
 
-      const footParity = stepIndex % 2 === 0 ? 0.96 : 1.04;
-      const speedRate =
-        intensity === 'land'
-          ? 0.88
-          : intensity === 'sprint'
-          ? 1.06
-          : intensity === 'crouch'
-          ? 0.92
-          : 1.0;
-      src.playbackRate.setValueAtTime(
-        footParity * speedRate * (0.98 + Math.random() * 0.04),
-        now
-      );
+    const speedRate =
+      intensity === 'land'
+        ? 0.96
+        : intensity === 'sprint'
+        ? 1.02
+        : intensity === 'crouch'
+        ? 0.97
+        : 1.0;
+    const rate = speedRate * (0.985 + Math.random() * 0.03);
 
-      // Shape tone dynamically by movement intensity (warmer when crouching, punchier when sprinting/landing)
-      const filter = ctx.createBiquadFilter();
-      filter.type = 'lowpass';
-      const cutoff =
-        surface === 'metal'
-          ? intensity === 'crouch'
-            ? 2200
-            : intensity === 'sprint' || intensity === 'land'
-            ? 4200
-            : 3400
-          : intensity === 'crouch'
-          ? 1600
-          : intensity === 'sprint' || intensity === 'land'
-          ? 3100
-          : 2500;
-      filter.frequency.setValueAtTime(cutoff, now);
+    this.playSingleFootstepSample(validSurface, idx, vol, rate, 0);
 
-      const masterGain = ctx.createGain();
-      masterGain.gain.setValueAtTime(vol, now);
-
-      src.connect(filter);
-      filter.connect(masterGain);
-      masterGain.connect(ctx.destination);
-      src.start(now);
-
-      // On jump landing, layer a subtle second boot-foot stagger 32ms later for realistic two-foot landing weight
-      if (intensity === 'land') {
-        const src2 = ctx.createBufferSource();
-        src2.buffer = bank[(Math.abs(stepIndex) + 1) % bank.length];
-        src2.playbackRate.setValueAtTime(1.03, now + 0.032);
-        const gain2 = ctx.createGain();
-        gain2.gain.setValueAtTime(vol * 0.68, now + 0.032);
-        src2.connect(filter);
-        filter.connect(gain2);
-        gain2.connect(ctx.destination);
-        src2.start(now + 0.032);
-      }
-    } catch {
-      // Safe fallback if browser restricts audio playback
+    // On jump landing, play a second staggered boot step 42ms later using the next randomized OGG variation
+    if (intensity === 'land' && urls.length > 1) {
+      const idx2 = this.nextShuffledSampleIndex(validSurface);
+      this.playSingleFootstepSample(validSurface, idx2, vol * 0.75, rate * 1.02, 0.042);
     }
   }
 

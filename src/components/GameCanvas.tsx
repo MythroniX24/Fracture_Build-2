@@ -8,6 +8,7 @@ import {
   type CharacterId,
   type GameMode,
   type GameSettings,
+  type LobbyTab,
   type ScreenState,
   type TrainingConfig,
   WEAPON_ORDER,
@@ -19,20 +20,57 @@ import {
   PLAYER_COLLISION_RADIUS,
   type PlayerInputSnapshot,
   type SimulationState,
+  WEAPON_IMPACT_PROFILES,
+  computeBallisticImpactMarkPose,
   computeWeaponWallObstruction,
   getScopeSensitivityMultiplier,
   resolveEntityCollisions,
   stepSimulation,
 } from '../game/rules.ts';
 import {
-  buildDetailedEnemySoldier,
   buildDetailedWeaponViewModel,
   createProceduralTextureSet,
-  type EnemySoldierRig,
   type WeaponViewModelRig,
 } from '../game/visualModels.ts';
+import {
+  type BodyRegionId,
+  type CharacterPoseId,
+  type EquipmentSlotId,
+  getSymmetryMirroredUV,
+  mapLocalUvToRegionAtlas,
+} from '../game/characterSystem.ts';
+import {
+  type BrushSettings,
+  DEFAULT_BRUSH_SETTINGS,
+  type PaintLayer,
+  applyBrushStrokeSegment,
+  applyBucketFillToLayer,
+  applyGeometricShapeToLayer,
+  applyGradientFillToLayer,
+  sampleColorAtUV,
+} from '../game/paintSystem.ts';
+import {
+  type ChameleonHumanoidRig,
+  type EnemyChameleonCombatRig,
+  buildChameleonHumanoidRig,
+  buildCompactHandheldWeaponProp,
+  buildEnemyChameleonCombatRig,
+  setCharacterEquipmentSlotVisible,
+  syncLayersToCharacterRigTexture,
+  updateChameleonRigAnimation,
+  updateEnemyChameleonCombatAnimation,
+} from '../game/chameleonCharacter3D.ts';
 import type { HudDomRefs, TouchInputState } from './CombatHUD.tsx';
 import { soundEngine } from '../audio/soundEngine.ts';
+
+export type CameraFocusPreset =
+  | 'full'
+  | 'upper'
+  | 'head'
+  | 'back'
+  | 'legs'
+  | 'left'
+  | 'right';
 
 export interface GameCanvasProps {
   screenState: ScreenState;
@@ -53,6 +91,33 @@ export interface GameCanvasProps {
   onCombatEvent: (evt: CombatEvent) => void;
   onRoundFinished: (winner: 'p1' | 'p2' | 'draw') => void;
   loadoutOverlayOpen?: boolean;
+  // 3D Lobby & Custom Chameleon Painting Studio Props
+  activeLobbyTab?: LobbyTab;
+  vaultSubTab?: 'studio' | 'gallery' | 'inventory';
+  characterPose?: CharacterPoseId;
+  cameraFocusPreset?: CameraFocusPreset;
+  cameraResetTrigger?: number;
+  cameraZoomDeltaTrigger?: { seq: number; delta: number };
+  activeEquipment?: EquipmentSlotId[];
+  studioInteractionMode?: 'paint' | 'orbit';
+  brushSettings?: BrushSettings;
+  studioLayersRef?: React.MutableRefObject<PaintLayer[]>;
+  activeLayerId?: string;
+  studioTextureRevision?: number;
+  equippedCompositeBufferRef?: React.MutableRefObject<Uint8ClampedArray | null>;
+  equippedDesignRevision?: number;
+  selectedWeapon?: WeaponId;
+  partyMembers?: {
+    id: string;
+    name: string;
+    characterId: CharacterId;
+    ready: boolean;
+    isLeader?: boolean;
+  }[];
+  onPaintStrokeBeforeStart?: () => void;
+  onPaintStrokeCommitted?: () => void;
+  onEyedropperSampled?: (hex: string) => void;
+  onHoverBodyRegion?: (region: BodyRegionId | null) => void;
 }
 
 interface ShellCasingParticle {
@@ -99,8 +164,10 @@ interface BulletDecalFX {
 export const GameCanvas: React.FC<GameCanvasProps> = ({
   screenState,
   gameMode,
+  p1Char,
   arenaId,
   botDifficulty,
+  firstPersonMode = true,
   settings,
   trainingConfig,
   simRef,
@@ -109,11 +176,35 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   onCombatEvent,
   onRoundFinished,
   loadoutOverlayOpen = false,
+  activeLobbyTab = 'home',
+  vaultSubTab = 'studio',
+  characterPose = 'idle',
+  cameraFocusPreset = 'full',
+  cameraResetTrigger = 0,
+  cameraZoomDeltaTrigger,
+  activeEquipment = [],
+  studioInteractionMode = 'paint',
+  brushSettings = DEFAULT_BRUSH_SETTINGS,
+  studioLayersRef,
+  activeLayerId = 'layer_1',
+  studioTextureRevision = 0,
+  equippedCompositeBufferRef,
+  equippedDesignRevision = 0,
+  selectedWeapon = 'm4a1',
+  partyMembers = [],
+  onPaintStrokeBeforeStart,
+  onPaintStrokeCommitted,
+  onEyedropperSampled,
+  onHoverBodyRegion,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const screenStateRef = useRef(screenState);
   screenStateRef.current = screenState;
+  const p1CharRef = useRef(p1Char);
+  p1CharRef.current = p1Char;
+  const firstPersonModeRef = useRef(firstPersonMode);
+  firstPersonModeRef.current = firstPersonMode;
   const loadoutOverlayOpenRef = useRef(loadoutOverlayOpen);
   loadoutOverlayOpenRef.current = loadoutOverlayOpen;
   const gameModeRef = useRef(gameMode);
@@ -130,6 +221,44 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   onCombatEventRef.current = onCombatEvent;
   const onRoundFinishedRef = useRef(onRoundFinished);
   onRoundFinishedRef.current = onRoundFinished;
+
+  // 3D Lobby & Studio Refs
+  const activeLobbyTabRef = useRef(activeLobbyTab);
+  activeLobbyTabRef.current = activeLobbyTab;
+  const vaultSubTabRef = useRef(vaultSubTab);
+  vaultSubTabRef.current = vaultSubTab;
+  const characterPoseRef = useRef(characterPose);
+  characterPoseRef.current = characterPose;
+  const cameraFocusPresetRef = useRef(cameraFocusPreset);
+  cameraFocusPresetRef.current = cameraFocusPreset;
+  const cameraResetTriggerRef = useRef(cameraResetTrigger);
+  cameraResetTriggerRef.current = cameraResetTrigger;
+  const cameraZoomDeltaTriggerRef = useRef(cameraZoomDeltaTrigger);
+  cameraZoomDeltaTriggerRef.current = cameraZoomDeltaTrigger;
+  const activeEquipmentRef = useRef(activeEquipment);
+  activeEquipmentRef.current = activeEquipment;
+  const studioInteractionModeRef = useRef(studioInteractionMode);
+  studioInteractionModeRef.current = studioInteractionMode;
+  const brushSettingsRef = useRef(brushSettings);
+  brushSettingsRef.current = brushSettings;
+  const activeLayerIdRef = useRef(activeLayerId);
+  activeLayerIdRef.current = activeLayerId;
+  const studioTextureRevisionRef = useRef(studioTextureRevision);
+  studioTextureRevisionRef.current = studioTextureRevision;
+  const equippedDesignRevisionRef = useRef(equippedDesignRevision);
+  equippedDesignRevisionRef.current = equippedDesignRevision;
+  const selectedWeaponRef = useRef(selectedWeapon);
+  selectedWeaponRef.current = selectedWeapon;
+  const partyMembersRef = useRef(partyMembers);
+  partyMembersRef.current = partyMembers;
+  const onPaintStrokeBeforeStartRef = useRef(onPaintStrokeBeforeStart);
+  onPaintStrokeBeforeStartRef.current = onPaintStrokeBeforeStart;
+  const onPaintStrokeCommittedRef = useRef(onPaintStrokeCommitted);
+  onPaintStrokeCommittedRef.current = onPaintStrokeCommitted;
+  const onEyedropperSampledRef = useRef(onEyedropperSampled);
+  onEyedropperSampledRef.current = onEyedropperSampled;
+  const onHoverBodyRegionRef = useRef(onHoverBodyRegion);
+  onHoverBodyRegionRef.current = onHoverBodyRegion;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -294,7 +423,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       centerRing.position.y = 0.025;
       mapGroup.add(centerRing);
 
-      // Industrial Diamond-Plate / Steel Grating Floor Zones (Metal Footstep Surfaces)
+      // Material-Specific 3D Floor Zones (Visually matching every Footstep Surface Material)
       const metalDeckMat = new THREE.MeshStandardMaterial({
         color: 0xb8c4d4,
         map: texSet.metalDeckMap,
@@ -303,33 +432,86 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         roughness: 0.34,
         metalness: 0.78,
       });
-      const metalBevelMat = new THREE.MeshStandardMaterial({
+      const tileDeckMat = new THREE.MeshStandardMaterial({
+        color: 0xdbeafe,
+        map: texSet.wallMap,
+        bumpMap: texSet.groundBump,
+        bumpScale: 0.008,
+        roughness: 0.24,
+        metalness: 0.32,
+      });
+      const woodDeckMat = new THREE.MeshStandardMaterial({
+        color: 0xd99b66,
+        map: texSet.crateMap,
+        bumpMap: texSet.crateMap,
+        bumpScale: 0.018,
+        roughness: 0.72,
+        metalness: 0.08,
+      });
+      const gravelDeckMat = new THREE.MeshStandardMaterial({
+        color: 0x78716c,
+        map: texSet.groundMap,
+        bumpMap: texSet.groundBump,
+        bumpScale: 0.038,
+        roughness: 0.95,
+        metalness: 0.04,
+      });
+      const grassDeckMat = new THREE.MeshStandardMaterial({
+        color: 0x4d7c0f,
+        map: texSet.groundMap,
+        bumpMap: texSet.groundBump,
+        bumpScale: 0.028,
+        roughness: 0.9,
+        metalness: 0.02,
+      });
+      const waterDeckMat = new THREE.MeshStandardMaterial({
+        color: 0x0284c7,
+        roughness: 0.14,
+        metalness: 0.65,
+        transparent: true,
+        opacity: 0.82,
+      });
+      const zoneBevelMat = new THREE.MeshStandardMaterial({
         color: 0x334155,
-        roughness: 0.38,
-        metalness: 0.82,
+        roughness: 0.42,
+        metalness: 0.72,
       });
 
       if (arenaDef.surfaceZones) {
         for (const sz of arenaDef.surfaceZones) {
-          if (sz.material !== 'metal') continue;
+          if (sz.material === 'concrete') continue;
           const zw = sz.maxX - sz.minX;
           const zd = sz.maxZ - sz.minZ;
           const cx = (sz.minX + sz.maxX) * 0.5;
           const cz = (sz.minZ + sz.maxZ) * 0.5;
 
+          const zoneMat =
+            sz.material === 'metal'
+              ? metalDeckMat
+              : sz.material === 'tile'
+              ? tileDeckMat
+              : sz.material === 'wood'
+              ? woodDeckMat
+              : sz.material === 'gravel'
+              ? gravelDeckMat
+              : sz.material === 'grass'
+              ? grassDeckMat
+              : waterDeckMat;
+
+          const plateHeight = sz.material === 'wood' ? 0.042 : 0.026;
           const deckPlate = new THREE.Mesh(
-            new THREE.BoxGeometry(zw, 0.028, zd),
-            metalDeckMat
+            new THREE.BoxGeometry(zw, plateHeight, zd),
+            zoneMat
           );
-          deckPlate.position.set(cx, 0.014, cz);
+          deckPlate.position.set(cx, plateHeight * 0.5, cz);
           deckPlate.receiveShadow = true;
           mapGroup.add(deckPlate);
 
           const deckRim = new THREE.Mesh(
-            new THREE.BoxGeometry(zw + 0.16, 0.018, zd + 0.16),
-            metalBevelMat
+            new THREE.BoxGeometry(zw + 0.16, 0.016, zd + 0.16),
+            zoneBevelMat
           );
-          deckRim.position.set(cx, 0.009, cz);
+          deckRim.position.set(cx, 0.008, cz);
           deckRim.receiveShadow = true;
           mapGroup.add(deckRim);
         }
@@ -539,14 +721,548 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       }
     };
 
-    // 6. Articulated 16-Part Enemy Bot Rigs & 3D Animated Supply Pickups
+    // 6. Articulated Meccha Chameleon Enemy Rigs & 3D Animated Supply Pickups
     const enemyGroup = new THREE.Group();
     scene.add(enemyGroup);
-    const enemyRigs = new Map<string, EnemySoldierRig>();
+    const enemyRigs = new Map<string, EnemyChameleonCombatRig>();
 
     const pickupGroup = new THREE.Group();
     scene.add(pickupGroup);
     const pickupMeshes = new Map<string, { group: THREE.Group; ring: THREE.Mesh }>();
+
+    // 6B. MECCHA CHAMELEON 3D Lobby Stage (Sunlit Sky-Island Tactical Outpost matching reference image)
+    const LOBBY_STAGE_Y = 46;
+    const lobbyStageGroup = new THREE.Group();
+    lobbyStageGroup.position.set(0, LOBBY_STAGE_Y, 0);
+    scene.add(lobbyStageGroup);
+
+    // 1. Bright Sunlit Sky Dome Backdrop & Cumulus Clouds (isolates lobby from combat arena sky)
+    const skyCanvas = document.createElement('canvas');
+    skyCanvas.width = 512;
+    skyCanvas.height = 256;
+    const skyCtx = skyCanvas.getContext('2d');
+    if (skyCtx) {
+      const grad = skyCtx.createLinearGradient(0, 0, 0, 256);
+      grad.addColorStop(0, '#3b95e6');
+      grad.addColorStop(0.48, '#6ebbf5');
+      grad.addColorStop(0.82, '#bae2ff');
+      grad.addColorStop(1, '#dff2ff');
+      skyCtx.fillStyle = grad;
+      skyCtx.fillRect(0, 0, 512, 256);
+
+      // Soft sunlit cumulus clouds along horizon
+      const drawCloudBank = (cx: number, cy: number, rx: number, ry: number, alpha: number) => {
+        skyCtx.save();
+        skyCtx.fillStyle = `rgba(255, 253, 248, ${alpha})`;
+        skyCtx.beginPath();
+        skyCtx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        skyCtx.fill();
+        skyCtx.restore();
+      };
+      drawCloudBank(110, 175, 85, 28, 0.85);
+      drawCloudBank(150, 165, 65, 34, 0.92);
+      drawCloudBank(380, 168, 95, 32, 0.88);
+      drawCloudBank(425, 154, 70, 36, 0.94);
+      drawCloudBank(260, 188, 120, 24, 0.72);
+    }
+    const lobbySkyTex = new THREE.CanvasTexture(skyCanvas);
+    lobbySkyTex.colorSpace = THREE.SRGBColorSpace;
+    const lobbySkyDome = new THREE.Mesh(
+      new THREE.SphereGeometry(28, 32, 20),
+      new THREE.MeshBasicMaterial({
+        map: lobbySkyTex,
+        side: THREE.BackSide,
+        depthWrite: false,
+      })
+    );
+    lobbySkyDome.position.set(0, 2.0, 0);
+    lobbyStageGroup.add(lobbySkyDome);
+
+    // Volumetric 3D Cumulus Cloud Puffs in the upper-right & horizon sky
+    const cloudMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.95,
+      metalness: 0.0,
+      emissive: 0xdbeafe,
+      emissiveIntensity: 0.35,
+    });
+    const cloudClusters: [number, number, number, number][] = [
+      [6.5, 5.2, -13.5, 1.65],
+      [8.2, 5.6, -13.2, 1.95],
+      [9.8, 5.0, -13.6, 1.45],
+      [4.2, 3.6, -15.0, 1.55],
+      [1.2, 2.9, -15.5, 1.35],
+      [-5.5, 4.8, -14.0, 1.5],
+    ];
+    for (const [cx, cy, cz, cScale] of cloudClusters) {
+      const puff = new THREE.Mesh(
+        new THREE.SphereGeometry(cScale, 14, 12),
+        cloudMat
+      );
+      puff.scale.set(1.5, 0.72, 0.85);
+      puff.position.set(cx, cy, cz);
+      lobbyStageGroup.add(puff);
+    }
+
+    // 2. Metallic Concrete Outpost Floor Deck with Panel Seams
+    const floorCanvas = document.createElement('canvas');
+    floorCanvas.width = 512;
+    floorCanvas.height = 512;
+    const flCtx = floorCanvas.getContext('2d');
+    if (flCtx) {
+      flCtx.fillStyle = '#8b95a1';
+      flCtx.fillRect(0, 0, 512, 512);
+      // Subtle concrete & steel wear speckles
+      for (let i = 0; i < 900; i++) {
+        flCtx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.06)' : 'rgba(30,41,59,0.08)';
+        flCtx.fillRect(
+          (i * 73) % 512,
+          (i * 139) % 512,
+          3 + (i % 6),
+          3 + ((i * 3) % 6)
+        );
+      }
+      // Industrial deck grid seams
+      flCtx.strokeStyle = 'rgba(30, 41, 59, 0.42)';
+      flCtx.lineWidth = 3;
+      for (let p = 64; p < 512; p += 64) {
+        flCtx.beginPath();
+        flCtx.moveTo(p, 0);
+        flCtx.lineTo(p, 512);
+        flCtx.stroke();
+        flCtx.beginPath();
+        flCtx.moveTo(0, p);
+        flCtx.lineTo(512, p);
+        flCtx.stroke();
+      }
+    }
+    const lobbyFloorTex = new THREE.CanvasTexture(floorCanvas);
+    lobbyFloorTex.wrapS = THREE.RepeatWrapping;
+    lobbyFloorTex.wrapT = THREE.RepeatWrapping;
+    lobbyFloorTex.repeat.set(3, 3);
+    lobbyFloorTex.colorSpace = THREE.SRGBColorSpace;
+
+    const studioFloor = new THREE.Mesh(
+      new THREE.BoxGeometry(14.5, 0.4, 9.2),
+      new THREE.MeshStandardMaterial({
+        map: lobbyFloorTex,
+        color: 0xcbd5e1,
+        roughness: 0.58,
+        metalness: 0.22,
+      })
+    );
+    studioFloor.position.set(0, -0.2, -1.2);
+    studioFloor.receiveShadow = true;
+    lobbyStageGroup.add(studioFloor);
+
+    // Subtle circular metallic floor ring directly under the central character's feet
+    const pedestalBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.95, 1.02, 0.024, 48),
+      new THREE.MeshStandardMaterial({
+        color: 0x64748b,
+        roughness: 0.42,
+        metalness: 0.52,
+      })
+    );
+    pedestalBase.position.set(0, 0.012, 0);
+    pedestalBase.receiveShadow = true;
+    lobbyStageGroup.add(pedestalBase);
+
+    const pedestalGlowRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.96, 0.015, 10, 64),
+      new THREE.MeshStandardMaterial({
+        color: 0x475569,
+        roughness: 0.35,
+        metalness: 0.65,
+      })
+    );
+    pedestalGlowRing.rotation.x = Math.PI / 2;
+    pedestalGlowRing.position.set(0, 0.024, 0);
+    lobbyStageGroup.add(pedestalGlowRing);
+
+    // 3. Left Concrete Bastion Wall with Stenciled "PAINT YOUR STYLE" Graffiti & Overhanging Tree
+    const wallCanvas = document.createElement('canvas');
+    wallCanvas.width = 512;
+    wallCanvas.height = 512;
+    const wCtx = wallCanvas.getContext('2d');
+    if (wCtx) {
+      wCtx.fillStyle = '#646e78';
+      wCtx.fillRect(0, 0, 512, 512);
+      // Concrete panel lines
+      wCtx.strokeStyle = 'rgba(30, 41, 59, 0.45)';
+      wCtx.lineWidth = 4;
+      wCtx.strokeRect(12, 12, 488, 488);
+      wCtx.beginPath();
+      wCtx.moveTo(0, 256);
+      wCtx.lineTo(512, 256);
+      wCtx.stroke();
+      // Distressed white stencil "PAINT YOUR STYLE"
+      wCtx.save();
+      wCtx.fillStyle = 'rgba(241, 245, 249, 0.85)';
+      wCtx.font = '900 52px Impact, "Arial Black", sans-serif';
+      wCtx.textAlign = 'center';
+      wCtx.fillText('PAINT', 355, 220);
+      wCtx.font = '900 42px Impact, "Arial Black", sans-serif';
+      wCtx.fillText('YOUR', 355, 268);
+      wCtx.font = '900 50px Impact, "Arial Black", sans-serif';
+      wCtx.fillText('STYLE', 355, 318);
+      wCtx.restore();
+    }
+    const wallTex = new THREE.CanvasTexture(wallCanvas);
+    wallTex.colorSpace = THREE.SRGBColorSpace;
+
+    const leftBastionWall = new THREE.Mesh(
+      new THREE.BoxGeometry(3.6, 2.75, 1.4),
+      new THREE.MeshStandardMaterial({
+        map: wallTex,
+        color: 0x94a3b8,
+        roughness: 0.75,
+        metalness: 0.12,
+      })
+    );
+    leftBastionWall.position.set(-2.05, 1.35, -2.55);
+    leftBastionWall.rotation.y = 0.22;
+    lobbyStageGroup.add(leftBastionWall);
+
+    // Overhanging green foliage tree canopy above the left bastion wall
+    const foliageMatDark = new THREE.MeshStandardMaterial({
+      color: 0x2e6f40,
+      roughness: 0.85,
+      metalness: 0.05,
+    });
+    const foliageMatBright = new THREE.MeshStandardMaterial({
+      color: 0x4d9b56,
+      roughness: 0.8,
+      metalness: 0.05,
+    });
+    const treePuffs: [number, number, number, number, boolean][] = [
+      [-2.15, 2.65, -2.25, 0.95, false],
+      [-1.45, 2.72, -2.15, 0.82, true],
+      [-0.95, 2.55, -2.3, 0.65, true],
+      [-2.75, 2.5, -2.1, 0.88, false],
+      [-1.8, 2.95, -2.4, 0.85, true],
+    ];
+    for (const [tx, ty, tz, rad, bright] of treePuffs) {
+      const leafMesh = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(rad, 1),
+        bright ? foliageMatBright : foliageMatDark
+      );
+      leafMesh.scale.set(1.25, 0.82, 0.95);
+      leafMesh.position.set(tx, ty, tz);
+      lobbyStageGroup.add(leafMesh);
+    }
+
+    // Left Military Supply Crates (Olive Green Crate + Dark Tactical Cases)
+    const oliveCrate = new THREE.Mesh(
+      new THREE.BoxGeometry(1.35, 0.82, 0.85),
+      new THREE.MeshStandardMaterial({
+        color: 0x5c6b47,
+        roughness: 0.68,
+        metalness: 0.22,
+      })
+    );
+    oliveCrate.position.set(-2.35, 0.41, -1.55);
+    oliveCrate.rotation.y = 0.18;
+    lobbyStageGroup.add(oliveCrate);
+
+    const darkCaseLeft = new THREE.Mesh(
+      new THREE.BoxGeometry(0.95, 0.48, 0.68),
+      new THREE.MeshStandardMaterial({
+        color: 0x334155,
+        roughness: 0.55,
+        metalness: 0.35,
+      })
+    );
+    darkCaseLeft.position.set(-1.35, 0.24, -1.72);
+    darkCaseLeft.rotation.y = 0.08;
+    lobbyStageGroup.add(darkCaseLeft);
+
+    // 4. Yellow Industrial Safety Railings along the Platform Back Edge
+    const yellowRailMat = new THREE.MeshStandardMaterial({
+      color: 0xeab308,
+      roughness: 0.42,
+      metalness: 0.38,
+    });
+    for (const rx of [-0.6, 1.25, 3.1]) {
+      const topBar = new THREE.Mesh(
+        new THREE.BoxGeometry(1.72, 0.055, 0.055),
+        yellowRailMat
+      );
+      topBar.position.set(rx, 0.92, -3.25);
+      const midBar = new THREE.Mesh(
+        new THREE.BoxGeometry(1.72, 0.045, 0.045),
+        yellowRailMat
+      );
+      midBar.position.set(rx, 0.52, -3.25);
+      const postL = new THREE.Mesh(
+        new THREE.BoxGeometry(0.06, 0.96, 0.06),
+        yellowRailMat
+      );
+      postL.position.set(rx - 0.82, 0.48, -3.25);
+      const postR = new THREE.Mesh(
+        new THREE.BoxGeometry(0.06, 0.96, 0.06),
+        yellowRailMat
+      );
+      postR.position.set(rx + 0.82, 0.48, -3.25);
+      lobbyStageGroup.add(topBar, midBar, postL, postR);
+    }
+
+    // 5. Right-Side Yellow Heavy Cargo Crates (visible behind right UI cards)
+    const rightCrateLarge = new THREE.Mesh(
+      new THREE.BoxGeometry(1.45, 0.92, 0.95),
+      new THREE.MeshStandardMaterial({
+        color: 0xd97706,
+        roughness: 0.52,
+        metalness: 0.25,
+      })
+    );
+    rightCrateLarge.position.set(2.45, 0.46, -1.85);
+    rightCrateLarge.rotation.y = -0.24;
+    lobbyStageGroup.add(rightCrateLarge);
+
+    const rightCrateSmall = new THREE.Mesh(
+      new THREE.BoxGeometry(1.05, 0.68, 0.78),
+      yellowRailMat
+    );
+    rightCrateSmall.position.set(1.62, 0.34, -2.25);
+    rightCrateSmall.rotation.y = -0.12;
+    lobbyStageGroup.add(rightCrateSmall);
+
+    // 6. Distant Floating Sky-Island on the Right with Waterfalls, Trees & Futuristic Citadel Spire
+    const skyIslandGroup = new THREE.Group();
+    skyIslandGroup.position.set(4.8, 0.65, -11.5);
+    lobbyStageGroup.add(skyIslandGroup);
+
+    const cliffRockMat = new THREE.MeshStandardMaterial({
+      color: 0x7c7267,
+      roughness: 0.88,
+      metalness: 0.08,
+    });
+    const islandMainRock = new THREE.Mesh(
+      new THREE.ConeGeometry(3.4, 3.8, 9),
+      cliffRockMat
+    );
+    islandMainRock.rotation.x = Math.PI;
+    islandMainRock.position.set(0, -0.4, 0);
+    skyIslandGroup.add(islandMainRock);
+
+    const islandUpperPlateau = new THREE.Mesh(
+      new THREE.CylinderGeometry(3.2, 2.8, 0.9, 10),
+      new THREE.MeshStandardMaterial({
+        color: 0x4d7c43,
+        roughness: 0.82,
+        metalness: 0.05,
+      })
+    );
+    islandUpperPlateau.position.set(0, 1.55, 0);
+    skyIslandGroup.add(islandUpperPlateau);
+
+    // Cascading Waterfalls down the floating island cliff
+    const waterfallMat = new THREE.MeshBasicMaterial({
+      color: 0xbae6fd,
+      transparent: true,
+      opacity: 0.82,
+    });
+    for (const wx of [-0.85, 0.35, 1.25]) {
+      const wf = new THREE.Mesh(
+        new THREE.BoxGeometry(0.32, 2.8, 0.1),
+        waterfallMat
+      );
+      wf.position.set(wx, 0.1, 2.15);
+      wf.rotation.x = -0.12;
+      skyIslandGroup.add(wf);
+    }
+
+    // Futuristic White & Cyan Citadel Spire on the Floating Island
+    const spireBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.55, 0.95, 2.4, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0xe2e8f0,
+        roughness: 0.32,
+        metalness: 0.48,
+      })
+    );
+    spireBase.position.set(0.3, 3.1, -0.2);
+    skyIslandGroup.add(spireBase);
+
+    const spireNeedle = new THREE.Mesh(
+      new THREE.ConeGeometry(0.38, 2.6, 8),
+      new THREE.MeshStandardMaterial({
+        color: 0x38bdf8,
+        roughness: 0.25,
+        metalness: 0.65,
+        emissive: 0x0284c7,
+        emissiveIntensity: 0.35,
+      })
+    );
+    spireNeedle.position.set(0.3, 5.1, -0.2);
+    skyIslandGroup.add(spireNeedle);
+
+    // Small Airborne Jet Silhouette near the floating island
+    const jetMesh = new THREE.Mesh(
+      new THREE.ConeGeometry(0.18, 0.75, 4),
+      new THREE.MeshBasicMaterial({ color: 0x334155 })
+    );
+    jetMesh.rotation.z = Math.PI * 0.42;
+    jetMesh.rotation.y = 0.35;
+    jetMesh.position.set(-2.6, 3.35, 1.5);
+    skyIslandGroup.add(jetMesh);
+
+    // 7. Balanced Studio Lighting for Crisp Low-Poly White Facet Shading & Paint Splashes
+    const studioSunLight = new THREE.DirectionalLight(0xfffbeb, 1.25);
+    studioSunLight.position.set(3.8, 6.2, 4.0);
+    const studioKeyLight = new THREE.PointLight(0xffffff, 1.15, 18, 1.1);
+    studioKeyLight.position.set(2.4, 3.1, 3.0);
+    const studioFillLight = new THREE.PointLight(0xcbd5e1, 0.65, 18, 1.1);
+    studioFillLight.position.set(-2.8, 2.1, 2.5);
+    const studioRimLight = new THREE.PointLight(0x38bdf8, 0.85, 14, 1.2);
+    studioRimLight.position.set(0, 3.1, -2.9);
+    lobbyStageGroup.add(
+      studioSunLight,
+      studioKeyLight,
+      studioFillLight,
+      studioRimLight
+    );
+
+    // Turntable Pivot & Active Lobby/Studio Chameleon Rig
+    const turntableGroup = new THREE.Group();
+    turntableGroup.position.set(0, 0.02, 0);
+    lobbyStageGroup.add(turntableGroup);
+
+    let currentLobbyCharId: CharacterId = p1CharRef.current;
+    let currentLobbyWeaponId: WeaponId = selectedWeaponRef.current;
+    let lobbyCharRig: ChameleonHumanoidRig = buildChameleonHumanoidRig(
+      currentLobbyCharId,
+      maxAnisotropy
+    );
+    let lobbyWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId);
+    lobbyCharRig.weaponMount.add(lobbyWeaponProp);
+    turntableGroup.add(lobbyCharRig.root);
+
+    // 3rd-Person Combat Player Rig & 1st-Person Chameleon Painted Forearm/Hand Sleeves
+    let combatPlayerRig: ChameleonHumanoidRig = buildChameleonHumanoidRig(
+      currentLobbyCharId,
+      maxAnisotropy
+    );
+    let combatWeaponProp = buildCompactHandheldWeaponProp(
+      currentLobbyWeaponId,
+      true
+    );
+    combatPlayerRig.weaponMount.add(combatWeaponProp);
+    combatPlayerRig.root.visible = false;
+    scene.add(combatPlayerRig.root);
+
+    // 1st-Person Chameleon Forearms & Hands attached to viewmodelRig (uses combatPlayerRig.paintMaterial)
+    const fpChameleonArmsGroup = new THREE.Group();
+    viewmodelRig.add(fpChameleonArmsGroup);
+
+    const buildFpChameleonArm = (
+      side: -1 | 1,
+      forearmRegion: BodyRegionId
+    ): THREE.Group => {
+      const armGrp = new THREE.Group();
+      const forearmGeo = new THREE.CylinderGeometry(0.036, 0.044, 0.28, 16, 8);
+      const uvAttr = forearmGeo.attributes.uv;
+      if (uvAttr) {
+        for (let i = 0; i < uvAttr.count; i++) {
+          const mapped = mapLocalUvToRegionAtlas(
+            uvAttr.getX(i),
+            uvAttr.getY(i),
+            forearmRegion
+          );
+          uvAttr.setXY(i, mapped.u, mapped.v);
+        }
+        uvAttr.needsUpdate = true;
+      }
+      const forearmMesh = new THREE.Mesh(
+        forearmGeo,
+        combatPlayerRig.paintMaterial
+      );
+      forearmMesh.rotation.x = Math.PI * 0.42;
+      forearmMesh.position.set(side * 0.04, -0.05, 0.14);
+
+      const handGeo = new THREE.SphereGeometry(0.038, 14, 12);
+      const handUv = handGeo.attributes.uv;
+      if (handUv) {
+        for (let i = 0; i < handUv.count; i++) {
+          const mapped = mapLocalUvToRegionAtlas(
+            handUv.getX(i),
+            handUv.getY(i),
+            'hands'
+          );
+          handUv.setXY(i, mapped.u, mapped.v);
+        }
+        handUv.needsUpdate = true;
+      }
+      const handMesh = new THREE.Mesh(handGeo, combatPlayerRig.paintMaterial);
+      handMesh.scale.set(0.95, 0.85, 1.25);
+      handMesh.position.set(side * 0.02, -0.015, 0.01);
+
+      armGrp.add(forearmMesh, handMesh);
+      return armGrp;
+    };
+
+    const fpRightArm = buildFpChameleonArm(1, 'rightForearm');
+    const fpLeftArm = buildFpChameleonArm(-1, 'leftForearm');
+    fpChameleonArmsGroup.add(fpRightArm, fpLeftArm);
+
+    // Flanking Squadmate Pedestals for Duo (2P) and Squad (4P) Lobby Preview
+    const squadSlotPositions: [number, number, number][] = [
+      [-1.58, 0, -0.95],
+      [1.58, 0, -0.95],
+      [-2.72, 0, -1.65],
+    ];
+    const squadSlotEntries: {
+      slotGroup: THREE.Group;
+      charId: CharacterId;
+      rig: ChameleonHumanoidRig;
+    }[] = [];
+
+    for (let i = 0; i < 3; i++) {
+      const slotGrp = new THREE.Group();
+      const [sx, sy, sz] = squadSlotPositions[i];
+      slotGrp.position.set(sx, sy, sz);
+      slotGrp.rotation.y = sx < 0 ? 0.25 : -0.25;
+
+      const subBase = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.75, 0.85, 0.1, 32),
+        new THREE.MeshStandardMaterial({
+          color: 0x1e293b,
+          roughness: 0.35,
+          metalness: 0.65,
+        })
+      );
+      subBase.position.y = 0.05;
+      slotGrp.add(subBase);
+
+      const defaultSquadChar: CharacterId =
+        i === 0 ? 'rift' : i === 1 ? 'kestrel' : 'chroma';
+      const sqRig = buildChameleonHumanoidRig(defaultSquadChar, maxAnisotropy);
+      sqRig.root.position.y = 0.1;
+      slotGrp.add(sqRig.root);
+      slotGrp.visible = false;
+      lobbyStageGroup.add(slotGrp);
+      squadSlotEntries.push({
+        slotGroup: slotGrp,
+        charId: defaultSquadChar,
+        rig: sqRig,
+      });
+    }
+
+    // 3D Surface Brush Cursor Ring for Vault Painting Studio
+    const brushCursorMat = new THREE.MeshBasicMaterial({
+      color: 0xef4444,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.9,
+      depthTest: false,
+    });
+    const brushCursorRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.028, 0.038, 24),
+      brushCursorMat
+    );
+    brushCursorRing.visible = false;
+    scene.add(brushCursorRing);
 
     // 7. Zero-GC Pooled Ballistic VFX Systems
     const vfxGroup = new THREE.Group();
@@ -729,15 +1445,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     }
     let ringCursor = 0;
 
-    // 7E. Surface-Aligned Weapon-Specific Bullet Decals & Blood Splatters (48 decals)
-    const DECAL_POOL_SIZE = 48;
+    // 7E. Surface-Aligned Weapon-Specific Bullet Decals & Blood Splatters (120 decals)
+    const DECAL_POOL_SIZE = 120;
     const decalPool: BulletDecalFX[] = [];
-    const decalGeo = new THREE.PlaneGeometry(0.22, 0.22);
+    // Unit 1m x 1m plane so mesh.scale.set(scaleT, scaleB, 1) directly sets exact world-space dimensions
+    const decalGeo = new THREE.PlaneGeometry(1, 1);
     for (let i = 0; i < DECAL_POOL_SIZE; i++) {
       const mat = new THREE.MeshBasicMaterial({
-        map: texSet.bulletHoleRifleMap,
+        map: texSet.bulletHoleM4a1Map,
         transparent: true,
-        opacity: 0.92,
+        opacity: 0.94,
         depthWrite: false,
         polygonOffset: true,
         polygonOffsetFactor: -3,
@@ -751,22 +1468,31 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
     let highestProcessedTraceId = 0;
     const normalVec = new THREE.Vector3();
+    const tangentVec = new THREE.Vector3();
+    const bitangentVec = new THREE.Vector3();
+    const decalBasisMat = new THREE.Matrix4();
     const defaultForward = new THREE.Vector3(0, 0, 1);
     const decalRaycaster = new THREE.Raycaster();
     const rayOriginVec = new THREE.Vector3();
     const rayDirVec = new THREE.Vector3();
 
-    const getWeaponDecalTextureAndScale = (weaponId?: WeaponId) => {
-      if (weaponId === 'awp') {
-        return { map: texSet.bulletHoleSniperMap, scale: 1.45 };
+    const getWeaponDecalTexture = (weaponId?: WeaponId): THREE.CanvasTexture => {
+      switch (weaponId) {
+        case 'mp5':
+          return texSet.bulletHoleMp5Map;
+        case 'm4a1':
+          return texSet.bulletHoleM4a1Map;
+        case 'ak47':
+          return texSet.bulletHoleAk47Map;
+        case 'deagle':
+          return texSet.bulletHoleDeagleMap;
+        case 'spas12':
+          return texSet.bulletHoleShotgunMap;
+        case 'awp':
+          return texSet.bulletHoleAwpMap;
+        default:
+          return texSet.bulletHoleM4a1Map;
       }
-      if (weaponId === 'spas12') {
-        return { map: texSet.bulletHoleShotgunMap, scale: 1.38 };
-      }
-      if (weaponId === 'mp5' || weaponId === 'deagle') {
-        return { map: texSet.bulletHoleSmgMap, scale: 0.82 };
-      }
-      return { map: texSet.bulletHoleRifleMap, scale: 1.05 };
     };
 
     const spawnTraceImpactVFX = (
@@ -785,69 +1511,146 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     ) => {
       if (hitKind === 'sky') return;
 
+      const wid: WeaponId = weaponId || 'm4a1';
+      const impactProfile = WEAPON_IMPACT_PROFILES[wid] || WEAPON_IMPACT_PROFILES.m4a1;
       normalVec.set(nx, ny, nz).normalize();
 
-      // 1. Expanding Shockwave / Blood Mist Ring at Impact Point
+      // 1. Expanding Shockwave / Blood Mist Ring at Impact Point (scaled by weapon ballistic power)
       const ring = ringPool[ringCursor];
       ringCursor = (ringCursor + 1) % RING_POOL_SIZE;
       ring.active = true;
       ring.ageMs = 0;
       ring.maxAgeMs =
-        hitKind === 'headshot' ? 320 : hitKind === 'enemy' ? 260 : 190;
+        hitKind === 'headshot'
+          ? 320
+          : hitKind === 'enemy'
+          ? 260
+          : Math.round(170 + impactProfile.craterDepthFactor * 75);
       ring.maxScale =
-        hitKind === 'headshot' ? 4.2 : hitKind === 'enemy' ? 3.1 : 2.3;
+        hitKind === 'headshot'
+          ? 4.2
+          : hitKind === 'enemy'
+          ? 3.1
+          : impactProfile.ringScale;
       ring.mat.color.setHex(
         hitKind === 'headshot'
           ? 0xdc2626
           : hitKind === 'enemy'
           ? 0xb91c1c
-          : 0xfde047
+          : impactProfile.sparkColorHex
       );
       ring.mesh.position.set(x + nx * 0.03, y + ny * 0.03, z + nz * 0.03);
       ring.mesh.quaternion.setFromUnitVectors(defaultForward, normalVec);
-      ring.mesh.scale.setScalar(0.35);
+      ring.mesh.scale.setScalar(0.32);
       ring.mesh.visible = true;
 
-      // 2. Directional Sparks / Realistic Blood Burst / Surface-Verified Bullet Decals
+      // 2. Directional 360° Deflected Sparks / Blood Burst / Clamped Weapon-Specific Gunshot Mark
       if (hitKind === 'wall' || hitKind === 'prop') {
-        spawnImpactBurst(x, y, z, nx, ny, nz, 0xfbbf24, isLow ? 4 : 8, 1.0, 0.9);
-        spawnImpactBurst(x, y, z, nx, ny, nz, 0x94a3b8, isLow ? 2 : 4, 0.55, 1.2);
+        const arenaDefNow =
+          ARENA_REGISTRY[simRef.current.arenaId] || ARENA_REGISTRY.foundry_arena;
 
-        // Place weapon-specific bullet mark ONLY on verified visible static 3D map meshes (NEVER in air or on breakable props)
-        if (hitKind === 'wall' && !isEnemyShot) {
-          rayOriginVec.set(fromX, fromY, fromZ);
-          rayDirVec.set(x - fromX, y - fromY, z - fromZ);
-          const rayLen = rayDirVec.length();
-          if (rayLen > 0.05) {
-            rayDirVec.divideScalar(rayLen);
-            decalRaycaster.near = 0.01;
-            decalRaycaster.far = rayLen + 1.5;
-            decalRaycaster.set(rayOriginVec, rayDirVec);
-            const hits = decalRaycaster.intersectObjects(mapGroup.children, true);
-            const validHit = hits.find(
-              (h) => h.face && h.distance <= rayLen + 0.65 && h.object.visible
-            );
-            if (validHit && validHit.face) {
-              const surfNormal = validHit.face.normal
-                .clone()
-                .transformDirection(validHit.object.matrixWorld)
-                .normalize();
-              const dec = decalPool[decalCursor];
-              decalCursor = (decalCursor + 1) % DECAL_POOL_SIZE;
-              const { map, scale } = getWeaponDecalTextureAndScale(weaponId);
-              dec.mat.map = map;
-              dec.mat.opacity = 0.94;
-              dec.mat.needsUpdate = true;
-              dec.active = true;
-              dec.mesh.position
-                .copy(validHit.point)
-                .addScaledVector(surfNormal, 0.008);
-              dec.mesh.quaternion.setFromUnitVectors(defaultForward, surfNormal);
-              dec.mesh.rotateZ(Math.random() * Math.PI * 2);
-              dec.mesh.scale.setScalar(scale * (0.9 + Math.random() * 0.2));
-              dec.mesh.visible = true;
-            }
+        rayOriginVec.set(fromX, fromY, fromZ);
+        rayDirVec.set(x - fromX, y - fromY, z - fromZ);
+        const rayLen = rayDirVec.length();
+
+        let hitPointX = x;
+        let hitPointY = y;
+        let hitPointZ = z;
+        let surfNx = nx;
+        let surfNy = ny;
+        let surfNz = nz;
+        let verifiedStaticSurface = false;
+
+        if (hitKind === 'wall' && rayLen > 0.05) {
+          rayDirVec.divideScalar(rayLen);
+          decalRaycaster.near = 0.01;
+          decalRaycaster.far = rayLen + 1.5;
+          decalRaycaster.set(rayOriginVec, rayDirVec);
+          const hits = decalRaycaster.intersectObjects(mapGroup.children, true);
+          const validHit = hits.find(
+            (h) => h.face && h.distance <= rayLen + 0.65 && h.object.visible
+          );
+          if (validHit && validHit.face) {
+            normalVec
+              .copy(validHit.face.normal)
+              .transformDirection(validHit.object.matrixWorld)
+              .normalize();
+            hitPointX = validHit.point.x;
+            hitPointY = validHit.point.y;
+            hitPointZ = validHit.point.z;
+            surfNx = normalVec.x;
+            surfNy = normalVec.y;
+            surfNz = normalVec.z;
+            verifiedStaticSurface = true;
           }
+        }
+
+        const pose = computeBallisticImpactMarkPose(
+          fromX,
+          fromY,
+          fromZ,
+          hitPointX,
+          hitPointY,
+          hitPointZ,
+          surfNx,
+          surfNy,
+          surfNz,
+          wid,
+          arenaDefNow
+        );
+
+        // Deflect sparks along the 360° grazing reflection direction (tircha ricochet spray)
+        const sparkDirX = pose.validSurface ? pose.reflectX : surfNx;
+        const sparkDirY = pose.validSurface ? pose.reflectY : surfNy;
+        const sparkDirZ = pose.validSurface ? pose.reflectZ : surfNz;
+        const sparkCount = isLow
+          ? Math.max(3, Math.round(impactProfile.sparkCount * 0.5))
+          : impactProfile.sparkCount;
+
+        spawnImpactBurst(
+          hitPointX,
+          hitPointY,
+          hitPointZ,
+          sparkDirX,
+          sparkDirY,
+          sparkDirZ,
+          impactProfile.sparkColorHex,
+          sparkCount,
+          0.95 + impactProfile.craterDepthFactor * 0.45,
+          0.8 + impactProfile.craterDepthFactor * 0.35
+        );
+        spawnImpactBurst(
+          hitPointX,
+          hitPointY,
+          hitPointZ,
+          surfNx,
+          surfNy,
+          surfNz,
+          0x94a3b8,
+          isLow ? 2 : Math.max(3, Math.round(sparkCount * 0.45)),
+          0.55,
+          1.15
+        );
+
+        // Place weapon-specific gunshot mark ONLY on verified solid wall/floor surfaces and strictly clamped inside face bounds
+        if (hitKind === 'wall' && !isEnemyShot && verifiedStaticSurface && pose.validSurface) {
+          const dec = decalPool[decalCursor];
+          decalCursor = (decalCursor + 1) % DECAL_POOL_SIZE;
+          dec.mat.map = getWeaponDecalTexture(wid);
+          dec.mat.opacity = 0.95;
+          dec.mat.needsUpdate = true;
+          dec.active = true;
+
+          dec.mesh.position.set(pose.x, pose.y, pose.z);
+          tangentVec.set(pose.tx, pose.ty, pose.tz).normalize();
+          bitangentVec.set(pose.bx, pose.by, pose.bz).normalize();
+          normalVec.set(pose.nx, pose.ny, pose.nz).normalize();
+          decalBasisMat.makeBasis(tangentVec, bitangentVec, normalVec);
+          dec.mesh.quaternion.setFromRotationMatrix(decalBasisMat);
+
+          // Non-uniform grazing scale: stretches along local X (tangent trajectory) at oblique 360° angles
+          dec.mesh.scale.set(pose.scaleT, pose.scaleB, 1);
+          dec.mesh.visible = true;
         }
       } else if (hitKind === 'headshot' || hitKind === 'enemy') {
         const isHs = hitKind === 'headshot';
@@ -895,7 +1698,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         normalVec.set(0, 1, 0);
         dec.mesh.quaternion.setFromUnitVectors(defaultForward, normalVec);
         dec.mesh.rotateZ(Math.random() * Math.PI * 2);
-        dec.mesh.scale.setScalar((isHs ? 2.4 : 1.75) * (0.85 + Math.random() * 0.3));
+        const bloodDiam = (isHs ? 0.52 : 0.38) * (0.85 + Math.random() * 0.3);
+        dec.mesh.scale.set(bloodDiam, bloodDiam, 1);
         dec.mesh.visible = true;
       }
     };
@@ -923,6 +1727,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     let landDipY = 0;
     let landRollImpulse = 0;
     let jumpImpulseY = 0;
+    let stepImpactDipY = 0;
     let airborneLift = 0;
     let airbornePitch = 0;
     let wasGrounded = true;
@@ -976,15 +1781,381 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     let mouseLookDragHeld = false;
     let lastMousePos: { x: number; y: number } | null = null;
 
-    const onMouseDown = (e: MouseEvent) => {
-      if (screenStateRef.current !== 'combat' || loadoutOverlayOpenRef.current) return;
-      const target = e.target as HTMLElement | null;
+    // 3D Lobby Turntable & Vault Painting Studio Raycast State
+    let charTurntableYaw = 0;
+    let charTargetYaw: number | null = null;
+    let charOrbitPitch = 0.03;
+    let charZoomDist = 2.65;
+    let charTargetZoomDist = 2.65;
+    let charLookY = 0.84;
+    let charTargetLookY = 0.84;
+    let charSwitchScaleAnim = 1.0;
+    let lastFocusPreset: CameraFocusPreset = cameraFocusPresetRef.current;
+    let lastResetTrigger = cameraResetTriggerRef.current;
+    let lastZoomDeltaSeq = 0;
+    let lastStudioTexRev = -1;
+    let lastEquippedTexRev = -1;
+    let lastHoveredRegion: BodyRegionId | null = null;
+
+    const paintRaycaster = new THREE.Raycaster();
+    const pointerNdc = new THREE.Vector2();
+    let isPainting3DStroke = false;
+    let isLobbyOrbitDragging = false;
+    let lastLobbyPointerPos: { x: number; y: number } | null = null;
+    let lastPaintUV: { u: number; v: number; region: BodyRegionId } | null = null;
+    let paintShapeStart: { u: number; v: number; region: BodyRegionId } | null = null;
+    let paintShapeLayerBackup: Uint8ClampedArray | null = null;
+
+    const getActiveStudioLayer = (): PaintLayer | null => {
+      const layers = studioLayersRef?.current;
+      if (!layers || layers.length === 0) return null;
+      return (
+        layers.find((l) => l.id === activeLayerIdRef.current) ||
+        layers[layers.length - 1]
+      );
+    };
+
+    const raycastCharacterMesh = (
+      clientX: number,
+      clientY: number
+    ): {
+      uv: THREE.Vector2;
+      region: BodyRegionId;
+      point: THREE.Vector3;
+      normal: THREE.Vector3;
+    } | null => {
+      if (!container) return null;
+      const rect = container.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      pointerNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      pointerNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      paintRaycaster.setFromCamera(pointerNdc, camera);
+      const hits = paintRaycaster.intersectObjects(
+        lobbyCharRig.paintableMeshes,
+        false
+      );
+      for (const h of hits) {
+        const reg = h.object.userData.bodyRegion as BodyRegionId | undefined;
+        if (h.uv && reg) {
+          const worldNormal = h.face
+            ? h.face.normal
+                .clone()
+                .transformDirection(h.object.matrixWorld)
+                .normalize()
+            : new THREE.Vector3(0, 0, 1);
+          return {
+            uv: h.uv.clone(),
+            region: reg,
+            point: h.point.clone(),
+            normal: worldNormal,
+          };
+        }
+      }
+      return null;
+    };
+
+    const isUiElementTarget = (target: EventTarget | null): boolean => {
+      const el = target as HTMLElement | null;
+      if (!el) return false;
+      return Boolean(
+        el.closest(
+          'button, input, select, textarea, label, [role="button"], [role="dialog"], [data-ui-interactive="true"], [data-ui-panel="true"]'
+        )
+      );
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      const isLobbyScreen =
+        screenStateRef.current !== 'combat' &&
+        screenStateRef.current !== 'paused' &&
+        screenStateRef.current !== 'match_result';
+      if (!isLobbyScreen) return;
+      if (isUiElementTarget(e.target)) return;
+
+      lastLobbyPointerPos = { x: e.clientX, y: e.clientY };
+      charTargetYaw = null;
+
+      const isStudioActive =
+        activeLobbyTabRef.current === 'painting_studio' ||
+        (activeLobbyTabRef.current === 'vault' &&
+          vaultSubTabRef.current === 'studio');
+
       if (
-        target &&
-        target.closest('button, input, label, [role="button"], [role="dialog"], [data-ui-interactive="true"]')
+        isStudioActive &&
+        e.button === 0 &&
+        studioInteractionModeRef.current === 'paint' &&
+        !e.altKey
       ) {
+        const hit = raycastCharacterMesh(e.clientX, e.clientY);
+        const bs = brushSettingsRef.current;
+        if (
+          hit &&
+          (bs.isolatedRegion === 'all' || bs.isolatedRegion === hit.region)
+        ) {
+          if (bs.tool === 'eyedropper') {
+            if (studioLayersRef?.current) {
+              const hex = sampleColorAtUV(
+                studioLayersRef.current,
+                hit.uv.x,
+                hit.uv.y
+              );
+              onEyedropperSampledRef.current?.(hex);
+            }
+            return;
+          }
+
+          const activeLayer = getActiveStudioLayer();
+          if (!activeLayer || !activeLayer.visible) return;
+
+          onPaintStrokeBeforeStartRef.current?.();
+
+          if (bs.tool === 'bucket') {
+            applyBucketFillToLayer(
+              activeLayer,
+              hit.uv.x,
+              hit.uv.y,
+              bs,
+              hit.region
+            );
+            if (studioLayersRef?.current) {
+              syncLayersToCharacterRigTexture(
+                lobbyCharRig,
+                studioLayersRef.current
+              );
+            }
+            onPaintStrokeCommittedRef.current?.();
+            return;
+          }
+
+          if (bs.tool === 'gradient_fill') {
+            applyGradientFillToLayer(
+              activeLayer,
+              hit.uv.x,
+              hit.uv.y,
+              bs,
+              hit.region
+            );
+            if (studioLayersRef?.current) {
+              syncLayersToCharacterRigTexture(
+                lobbyCharRig,
+                studioLayersRef.current
+              );
+            }
+            onPaintStrokeCommittedRef.current?.();
+            return;
+          }
+
+          if (
+            bs.tool === 'rect' ||
+            bs.tool === 'circle' ||
+            bs.tool === 'stripe_stamp' ||
+            bs.tool === 'camo_stamp'
+          ) {
+            applyGeometricShapeToLayer(
+              activeLayer,
+              hit.uv.x,
+              hit.uv.y,
+              bs.tool,
+              bs,
+              hit.region
+            );
+            if (studioLayersRef?.current) {
+              syncLayersToCharacterRigTexture(
+                lobbyCharRig,
+                studioLayersRef.current
+              );
+            }
+            onPaintStrokeCommittedRef.current?.();
+            return;
+          }
+
+          if (bs.tool === 'line') {
+            paintShapeStart = {
+              u: hit.uv.x,
+              v: hit.uv.y,
+              region: hit.region,
+            };
+            paintShapeLayerBackup = new Uint8ClampedArray(activeLayer.data);
+            isPainting3DStroke = true;
+            return;
+          }
+
+          // Brush or Eraser
+          isPainting3DStroke = true;
+          lastPaintUV = { u: hit.uv.x, v: hit.uv.y, region: hit.region };
+          const allowedReg =
+            bs.isolatedRegion !== 'all' ? bs.isolatedRegion : hit.region;
+          applyBrushStrokeSegment(
+            activeLayer,
+            hit.uv.x,
+            hit.uv.y,
+            hit.uv.x,
+            hit.uv.y,
+            bs,
+            allowedReg
+          );
+          if (studioLayersRef?.current) {
+            syncLayersToCharacterRigTexture(
+              lobbyCharRig,
+              studioLayersRef.current
+            );
+          }
+          return;
+        }
+      }
+
+      // Clicking outside the model or right-clicking / orbit mode rotates the character
+      isLobbyOrbitDragging = true;
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      const isLobbyScreen =
+        screenStateRef.current !== 'combat' &&
+        screenStateRef.current !== 'paused' &&
+        screenStateRef.current !== 'match_result';
+      if (!isLobbyScreen) {
+        brushCursorRing.visible = false;
         return;
       }
+
+      const isStudioActive =
+        activeLobbyTabRef.current === 'painting_studio' ||
+        (activeLobbyTabRef.current === 'vault' &&
+          vaultSubTabRef.current === 'studio');
+
+      // Update 3D Surface Brush Cursor & Hovered Body Region in Studio
+      if (isStudioActive && !isLobbyOrbitDragging) {
+        const hoverHit = isUiElementTarget(e.target)
+          ? null
+          : raycastCharacterMesh(e.clientX, e.clientY);
+        const nextReg = hoverHit ? hoverHit.region : null;
+        if (nextReg !== lastHoveredRegion) {
+          lastHoveredRegion = nextReg;
+          onHoverBodyRegionRef.current?.(nextReg);
+        }
+        if (hoverHit) {
+          const bs = brushSettingsRef.current;
+          brushCursorMat.color.set(
+            bs.tool === 'eraser' ? '#38bdf8' : bs.colorHex
+          );
+          brushCursorRing.position
+            .copy(hoverHit.point)
+            .addScaledVector(hoverHit.normal, 0.008);
+          brushCursorRing.quaternion.setFromUnitVectors(
+            defaultForward,
+            hoverHit.normal
+          );
+          const cursorScale = Math.max(0.28, (bs.size / 16) * 0.95);
+          brushCursorRing.scale.setScalar(cursorScale);
+          brushCursorRing.visible = true;
+        } else {
+          brushCursorRing.visible = false;
+        }
+      } else {
+        brushCursorRing.visible = false;
+        if (lastHoveredRegion !== null) {
+          lastHoveredRegion = null;
+          onHoverBodyRegionRef.current?.(null);
+        }
+      }
+
+      if (isPainting3DStroke && isStudioActive) {
+        const hit = raycastCharacterMesh(e.clientX, e.clientY);
+        const bs = brushSettingsRef.current;
+        const activeLayer = getActiveStudioLayer();
+        if (
+          hit &&
+          activeLayer &&
+          activeLayer.visible &&
+          (bs.isolatedRegion === 'all' || bs.isolatedRegion === hit.region)
+        ) {
+          if (
+            paintShapeStart &&
+            paintShapeLayerBackup &&
+            bs.tool === 'line'
+          ) {
+            activeLayer.data.set(paintShapeLayerBackup);
+            applyBrushStrokeSegment(
+              activeLayer,
+              paintShapeStart.u,
+              paintShapeStart.v,
+              hit.uv.x,
+              hit.uv.y,
+              bs,
+              paintShapeStart.region
+            );
+            if (studioLayersRef?.current) {
+              syncLayersToCharacterRigTexture(
+                lobbyCharRig,
+                studioLayersRef.current
+              );
+            }
+          } else {
+            let u = hit.uv.x;
+            let v = hit.uv.y;
+            const allowedReg =
+              bs.isolatedRegion !== 'all' ? bs.isolatedRegion : hit.region;
+
+            if (
+              lastPaintUV &&
+              lastPaintUV.region === hit.region &&
+              Math.hypot(u - lastPaintUV.u, v - lastPaintUV.v) < 0.18
+            ) {
+              const smooth = Math.max(0, Math.min(0.75, bs.smoothing * 0.65));
+              u = lastPaintUV.u * smooth + u * (1 - smooth);
+              v = lastPaintUV.v * smooth + v * (1 - smooth);
+              applyBrushStrokeSegment(
+                activeLayer,
+                lastPaintUV.u,
+                lastPaintUV.v,
+                u,
+                v,
+                bs,
+                allowedReg
+              );
+            } else {
+              applyBrushStrokeSegment(activeLayer, u, v, u, v, bs, allowedReg);
+            }
+            lastPaintUV = { u, v, region: hit.region };
+            if (studioLayersRef?.current) {
+              syncLayersToCharacterRigTexture(
+                lobbyCharRig,
+                studioLayersRef.current
+              );
+            }
+          }
+        }
+        return;
+      }
+
+      if (isLobbyOrbitDragging && lastLobbyPointerPos) {
+        const dx = e.clientX - lastLobbyPointerPos.x;
+        const dy = e.clientY - lastLobbyPointerPos.y;
+        charTurntableYaw += dx * 0.01;
+        charOrbitPitch = THREE.MathUtils.clamp(
+          charOrbitPitch + dy * 0.0045,
+          -0.28,
+          0.42
+        );
+        lastLobbyPointerPos = { x: e.clientX, y: e.clientY };
+      }
+    };
+
+    const onPointerUp = () => {
+      if (isPainting3DStroke) {
+        isPainting3DStroke = false;
+        lastPaintUV = null;
+        paintShapeStart = null;
+        paintShapeLayerBackup = null;
+        onPaintStrokeCommittedRef.current?.();
+      }
+      isLobbyOrbitDragging = false;
+      lastLobbyPointerPos = null;
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (screenStateRef.current !== 'combat' || loadoutOverlayOpenRef.current) return;
+      if (isUiElementTarget(e.target)) return;
 
       lastMousePos = { x: e.clientX, y: e.clientY };
       mouseLookDragHeld = true;
@@ -1035,14 +2206,22 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     };
 
     const onWheel = (e: WheelEvent) => {
-      if (screenStateRef.current !== 'combat') return;
-      if (Math.abs(e.deltaY) > 4) {
-        queuedWeaponCycle = e.deltaY > 0 ? 1 : -1;
+      if (isUiElementTarget(e.target)) return;
+      if (screenStateRef.current === 'combat') {
+        if (Math.abs(e.deltaY) > 4) {
+          queuedWeaponCycle = e.deltaY > 0 ? 1 : -1;
+        }
+      } else {
+        charTargetZoomDist = THREE.MathUtils.clamp(
+          charTargetZoomDist + (e.deltaY > 0 ? 0.22 : -0.22),
+          1.35,
+          4.4
+        );
       }
     };
 
     const onContextMenu = (e: MouseEvent) => {
-      if (screenStateRef.current === 'combat') {
+      if (!isUiElementTarget(e.target)) {
         e.preventDefault();
       }
     };
@@ -1056,6 +2235,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
     window.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mouseup', onMouseUp);
     window.addEventListener('mousemove', onMouseMove);
@@ -1063,12 +2245,27 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     window.addEventListener('contextmenu', onContextMenu);
     window.addEventListener('resize', onResize);
 
-    // 9. Main 60fps Game Loop
+    // 9. Main 60fps Game Loop (with software-WebGL main-thread yield so headless browser clicks never stall)
     let rafId = 0;
+    let softGlTimerId = 0;
+    let isDisposed = false;
     let lastTime = performance.now();
 
+    const scheduleNextFrame = () => {
+      if (isDisposed) return;
+      if (isSoftwareGl) {
+        softGlTimerId = window.setTimeout(() => {
+          if (!isDisposed) {
+            rafId = requestAnimationFrame(animate);
+          }
+        }, 36);
+      } else {
+        rafId = requestAnimationFrame(animate);
+      }
+    };
+
     const animate = (now: number) => {
-      rafId = requestAnimationFrame(animate);
+      scheduleNextFrame();
       const rawDt = (now - lastTime) / 1000;
       lastTime = now;
       const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
@@ -1099,7 +2296,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           keysDown.has(kb.sprint) || keysDown.has('ShiftLeft') || touch.sprint;
 
         const sensMult = settingsRef.current.touchSensitivity ?? 1.0;
-        const fireSensMult = settingsRef.current.fireSensitivity ?? 0.45;
+        const fireSensMult = settingsRef.current.fireSensitivity ?? 1.0;
         const activeSpec = WEAPON_REGISTRY[sim.player.activeWeapon];
         const adsSensFactor = getScopeSensitivityMultiplier(
           sim.player.activeWeapon,
@@ -1110,7 +2307,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         // Both scale down smoothly when scoped in based on optic magnification (adsSensFactor)
         const mouseSens = 0.0026 * sensMult * adsSensFactor;
         const touchSens = 0.0056 * sensMult * adsSensFactor;
-        const fireSens = 0.0024 * fireSensMult * adsSensFactor;
+        const fireSens = 0.0046 * fireSensMult * adsSensFactor;
 
         const lookYawDelta =
           mouseLookDeltaX * mouseSens +
@@ -1224,11 +2421,20 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
             soundEngine.play('ui_confirm');
             onCombatEventRef.current(evt);
           } else if (evt.type === 'footstep') {
-            soundEngine.playFootstep(
-              evt.surface || sim.player.currentSurface,
-              evt.stepIntensity || 'walk',
-              sim.player.footstepCount
-            );
+            const surf = evt.surface || sim.player.currentSurface;
+            const intensity = evt.stepIntensity || 'walk';
+            soundEngine.playFootstep(surf, intensity, sim.player.footstepCount);
+
+            // Subtle, single-axis downward heel cushion on step contact (no jerky camera rotation or spark bursts)
+            const impScale =
+              intensity === 'land'
+                ? 1.25
+                : intensity === 'sprint'
+                ? 1.0
+                : intensity === 'crouch'
+                ? 0.45
+                : 0.75;
+            stepImpactDipY = -0.012 * impScale;
           } else if (evt.type === 'slide_start') {
             soundEngine.play('ui_click');
           } else if (evt.type === 'barrel_explode') {
@@ -1287,6 +2493,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         landDipY *= Math.exp(-13 * dt);
         jumpImpulseY *= Math.exp(-15 * dt);
         landRollImpulse *= Math.exp(-11 * dt);
+        stepImpactDipY *= Math.exp(-16 * dt);
 
         const targetAirLift = !p.isGrounded
           ? THREE.MathUtils.clamp(p.vy * 0.0042, -0.026, 0.026)
@@ -1317,17 +2524,19 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
             Math.sin(inspectBreathPhase * 3.2) * 0.0009) *
           (1 - p.adsBlend * 0.85);
 
+        // Clean, smooth figure-8 stride glide synchronized 1:1 with footsteps (1 step = PI radians)
+        const strideLateral = Math.sin(p.walkBobPhase);
+        const strideVertical = -Math.cos(p.walkBobPhase * 2);
+        const adsBobDamp = 1 - p.adsBlend * 0.78;
+        const sprintAmp = p.isSprinting ? 1.15 : p.isCrouching ? 0.55 : 0.9;
+
         const bobX =
-          Math.cos(p.walkBobPhase * 0.5) *
-            0.032 *
-            moveBobBlend *
-            (1 - p.adsBlend * 0.75) +
+          strideLateral * 0.024 * sprintAmp * moveBobBlend * adsBobDamp +
           idleBreathX * (1 - moveBobBlend);
         const bobY =
-          Math.sin(p.walkBobPhase) *
-            0.042 *
+          (strideVertical * 0.024 * sprintAmp + stepImpactDipY) *
             moveBobBlend *
-            (1 - p.adsBlend * 0.75) +
+            adsBobDamp +
           idleBreathY * (1 - moveBobBlend);
 
         // Reload camera micro-nods synchronized with mag drop, mag slam & bolt rack
@@ -1372,17 +2581,113 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           sim.breakableProps
         );
 
-        camera.position.set(
-          safeCamXZ.x,
-          p.y + p.eyeHeight + bobY + landDipY + jumpImpulseY,
-          safeCamXZ.z
-        );
-        camera.rotation.y = p.yaw + p.recoilKickYaw + shakeYaw;
-        camera.rotation.x = THREE.MathUtils.clamp(
-          p.pitch + p.recoilKickPitch + shakePitch + reloadCamPitch,
-          -1.42,
-          1.42
-        );
+        // Synchronize Equipped Chameleon Character Rig & Custom Paint Texture for Combat
+        if (currentLobbyCharId !== p1CharRef.current) {
+          currentLobbyCharId = p1CharRef.current;
+          turntableGroup.remove(lobbyCharRig.root);
+          lobbyCharRig.dispose();
+          lobbyCharRig = buildChameleonHumanoidRig(currentLobbyCharId, maxAnisotropy);
+          lobbyWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId);
+          lobbyCharRig.weaponMount.add(lobbyWeaponProp);
+          turntableGroup.add(lobbyCharRig.root);
+
+          scene.remove(combatPlayerRig.root);
+          combatPlayerRig.dispose();
+          combatPlayerRig = buildChameleonHumanoidRig(currentLobbyCharId, maxAnisotropy);
+          combatWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId, true);
+          combatPlayerRig.weaponMount.add(combatWeaponProp);
+          scene.add(combatPlayerRig.root);
+          fpRightArm.traverse((c) => {
+            if ((c as THREE.Mesh).isMesh) {
+              (c as THREE.Mesh).material = combatPlayerRig.paintMaterial;
+            }
+          });
+          fpLeftArm.traverse((c) => {
+            if ((c as THREE.Mesh).isMesh) {
+              (c as THREE.Mesh).material = combatPlayerRig.paintMaterial;
+            }
+          });
+          lastEquippedTexRev = -1;
+          lastStudioTexRev = -1;
+        }
+
+        if (lastEquippedTexRev !== equippedDesignRevisionRef.current) {
+          lastEquippedTexRev = equippedDesignRevisionRef.current;
+          const eqBuf = equippedCompositeBufferRef?.current;
+          if (eqBuf) {
+            syncLayersToCharacterRigTexture(combatPlayerRig, eqBuf);
+          } else {
+            const ctx = combatPlayerRig.paintCanvas.getContext('2d');
+            if (ctx) {
+              ctx.fillStyle = '#ffffff';
+              ctx.fillRect(0, 0, 512, 512);
+              combatPlayerRig.paintTexture.needsUpdate = true;
+            }
+          }
+        }
+
+        const isFp = firstPersonModeRef.current;
+        lobbyStageGroup.visible = false;
+        brushCursorRing.visible = false;
+        combatPlayerRig.root.visible = !isFp;
+        viewmodelRig.visible = isFp;
+
+        for (const slot of ['headgear', 'backgear', 'shoulders', 'chestRig'] as EquipmentSlotId[]) {
+          setCharacterEquipmentSlotVisible(
+            combatPlayerRig.equipmentGroups,
+            slot,
+            activeEquipmentRef.current.includes(slot)
+          );
+        }
+
+        if (!isFp) {
+          // 3rd-Person Combat Camera & Full-Body Painted Chameleon Character Animation
+          combatPlayerRig.root.position.set(p.x, p.y, p.z);
+          combatPlayerRig.root.rotation.y = p.yaw + Math.PI;
+          updateChameleonRigAnimation(
+            combatPlayerRig,
+            'combat',
+            now * 0.001,
+            moveSpeed,
+            p.walkBobPhase,
+            p.isCrouching
+          );
+
+          const tpDist = 2.45;
+          const lookBackX = Math.sin(p.yaw) * tpDist;
+          const lookBackZ = Math.cos(p.yaw) * tpDist;
+          const safeTpXZ = resolveEntityCollisions(
+            p.x + lookBackX + camRightX * 0.42,
+            p.z + lookBackZ + camRightZ * 0.42,
+            0.25,
+            arenaDefNow,
+            sim.breakableProps
+          );
+          camera.position.set(
+            safeTpXZ.x,
+            p.y + p.eyeHeight + 0.36 + bobY * 0.5,
+            safeTpXZ.z
+          );
+          camera.rotation.y = p.yaw + p.recoilKickYaw + shakeYaw;
+          camera.rotation.x = THREE.MathUtils.clamp(
+            p.pitch + p.recoilKickPitch + shakePitch - 0.08,
+            -1.25,
+            1.25
+          );
+          camera.rotation.z = 0;
+        } else {
+          camera.position.set(
+            safeCamXZ.x,
+            p.y + p.eyeHeight + bobY + landDipY + jumpImpulseY,
+            safeCamXZ.z
+          );
+          camera.rotation.y = p.yaw + p.recoilKickYaw + shakeYaw;
+          camera.rotation.x = THREE.MathUtils.clamp(
+            p.pitch + p.recoilKickPitch + shakePitch + reloadCamPitch,
+            -1.42,
+            1.42
+          );
+        }
 
         // Decay weapon sway, axial roll inertia & strafe/slide banking
         swayYaw *= Math.exp(-10 * dt);
@@ -1392,8 +2697,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         const targetStrafeRoll =
           moveX * 0.055 * (1 - p.adsBlend * 0.65) + slideRollTarget;
         strafeRoll += (targetStrafeRoll - strafeRoll) * Math.min(1, dt * 12);
-        camera.rotation.z =
-          -strafeRoll * 0.45 + reloadCamRoll + landRollImpulse * 0.4;
+        if (isFp) {
+          camera.rotation.z =
+            -strafeRoll * 0.45 + reloadCamRoll + landRollImpulse * 0.4;
+        }
 
         // Update First-Person Weapon Viewmodel Kinematics & Smooth Two-Stage Swap + Reload Animations
         const swapTotalMs = p.weaponSwitchDurationMs || 340;
@@ -1410,7 +2717,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           const vm = weaponModels[wid];
           const isDisplayed = wid === displayedWeaponId;
           // Hide viewmodel when deeply scoped so circular optical reticle overlay has unobstructed view
-          vm.root.visible = isDisplayed && p.adsBlend < 0.72;
+          vm.root.visible = isDisplayed && p.adsBlend < 0.72 && isFp;
 
           if (isDisplayed) {
             const hipX = 0.23;
@@ -1529,11 +2836,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
             const sprintEase = sprintBlend * sprintBlend * (3 - 2 * sprintBlend);
             const slideEase = slideBlend * slideBlend * (3 - 2 * slideBlend);
 
-            // Subtle rhythmic chest-carry stride oscillation while running
-            const sprintSwingX = Math.cos(p.walkBobPhase * 0.5) * 0.022 * sprintEase;
-            const sprintSwingY = Math.abs(Math.sin(p.walkBobPhase * 0.5)) * -0.018 * sprintEase;
-            const sprintSwingRotY = Math.cos(p.walkBobPhase * 0.5) * 0.055 * sprintEase;
-            const sprintSwingRotZ = Math.sin(p.walkBobPhase * 0.5) * 0.04 * sprintEase;
+            // Clean, smooth rhythmic chest-carry stride oscillation while sprinting (no overlapping twitch)
+            const sprintSwingX = strideLateral * 0.018 * sprintEase;
+            const sprintSwingY = strideVertical * 0.014 * sprintEase;
+            const sprintSwingRotY = -strideLateral * 0.045 * sprintEase;
+            const sprintSwingRotZ = strideLateral * 0.032 * sprintEase;
 
             // Universal 3D Weapon Wall-Obstruction & Physical Wall-Brace Kinematics
             const liveWallObs = computeWeaponWallObstruction(
@@ -1580,7 +2887,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
               sprintEase * 0.06 +
               sprintSwingX -
               slideEase * 0.05 +
-              bobX * 0.32 +
+              bobX * 0.35 +
               wallShiftX;
             const posY =
               THREE.MathUtils.lerp(hipY, adsY, p.adsBlend) +
@@ -1628,6 +2935,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
                 slideEase * 0.52 +
                 wallRotZ
             );
+
+            // Sync 1st-Person Custom Painted Chameleon Forearms & Hands to Active Weapon Viewmodel
+            fpChameleonArmsGroup.visible = vm.root.visible;
+            if (fpChameleonArmsGroup.visible) {
+              fpChameleonArmsGroup.position.copy(vm.root.position);
+              fpChameleonArmsGroup.rotation.copy(vm.root.rotation);
+              fpRightArm.position.set(0.015, -0.055, 0.08);
+              fpLeftArm.position.set(-0.042, -0.048, -0.14);
+            }
 
             // Articulated Trigger Squeeze Micro-Animation on Every Shot
             const targetTrigger =
@@ -1684,29 +3000,279 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           }
         }
       } else {
-        // Cinematic Orbit Camera on Menu / Lobby Screens
-        const orbitAngle = now * 0.00022;
-        camera.position.set(
-          Math.cos(orbitAngle) * 34,
-          14.5,
-          Math.sin(orbitAngle) * 34
-        );
-        camera.lookAt(0, 2.2, 0);
+        // 9B. 3D Character Lobby & Vault Custom Painting Studio Showcase
         viewmodelRig.visible = false;
+        combatPlayerRig.root.visible = false;
         muzzlePointLight.intensity = 0;
+        lobbyStageGroup.visible = true;
+
+        // Rebuild character rig if player switched characters in Roster
+        if (currentLobbyCharId !== p1CharRef.current) {
+          currentLobbyCharId = p1CharRef.current;
+          turntableGroup.remove(lobbyCharRig.root);
+          lobbyCharRig.dispose();
+          lobbyCharRig = buildChameleonHumanoidRig(
+            currentLobbyCharId,
+            maxAnisotropy
+          );
+          currentLobbyWeaponId = selectedWeaponRef.current;
+          lobbyWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId);
+          lobbyCharRig.weaponMount.add(lobbyWeaponProp);
+          turntableGroup.add(lobbyCharRig.root);
+
+          scene.remove(combatPlayerRig.root);
+          combatPlayerRig.dispose();
+          combatPlayerRig = buildChameleonHumanoidRig(
+            currentLobbyCharId,
+            maxAnisotropy
+          );
+          combatWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId);
+          combatPlayerRig.weaponMount.add(combatWeaponProp);
+          combatPlayerRig.root.visible = false;
+          scene.add(combatPlayerRig.root);
+          fpRightArm.traverse((c) => {
+            if ((c as THREE.Mesh).isMesh) {
+              (c as THREE.Mesh).material = combatPlayerRig.paintMaterial;
+            }
+          });
+          fpLeftArm.traverse((c) => {
+            if ((c as THREE.Mesh).isMesh) {
+              (c as THREE.Mesh).material = combatPlayerRig.paintMaterial;
+            }
+          });
+
+          charSwitchScaleAnim = 0.88;
+          lastStudioTexRev = -1;
+          lastEquippedTexRev = -1;
+        }
+
+        // Rebuild handheld weapon prop if player changed weapon in Loadout
+        if (currentLobbyWeaponId !== selectedWeaponRef.current) {
+          currentLobbyWeaponId = selectedWeaponRef.current;
+          lobbyCharRig.weaponMount.remove(lobbyWeaponProp);
+          lobbyWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId);
+          lobbyCharRig.weaponMount.add(lobbyWeaponProp);
+
+          combatPlayerRig.weaponMount.remove(combatWeaponProp);
+          combatWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId);
+          combatPlayerRig.weaponMount.add(combatWeaponProp);
+        }
+
+        const isStudioView =
+          activeLobbyTabRef.current === 'painting_studio' ||
+          (activeLobbyTabRef.current === 'vault' &&
+            vaultSubTabRef.current === 'studio');
+
+        // Show handheld weapon prop only when inspecting Loadout or Weapons tabs so the pure-white humanoid silhouette and hands are unobstructed in Lobby, Character, and Paint Studio
+        lobbyWeaponProp.visible =
+          activeLobbyTabRef.current === 'loadout' ||
+          activeLobbyTabRef.current === 'weapons';
+
+        // Smooth scale transition on character or design change
+        const baseLobbyScale = isStudioView ? 0.94 : 0.84;
+        charSwitchScaleAnim += (1.0 - charSwitchScaleAnim) * Math.min(1, dt * 12);
+        lobbyCharRig.root.scale.setScalar(charSwitchScaleAnim * baseLobbyScale);
+
+        // Sync optional equipment slots
+        for (const slot of [
+          'headgear',
+          'backgear',
+          'shoulders',
+          'chestRig',
+        ] as EquipmentSlotId[]) {
+          setCharacterEquipmentSlotVisible(
+            lobbyCharRig.equipmentGroups,
+            slot,
+            activeEquipmentRef.current.includes(slot)
+          );
+        }
+
+        // Sync 3D Character Paint Texture (Studio Editing Buffer vs Equipped Buffer)
+        if (isStudioView) {
+          if (
+            lastStudioTexRev !== studioTextureRevisionRef.current &&
+            studioLayersRef?.current
+          ) {
+            lastStudioTexRev = studioTextureRevisionRef.current;
+            syncLayersToCharacterRigTexture(
+              lobbyCharRig,
+              studioLayersRef.current
+            );
+          }
+          // Highlight isolated body region if selected
+          const isoReg = brushSettingsRef.current.isolatedRegion;
+          for (const mesh of lobbyCharRig.paintableMeshes) {
+            const mReg = mesh.userData.bodyRegion as BodyRegionId;
+            mesh.visible = isoReg === 'all' || mReg === isoReg;
+          }
+        } else {
+          for (const mesh of lobbyCharRig.paintableMeshes) {
+            mesh.visible = true;
+          }
+          if (
+            lastEquippedTexRev !== equippedDesignRevisionRef.current ||
+            lastStudioTexRev !== -2
+          ) {
+            lastEquippedTexRev = equippedDesignRevisionRef.current;
+            lastStudioTexRev = -2;
+            const eqBuf = equippedCompositeBufferRef?.current;
+            if (eqBuf) {
+              syncLayersToCharacterRigTexture(lobbyCharRig, eqBuf);
+              syncLayersToCharacterRigTexture(combatPlayerRig, eqBuf);
+            } else {
+              const ctx = lobbyCharRig.paintCanvas.getContext('2d');
+              if (ctx) {
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, 512, 512);
+                lobbyCharRig.paintTexture.needsUpdate = true;
+              }
+            }
+          }
+        }
+
+        // Update Character Pose & Animation
+        const activePose = isStudioView
+          ? 'studio_neutral'
+          : characterPoseRef.current;
+        updateChameleonRigAnimation(lobbyCharRig, activePose, now * 0.001);
+
+        // Sync Flanking Squadmate Pedestals in Lobby/Friends
+        const showSquad =
+          activeLobbyTabRef.current === 'friends' &&
+          partyMembersRef.current.length > 1;
+        const extraMembers = partyMembersRef.current.slice(1, 4);
+        for (let i = 0; i < 3; i++) {
+          const entry = squadSlotEntries[i];
+          const member = extraMembers[i];
+          if (showSquad && member) {
+            if (entry.charId !== member.characterId) {
+              entry.slotGroup.remove(entry.rig.root);
+              entry.rig.dispose();
+              entry.charId = member.characterId;
+              entry.rig = buildChameleonHumanoidRig(entry.charId, maxAnisotropy);
+              entry.rig.root.position.y = 0.1;
+              entry.slotGroup.add(entry.rig.root);
+            }
+            entry.slotGroup.visible = true;
+            updateChameleonRigAnimation(
+              entry.rig,
+              member.ready ? 'salute' : 'idle',
+              now * 0.001 + (i + 1) * 0.8
+            );
+          } else {
+            entry.slotGroup.visible = false;
+          }
+        }
+
+        // Handle Camera Focus Presets & Reset Triggers
+        if (lastResetTrigger !== cameraResetTriggerRef.current) {
+          lastResetTrigger = cameraResetTriggerRef.current;
+          charTargetYaw = 0;
+          charOrbitPitch = 0.03;
+          charTargetZoomDist = isStudioView ? 2.84 : 2.65;
+          charTargetLookY = isStudioView ? 0.96 : 0.84;
+        }
+
+        const zoomTrig = cameraZoomDeltaTriggerRef.current;
+        if (zoomTrig && zoomTrig.seq !== lastZoomDeltaSeq) {
+          lastZoomDeltaSeq = zoomTrig.seq;
+          charTargetZoomDist = THREE.MathUtils.clamp(
+            charTargetZoomDist + zoomTrig.delta,
+            1.35,
+            4.4
+          );
+        }
+
+        if (lastFocusPreset !== cameraFocusPresetRef.current) {
+          lastFocusPreset = cameraFocusPresetRef.current;
+          if (lastFocusPreset === 'head') {
+            charTargetZoomDist = 1.62;
+            charTargetLookY = 1.38;
+            charTargetYaw = 0;
+          } else if (lastFocusPreset === 'upper') {
+            charTargetZoomDist = 2.15;
+            charTargetLookY = 1.12;
+            charTargetYaw = 0;
+          } else if (lastFocusPreset === 'back') {
+            charTargetZoomDist = 2.75;
+            charTargetLookY = 0.96;
+            charTargetYaw = Math.PI;
+          } else if (lastFocusPreset === 'left') {
+            charTargetZoomDist = 2.65;
+            charTargetLookY = 0.96;
+            charTargetYaw = Math.PI * 0.5;
+          } else if (lastFocusPreset === 'right') {
+            charTargetZoomDist = 2.65;
+            charTargetLookY = 0.96;
+            charTargetYaw = -Math.PI * 0.5;
+          } else if (lastFocusPreset === 'legs') {
+            charTargetZoomDist = 2.35;
+            charTargetLookY = 0.52;
+            charTargetYaw = 0;
+          } else {
+            charTargetZoomDist = isStudioView ? 2.84 : 2.65;
+            charTargetLookY = isStudioView ? 0.96 : 0.84;
+            charTargetYaw = 0;
+          }
+        } else if (cameraFocusPresetRef.current === 'full' && !isLobbyOrbitDragging) {
+          charTargetZoomDist = isStudioView ? 2.84 : 2.65;
+          charTargetLookY = isStudioView ? 0.96 : 0.84;
+        }
+
+        if (charTargetYaw !== null) {
+          const diff = charTargetYaw - charTurntableYaw;
+          charTurntableYaw += diff * Math.min(1, dt * 10);
+          if (Math.abs(diff) < 0.005) {
+            charTurntableYaw = charTargetYaw;
+            charTargetYaw = null;
+          }
+        }
+
+        turntableGroup.rotation.y = charTurntableYaw;
+        charZoomDist +=
+          (charTargetZoomDist - charZoomDist) * Math.min(1, dt * 11);
+        charLookY += (charTargetLookY - charLookY) * Math.min(1, dt * 11);
+
+        if (Math.abs(camera.fov - 44) > 0.1) {
+          camera.fov += (44 - camera.fov) * Math.min(1, dt * 12);
+          camera.updateProjectionMatrix();
+        }
+
+        const camY =
+          LOBBY_STAGE_Y +
+          0.02 +
+          charLookY +
+          Math.sin(charOrbitPitch) * charZoomDist;
+        const camZ = Math.cos(charOrbitPitch) * charZoomDist;
+        camera.position.set(0, camY, camZ);
+        camera.lookAt(0, LOBBY_STAGE_Y + 0.02 + charLookY, 0);
       }
 
-      if (screenStateRef.current === 'combat') {
-        viewmodelRig.visible = true;
-      }
-
-      // 10. Sync Breakable Props & Articulated 16-Part Enemy Soldiers
+      // 10. Sync Breakable Props & Articulated Meccha Chameleon Enemy Combatants
       syncBreakableProps(sim);
 
-      for (const bot of sim.enemies) {
+      for (let botIdx = 0; botIdx < sim.enemies.length; botIdx++) {
+        const bot = sim.enemies[botIdx];
         let rig = enemyRigs.get(bot.id);
         if (!rig) {
-          rig = buildDetailedEnemySoldier(bot.archetype, texSet.muzzleFlashMap);
+          const visualArchetype: 'rusher' | 'sniper' | 'heavy' | 'flanker' =
+            bot.archetype === 'sniper'
+              ? 'sniper'
+              : bot.archetype === 'rusher'
+                ? botIdx % 2 === 0
+                  ? 'rusher'
+                  : 'flanker'
+                : botIdx % 2 === 0
+                  ? 'heavy'
+                  : 'flanker';
+          rig = buildEnemyChameleonCombatRig(
+            bot.characterId || 'volt',
+            visualArchetype,
+            bot.weaponId,
+            botIdx,
+            texSet.muzzleFlashMap,
+            maxAnisotropy
+          );
           enemyGroup.add(rig.group);
           enemyRigs.set(bot.id, rig);
         }
@@ -1717,74 +3283,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         }
 
         rig.group.visible = true;
-        const speed = Math.hypot(bot.vx, bot.vz);
-        const stride = Math.sin(bot.walkCycle * 1.45);
-        const gaitBounce =
-          bot.state === 'ko' ? 0 : Math.abs(Math.cos(bot.walkCycle * 1.45)) * Math.min(1, speed * 0.25) * 0.06;
+        updateEnemyChameleonCombatAnimation(rig, bot, now * 0.001);
 
-        rig.group.position.set(bot.x, bot.y + gaitBounce, bot.z);
-        rig.group.rotation.y = Math.PI / 2 - bot.yaw;
-
-        if (bot.state === 'ko') {
-          // Multi-Stage Articulated 3D Killing / Death Collapse Animation
-          const fallProgress = Math.min(1, 1 - Math.max(0, bot.koTimerMs) / 860);
-          if (fallProgress < 0.32) {
-            // Stage 1: Fatal Impact Stagger & Head/Arm Recoil Snap
-            const s = fallProgress / 0.32;
-            const snap = Math.sin(s * (Math.PI * 0.5));
-            rig.bodyPivot.rotation.x = -0.28 * snap;
-            rig.bodyPivot.rotation.z = 0.22 * snap * bot.strafeDir;
-            rig.bodyPivot.position.y = -0.08 * snap;
-            rig.headGroup.rotation.x = -0.55 * snap;
-            rig.leftArmPivot.rotation.z = -0.65 * snap;
-            rig.rightArmPivot.rotation.x = -0.35 * snap;
-            rig.leftLegPivot.rotation.x = 0.35 * snap;
-            rig.rightLegPivot.rotation.x = 0.25 * snap;
-          } else {
-            // Stage 2: Full Ragdoll Collapse onto the Arena Floor
-            const c = (fallProgress - 0.32) / 0.68;
-            const ease = c * c * (3 - 2 * c);
-            rig.bodyPivot.rotation.x = -0.28 - ease * (Math.PI * 0.48 - 0.28);
-            rig.bodyPivot.rotation.z = (0.22 + ease * 0.18) * bot.strafeDir;
-            rig.bodyPivot.position.y = -0.08 - ease * 0.68;
-            rig.headGroup.rotation.x = -0.55 + ease * 0.25;
-            rig.leftArmPivot.rotation.z = -0.65 - ease * 0.45;
-            rig.rightArmPivot.rotation.x = -0.35 + ease * 0.85;
-            rig.leftLegPivot.rotation.x = 0.35 * (1 - ease);
-            rig.rightLegPivot.rotation.x = -0.22 * ease;
-          }
-          rig.hpBarBg.visible = false;
-          rig.hpBarFill.visible = false;
-          rig.sniperLaser.visible = false;
-          rig.muzzleFlash.visible = false;
-        } else {
-          rig.bodyPivot.position.y = 0;
-          const legAmp = Math.min(0.65, speed * 0.11);
-          rig.leftLegPivot.rotation.x = stride * legAmp;
-          rig.rightLegPivot.rotation.x = -stride * legAmp;
-
-          // Rich Enemy Micro-Animations: Strafe Banking, Hit-Flinch Twist, Head Scan & Recoil Kick
-          const hitFlinchRatio = Math.min(1, bot.hitFlashMs / 110);
-          const hitFlinchPitch = -0.22 * hitFlinchRatio;
-          const hitFlinchTwist = 0.18 * hitFlinchRatio * bot.strafeDir;
-          const fireRecoilRatio = Math.min(1, bot.attackAnimTimerMs / 160);
-          const fireRecoil = -0.16 * fireRecoilRatio;
-          const strafeLean =
-            Math.min(1, speed * 0.16) * 0.08 * bot.strafeDir;
-
-          rig.bodyPivot.rotation.x = hitFlinchPitch + fireRecoil * 0.42 + Math.min(0.08, speed * 0.012);
-          rig.bodyPivot.rotation.y = stride * legAmp * 0.16 + hitFlinchTwist;
-          rig.bodyPivot.rotation.z = strafeLean;
-          rig.headGroup.rotation.x = -hitFlinchPitch * 0.65;
-          rig.headGroup.rotation.y = Math.sin(now * 0.0025 + bot.walkCycle * 0.4) * 0.12;
-          rig.leftArmPivot.rotation.z = -0.06 - Math.abs(stride) * 0.05;
-          rig.rightArmPivot.rotation.x = fireRecoil - Math.abs(stride) * 0.04;
-
-          rig.muzzleFlash.visible = bot.muzzleFlashTimerMs > 0;
-          if (bot.muzzleFlashTimerMs > 0) {
-            rig.muzzleFlash.rotation.z = Math.random() * Math.PI * 2;
-          }
-
+        if (bot.state !== 'ko') {
           rig.hpBarBg.visible = true;
           rig.hpBarFill.visible = true;
           rig.hpBarBg.lookAt(camera.position);
@@ -1792,25 +3293,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
           const hpRatio = Math.max(0, Math.min(1, bot.hp / Math.max(1, bot.maxHp)));
           rig.hpBarFill.scale.x = Math.max(0.001, hpRatio);
-
-          const visorMat = rig.visorMesh.material as THREE.MeshBasicMaterial;
-          if (bot.hitFlashMs > 0) {
-            visorMat.color.setHex(0xffffff);
-          } else {
-            visorMat.color.setHex(
-              bot.archetype === 'rusher'
-                ? 0xf97316
-                : bot.archetype === 'sniper'
-                ? 0xa855f7
-                : 0xef4444
-            );
-          }
-
-          if (bot.archetype === 'sniper' && bot.state === 'telegraph') {
-            rig.sniperLaser.visible = true;
-          } else {
-            rig.sniperLaser.visible = false;
-          }
         }
       }
 
@@ -2098,15 +3580,23 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     rafId = requestAnimationFrame(animate);
 
     return () => {
+      isDisposed = true;
       cancelAnimationFrame(rafId);
+      window.clearTimeout(softGlTimerId);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mouseup', onMouseUp);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('wheel', onWheel);
       window.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('resize', onResize);
+      lobbyCharRig.dispose();
+      combatPlayerRig.dispose();
+      squadSlotEntries.forEach((s) => s.rig.dispose());
       texSet.dispose();
       envTarget.dispose();
       renderer.dispose();

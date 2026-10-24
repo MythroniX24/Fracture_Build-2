@@ -98,6 +98,7 @@ export type EnemyArchetype = 'assault' | 'rusher' | 'sniper';
 export interface EnemyBotState {
   id: string;
   name: string;
+  characterId: CharacterId;
   archetype: EnemyArchetype;
   weaponId: WeaponId;
   secondaryWeaponId: WeaponId;
@@ -321,18 +322,19 @@ function createInitialEnemies(arena: ArenaDefinition): EnemyBotState[] {
   const templates: {
     id: string;
     name: string;
+    characterId: CharacterId;
     archetype: EnemyArchetype;
     weaponId: WeaponId;
     secondaryWeaponId: WeaponId;
     spawnIdx: number;
     hp: number;
   }[] = [
-    { id: 'bot_1', name: 'Vanguard-1', archetype: 'assault', weaponId: 'm4a1', secondaryWeaponId: 'awp', spawnIdx: 0, hp: 100 },
-    { id: 'bot_2', name: 'Striker-2', archetype: 'rusher', weaponId: 'mp5', secondaryWeaponId: 'deagle', spawnIdx: 1, hp: 90 },
-    { id: 'bot_3', name: 'Breacher-3', archetype: 'rusher', weaponId: 'spas12', secondaryWeaponId: 'ak47', spawnIdx: 2, hp: 95 },
-    { id: 'bot_4', name: 'Overwatch-4', archetype: 'sniper', weaponId: 'awp', secondaryWeaponId: 'm4a1', spawnIdx: 7, hp: 85 },
-    { id: 'bot_5', name: 'Sentinel-5', archetype: 'assault', weaponId: 'ak47', secondaryWeaponId: 'spas12', spawnIdx: 3, hp: 105 },
-    { id: 'bot_6', name: 'Enforcer-6', archetype: 'assault', weaponId: 'm4a1', secondaryWeaponId: 'deagle', spawnIdx: 4, hp: 100 },
+    { id: 'bot_1', name: 'Vanguard-1', characterId: 'volt', archetype: 'assault', weaponId: 'm4a1', secondaryWeaponId: 'awp', spawnIdx: 0, hp: 100 },
+    { id: 'bot_2', name: 'Striker-2', characterId: 'rift', archetype: 'rusher', weaponId: 'mp5', secondaryWeaponId: 'deagle', spawnIdx: 1, hp: 90 },
+    { id: 'bot_3', name: 'Breacher-3', characterId: 'chroma', archetype: 'rusher', weaponId: 'spas12', secondaryWeaponId: 'ak47', spawnIdx: 2, hp: 95 },
+    { id: 'bot_4', name: 'Overwatch-4', characterId: 'kestrel', archetype: 'sniper', weaponId: 'awp', secondaryWeaponId: 'm4a1', spawnIdx: 7, hp: 85 },
+    { id: 'bot_5', name: 'Sentinel-5', characterId: 'chroma', archetype: 'assault', weaponId: 'ak47', secondaryWeaponId: 'spas12', spawnIdx: 3, hp: 105 },
+    { id: 'bot_6', name: 'Enforcer-6', characterId: 'volt', archetype: 'assault', weaponId: 'm4a1', secondaryWeaponId: 'deagle', spawnIdx: 4, hp: 100 },
   ];
 
   return templates.map((t, idx) => {
@@ -340,6 +342,7 @@ function createInitialEnemies(arena: ArenaDefinition): EnemyBotState[] {
     return {
       id: t.id,
       name: t.name,
+      characterId: t.characterId,
       archetype: t.archetype,
       weaponId: t.weaponId,
       secondaryWeaponId: t.secondaryWeaponId,
@@ -900,6 +903,417 @@ function findClosestWallHitWithNormal(
   }
 
   return { dist: closest, nx, ny, nz, hitSurface };
+}
+
+export interface WeaponImpactProfile {
+  weaponId: WeaponId;
+  baseDiameter: number;
+  maxGrazingStretch: number;
+  craterDepthFactor: number;
+  crackCount: number;
+  emberGlow: number;
+  sparkCount: number;
+  sparkColorHex: number;
+  ringScale: number;
+}
+
+export const WEAPON_IMPACT_PROFILES: Record<WeaponId, WeaponImpactProfile> = {
+  mp5: {
+    weaponId: 'mp5',
+    baseDiameter: 0.16,
+    maxGrazingStretch: 2.3,
+    craterDepthFactor: 0.35,
+    crackCount: 4,
+    emberGlow: 0.3,
+    sparkCount: 5,
+    sparkColorHex: 0xfde047,
+    ringScale: 1.55,
+  },
+  m4a1: {
+    weaponId: 'm4a1',
+    baseDiameter: 0.22,
+    maxGrazingStretch: 2.45,
+    craterDepthFactor: 0.54,
+    crackCount: 6,
+    emberGlow: 0.48,
+    sparkCount: 7,
+    sparkColorHex: 0xfbbf24,
+    ringScale: 2.05,
+  },
+  ak47: {
+    weaponId: 'ak47',
+    baseDiameter: 0.28,
+    maxGrazingStretch: 2.65,
+    craterDepthFactor: 0.74,
+    crackCount: 9,
+    emberGlow: 0.72,
+    sparkCount: 10,
+    sparkColorHex: 0xf97316,
+    ringScale: 2.55,
+  },
+  deagle: {
+    weaponId: 'deagle',
+    baseDiameter: 0.32,
+    maxGrazingStretch: 2.5,
+    craterDepthFactor: 0.84,
+    crackCount: 8,
+    emberGlow: 0.8,
+    sparkCount: 12,
+    sparkColorHex: 0xf59e0b,
+    ringScale: 2.9,
+  },
+  spas12: {
+    weaponId: 'spas12',
+    baseDiameter: 0.135,
+    maxGrazingStretch: 2.25,
+    craterDepthFactor: 0.44,
+    crackCount: 5,
+    emberGlow: 0.38,
+    sparkCount: 4,
+    sparkColorHex: 0xfdba74,
+    ringScale: 1.38,
+  },
+  awp: {
+    weaponId: 'awp',
+    baseDiameter: 0.42,
+    maxGrazingStretch: 2.85,
+    craterDepthFactor: 1.0,
+    crackCount: 12,
+    emberGlow: 1.0,
+    sparkCount: 16,
+    sparkColorHex: 0xea580c,
+    ringScale: 3.85,
+  },
+};
+
+export interface BallisticImpactMarkPose {
+  validSurface: boolean;
+  weaponId: WeaponId;
+  x: number;
+  y: number;
+  z: number;
+  nx: number;
+  ny: number;
+  nz: number;
+  /** Unit surface tangent pointing along the 360° projected bullet travel direction */
+  tx: number;
+  ty: number;
+  tz: number;
+  /** Unit surface bitangent orthogonal to normal and tangent */
+  bx: number;
+  by: number;
+  bz: number;
+  /** Specular/grazing 3D reflection direction for angled spark deflection */
+  reflectX: number;
+  reflectY: number;
+  reflectZ: number;
+  /** Incidence cosine |d · n| in [0.14, 1.0] (1.0 = perpendicular, <1.0 = angled/grazing) */
+  incidenceCos: number;
+  /** Grazing ratio (1 - incidenceCos) in [0, 0.86] */
+  grazingRatio: number;
+  /** Elongation multiplier along the bullet's surface tangent direction */
+  stretchFactor: number;
+  /** World-space decal width along tangent axis t */
+  scaleT: number;
+  /** World-space decal width along bitangent axis b */
+  scaleB: number;
+  /** Block ID or 'floor' where the mark is anchored */
+  surfaceId: string | null;
+}
+
+/**
+ * Computes the weapon-specific 3D gunshot mark pose, 360° incident-angle elongation
+ * basis (t, b, n), grazing spark reflection vector, and strict wall-face boundary
+ * clamping so no part of a gunshot mark ever floats in mid-air outside a wall edge.
+ */
+export function computeBallisticImpactMarkPose(
+  fromX: number,
+  fromY: number,
+  fromZ: number,
+  hitX: number,
+  hitY: number,
+  hitZ: number,
+  normalX: number,
+  normalY: number,
+  normalZ: number,
+  weaponId: WeaponId,
+  arena: ArenaDefinition
+): BallisticImpactMarkPose {
+  const profile = WEAPON_IMPACT_PROFILES[weaponId] || WEAPON_IMPACT_PROFILES.m4a1;
+
+  // 1. Incoming 3D bullet direction vector d
+  const vx = hitX - fromX;
+  const vy = hitY - fromY;
+  const vz = hitZ - fromZ;
+  const vLen = Math.hypot(vx, vy, vz);
+  const dx = vLen > 1e-6 ? vx / vLen : 0;
+  const dy = vLen > 1e-6 ? vy / vLen : 0;
+  const dz = vLen > 1e-6 ? vz / vLen : -1;
+
+  // 2. Unit surface normal n (pointing outward against incoming ray)
+  const nLen = Math.hypot(normalX, normalY, normalZ);
+  let nx = nLen > 1e-6 ? normalX / nLen : 0;
+  let ny = nLen > 1e-6 ? normalY / nLen : 1;
+  let nz = nLen > 1e-6 ? normalZ / nLen : 0;
+  if (dx * nx + dy * ny + dz * nz > 0) {
+    nx = -nx;
+    ny = -ny;
+    nz = -nz;
+  }
+
+  // 3. Incidence cosine & 360° grazing angle stretch
+  const rawDot = -(dx * nx + dy * ny + dz * nz);
+  const incidenceCos = Math.max(0.14, Math.min(1.0, Math.abs(rawDot)));
+  const grazingRatio = 1.0 - incidenceCos;
+  const stretchFactor =
+    1.0 + (profile.maxGrazingStretch - 1.0) * Math.pow(grazingRatio, 1.08);
+
+  // 4. Project bullet vector d onto the surface tangent plane: t = normalize(d - (d·n)n)
+  const dotDN = dx * nx + dy * ny + dz * nz;
+  let tx = dx - dotDN * nx;
+  let ty = dy - dotDN * ny;
+  let tz = dz - dotDN * nz;
+  const tLen = Math.hypot(tx, ty, tz);
+
+  if (tLen > 1e-4) {
+    tx /= tLen;
+    ty /= tLen;
+    tz /= tLen;
+  } else {
+    // Dead-on perpendicular shot: construct a stable tangent in the surface plane
+    const upX = Math.abs(ny) < 0.9 ? 0 : 1;
+    const upY = Math.abs(ny) < 0.9 ? 1 : 0;
+    const upZ = 0;
+    const cx = upY * nz - upZ * ny;
+    const cy = upZ * nx - upX * nz;
+    const cz = upX * ny - upY * nx;
+    const cLen = Math.hypot(cx, cy, cz) || 1;
+    tx = cx / cLen;
+    ty = cy / cLen;
+    tz = cz / cLen;
+  }
+
+  // Bitangent b = normalize(n × t)
+  let bx = ny * tz - nz * ty;
+  let by = nz * tx - nx * tz;
+  let bz = nx * ty - ny * tx;
+  const bLen = Math.hypot(bx, by, bz) || 1;
+  bx /= bLen;
+  by /= bLen;
+  bz /= bLen;
+
+  // Grazing reflection vector r = d - 2(d·n)n
+  let reflectX = dx - 2 * dotDN * nx;
+  let reflectY = dy - 2 * dotDN * ny;
+  let reflectZ = dz - 2 * dotDN * nz;
+  const rLen = Math.hypot(reflectX, reflectY, reflectZ) || 1;
+  reflectX /= rLen;
+  reflectY /= rLen;
+  reflectZ /= rLen;
+
+  let scaleT = profile.baseDiameter * stretchFactor;
+  let scaleB = profile.baseDiameter * (1.0 - grazingRatio * 0.12);
+
+  // Shift decal center slightly forward along +t on grazing shots so the entry hole sits at impact
+  // and the directional carbon burn streak extends forward along the bullet path
+  const streakShift = (scaleT - scaleB) * 0.18;
+  let posX = hitX + tx * streakShift;
+  let posY = hitY + ty * streakShift;
+  let posZ = hitZ + tz * streakShift;
+
+  // 5. Strict Surface Verification & Wall-Edge Clamping (Never allow floating in air)
+  const edgePad = 0.015;
+
+  // Case A: Arena Floor (y ≈ 0, ny > 0.75)
+  if (ny > 0.75 && Math.abs(hitY) <= 0.12) {
+    const extX = 0.5 * (Math.abs(tx) * scaleT + Math.abs(bx) * scaleB);
+    const extZ = 0.5 * (Math.abs(tz) * scaleT + Math.abs(bz) * scaleB);
+    posX = Math.max(
+      arena.bounds.minX + extX + edgePad,
+      Math.min(arena.bounds.maxX - extX - edgePad, posX)
+    );
+    posZ = Math.max(
+      arena.bounds.minZ + extZ + edgePad,
+      Math.min(arena.bounds.maxZ - extZ - edgePad, posZ)
+    );
+    posY = 0.012;
+    return {
+      validSurface: true,
+      weaponId,
+      x: posX,
+      y: posY,
+      z: posZ,
+      nx: 0,
+      ny: 1,
+      nz: 0,
+      tx,
+      ty: 0,
+      tz,
+      bx,
+      by: 0,
+      bz,
+      reflectX,
+      reflectY,
+      reflectZ,
+      incidenceCos,
+      grazingRatio,
+      stretchFactor,
+      scaleT,
+      scaleB,
+      surfaceId: 'floor',
+    };
+  }
+
+  // Case B: Solid Architectural Block Face (Wall, Building, Container, Cover, Tower)
+  const faceTol = 0.18;
+  let matchedBlock: MapBoxBlock | null = null;
+  let bestFaceDist = Infinity;
+
+  for (const b of arena.blocks) {
+    const hw = b.width * 0.5;
+    const hd = b.depth * 0.5;
+    const minX = b.x - hw;
+    const maxX = b.x + hw;
+    const minZ = b.z - hd;
+    const maxZ = b.z + hd;
+
+    if (
+      hitX >= minX - faceTol &&
+      hitX <= maxX + faceTol &&
+      hitZ >= minZ - faceTol &&
+      hitZ <= maxZ + faceTol &&
+      hitY >= -faceTol &&
+      hitY <= b.height + faceTol
+    ) {
+      let faceDist = Infinity;
+      if (Math.abs(nx) > 0.7) {
+        const targetX = nx > 0 ? maxX : minX;
+        faceDist = Math.abs(hitX - targetX);
+      } else if (Math.abs(nz) > 0.7) {
+        const targetZ = nz > 0 ? maxZ : minZ;
+        faceDist = Math.abs(hitZ - targetZ);
+      } else if (ny > 0.7) {
+        faceDist = Math.abs(hitY - b.height);
+      }
+      if (faceDist < bestFaceDist && faceDist <= faceTol) {
+        bestFaceDist = faceDist;
+        matchedBlock = b;
+      }
+    }
+  }
+
+  if (!matchedBlock) {
+    // Reject hits that are not on a verified solid wall/floor face (e.g. narrow round pillars, breakable props, or sky)
+    return {
+      validSurface: false,
+      weaponId,
+      x: hitX,
+      y: hitY,
+      z: hitZ,
+      nx,
+      ny,
+      nz,
+      tx,
+      ty,
+      tz,
+      bx,
+      by,
+      bz,
+      reflectX,
+      reflectY,
+      reflectZ,
+      incidenceCos,
+      grazingRatio,
+      stretchFactor,
+      scaleT,
+      scaleB,
+      surfaceId: null,
+    };
+  }
+
+  const hw = matchedBlock.width * 0.5;
+  const hd = matchedBlock.depth * 0.5;
+  const minX = matchedBlock.x - hw;
+  const maxX = matchedBlock.x + hw;
+  const minZ = matchedBlock.z - hd;
+  const maxZ = matchedBlock.z + hd;
+  const maxY = matchedBlock.height;
+
+  if (Math.abs(nx) > 0.7) {
+    // ±X Wall Face: spans Z in [minZ, maxZ] and Y in [0, maxY]
+    let extZ = 0.5 * (Math.abs(tz) * scaleT + Math.abs(bz) * scaleB);
+    let extY = 0.5 * (Math.abs(ty) * scaleT + Math.abs(by) * scaleB);
+    const maxAllowedZ = Math.max(0.04, matchedBlock.depth * 0.45);
+    const maxAllowedY = Math.max(0.04, maxY * 0.45);
+    if (extZ > maxAllowedZ || extY > maxAllowedY) {
+      const shrink = Math.min(maxAllowedZ / Math.max(1e-4, extZ), maxAllowedY / Math.max(1e-4, extY));
+      scaleT *= shrink;
+      scaleB *= shrink;
+      extZ *= shrink;
+      extY *= shrink;
+    }
+    posZ = Math.max(minZ + extZ + edgePad, Math.min(maxZ - extZ - edgePad, posZ));
+    posY = Math.max(extY + edgePad, Math.min(maxY - extY - edgePad, posY));
+    posX = (nx > 0 ? maxX : minX) + (nx > 0 ? 0.008 : -0.008);
+  } else if (Math.abs(nz) > 0.7) {
+    // ±Z Wall Face: spans X in [minX, maxX] and Y in [0, maxY]
+    let extX = 0.5 * (Math.abs(tx) * scaleT + Math.abs(bx) * scaleB);
+    let extY = 0.5 * (Math.abs(ty) * scaleT + Math.abs(by) * scaleB);
+    const maxAllowedX = Math.max(0.04, matchedBlock.width * 0.45);
+    const maxAllowedY = Math.max(0.04, maxY * 0.45);
+    if (extX > maxAllowedX || extY > maxAllowedY) {
+      const shrink = Math.min(maxAllowedX / Math.max(1e-4, extX), maxAllowedY / Math.max(1e-4, extY));
+      scaleT *= shrink;
+      scaleB *= shrink;
+      extX *= shrink;
+      extY *= shrink;
+    }
+    posX = Math.max(minX + extX + edgePad, Math.min(maxX - extX - edgePad, posX));
+    posY = Math.max(extY + edgePad, Math.min(maxY - extY - edgePad, posY));
+    posZ = (nz > 0 ? maxZ : minZ) + (nz > 0 ? 0.008 : -0.008);
+  } else {
+    // +Y Top Face: spans X in [minX, maxX] and Z in [minZ, maxZ]
+    let extX = 0.5 * (Math.abs(tx) * scaleT + Math.abs(bx) * scaleB);
+    let extZ = 0.5 * (Math.abs(tz) * scaleT + Math.abs(bz) * scaleB);
+    const maxAllowedX = Math.max(0.04, matchedBlock.width * 0.45);
+    const maxAllowedZ = Math.max(0.04, matchedBlock.depth * 0.45);
+    if (extX > maxAllowedX || extZ > maxAllowedZ) {
+      const shrink = Math.min(maxAllowedX / Math.max(1e-4, extX), maxAllowedZ / Math.max(1e-4, extZ));
+      scaleT *= shrink;
+      scaleB *= shrink;
+      extX *= shrink;
+      extZ *= shrink;
+    }
+    posX = Math.max(minX + extX + edgePad, Math.min(maxX - extX - edgePad, posX));
+    posZ = Math.max(minZ + extZ + edgePad, Math.min(maxZ - extZ - edgePad, posZ));
+    posY = maxY + 0.008;
+  }
+
+  return {
+    validSurface: true,
+    weaponId,
+    x: posX,
+    y: posY,
+    z: posZ,
+    nx,
+    ny,
+    nz,
+    tx,
+    ty,
+    tz,
+    bx,
+    by,
+    bz,
+    reflectX,
+    reflectY,
+    reflectZ,
+    incidenceCos,
+    grazingRatio,
+    stretchFactor,
+    scaleT,
+    scaleB,
+    surfaceId: matchedBlock.id,
+  };
 }
 
 /**
@@ -1846,6 +2260,7 @@ export function stepSimulation(
   if (!wasGroundedBeforeStep && player.isGrounded) {
     player.footstepCount += 1;
     player.footstepDistance = 0;
+    player.walkBobPhase = player.footstepCount * Math.PI;
     events.push({
       type: 'footstep',
       actor: 'p1',
@@ -1860,13 +2275,13 @@ export function stepSimulation(
 
   const horizSpeed = Math.hypot(player.vx, player.vz);
   if (player.isGrounded && horizSpeed > 0.4 && !player.isSliding) {
-    player.walkBobPhase += horizSpeed * clampedDt * 1.75;
-    player.footstepDistance += horizSpeed * clampedDt;
     const strideLen = player.isSprinting
-      ? 2.45
+      ? 2.25
       : player.isCrouching || player.isAds
-      ? 1.85
-      : 2.15;
+      ? 1.75
+      : 1.98;
+    const stepAdvance = horizSpeed * clampedDt;
+    player.footstepDistance += stepAdvance;
     if (player.footstepDistance >= strideLen) {
       player.footstepDistance -= strideLen;
       player.footstepCount += 1;
@@ -1885,9 +2300,14 @@ export function stepSimulation(
         z: player.z,
       });
     }
+    // Phase-lock walkBobPhase directly to footstepCount + fractional stride progress (1 step = PI radians)
+    player.walkBobPhase =
+      (player.footstepCount + player.footstepDistance / strideLen) * Math.PI;
   } else if (horizSpeed <= 0.4) {
     // Prime footstep distance when stationary so the first step triggers promptly when starting movement
-    player.footstepDistance = Math.max(player.footstepDistance, 1.55);
+    player.footstepDistance = Math.max(player.footstepDistance, 1.45);
+    player.walkBobPhase =
+      (player.footstepCount + Math.min(0.85, player.footstepDistance / 1.98)) * Math.PI;
   }
 
   // 5. Firing Weapon

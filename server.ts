@@ -78,6 +78,7 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
+  app.use('/footsteps', express.static(path.join(__dirname, 'footsteps')));
 
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -100,7 +101,16 @@ async function startServer() {
   });
 
   // WebSocket Server for real-time multiplayer combat & lobby management
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
+  const wss = new WebSocketServer({ noServer: true });
+
+  httpServer.on('upgrade', (request, socket, head) => {
+    const pathname = request.url ? request.url.split('?')[0] : '';
+    if (pathname === '/ws') {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit('connection', ws, request);
+      });
+    }
+  });
 
   wss.on('connection', (ws: WebSocket) => {
     let currentRoomCode: string | null = null;
@@ -368,7 +378,10 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

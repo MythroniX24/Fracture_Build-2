@@ -1,5 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  FOOTSTEP_SOUND_MANIFEST,
+  type FootstepCategory,
+  soundEngine,
+} from '../audio/soundEngine.ts';
 import {
   ARENA_REGISTRY,
   DEATHMATCH_DURATION_SECONDS,
@@ -13,12 +20,47 @@ import {
   WEAPON_REGISTRY,
 } from './config.ts';
 import {
+  BODY_REGION_ORDER,
+  BODY_REGION_SPECS,
+  CHARACTER_ORDER,
+  CHARACTER_ROSTER,
+  PARTY_SIZE_LIMITS,
+  canAddPartyMember,
+  enforcePartySizeLimit,
+  findBodyRegionAtUV,
+  getSymmetryMirroredUV,
+  isDesignCompatibleWithCharacter,
+  mapLocalUvToRegionAtlas,
+} from './characterSystem.ts';
+import {
+  DEFAULT_BRUSH_SETTINGS,
+  PAINT_ATLAS_SIZE,
+  SORTED_COLOR_PALETTES,
+  applyBrushDabToLayer,
+  applyBrushStrokeSegment,
+  applyBucketFillToLayer,
+  applyGeometricShapeToLayer,
+  applyGradientFillToLayer,
+  buildEnemyFactionPaintBuffer,
+  compositePaintLayersToBuffer,
+  createEmptyLayer,
+  decodeRgbaBufferRLE,
+  encodeRgbaBufferRLE,
+  generateShadingTonesForHex,
+  hexToRgb,
+  paintStorage,
+  sampleColorAtUV,
+} from './paintSystem.ts';
+import {
   PLAYER_COLLISION_RADIUS,
   type PlayerInputSnapshot,
+  WEAPON_IMPACT_PROFILES,
+  computeBallisticImpactMarkPose,
   computeWeaponWallObstruction,
   createSimulationState,
   getMatchLeaderboard,
   getScopeSensitivityMultiplier,
+  getSurfaceMaterialAt,
   handleWeaponSlotClick,
   hasClearLineOfSight,
   resolveEntityCollisions,
@@ -500,9 +542,536 @@ describe('FRACTURE Tactical First-Person Shooter Rules & Arsenal', () => {
       `Weapon wallObstruction (${sim.player.wallObstruction}) must engage when facing a wall at close contact`
     );
 
-    // 3. Configure low default firing sensitivity separate from camera sensitivity
-    assert.equal(DEFAULT_SETTINGS.fireSensitivity, 0.45);
-    assert.ok(DEFAULT_SETTINGS.fireSensitivity < DEFAULT_SETTINGS.touchSensitivity);
+    // 3. Configure responsive 100% default firing sensitivity separate from camera sensitivity
+    assert.equal(DEFAULT_SETTINGS.fireSensitivity, 1.0);
+  });
+
+  it('loads all uploaded /footsteps/*.ogg audio files without missing assets', () => {
+    assert.equal(FOOTSTEP_SOUND_MANIFEST.concrete.length, 9);
+    assert.equal(FOOTSTEP_SOUND_MANIFEST.concrete[0], '/footsteps/boots/0.ogg');
+    assert.equal(FOOTSTEP_SOUND_MANIFEST.metal.length, 8);
+    assert.equal(FOOTSTEP_SOUND_MANIFEST.metal[0], '/footsteps/metal/0.ogg');
+
+    const categories = Object.keys(FOOTSTEP_SOUND_MANIFEST) as FootstepCategory[];
+    assert.equal(categories.length, 10);
+
+    for (const cat of categories) {
+      const urls = FOOTSTEP_SOUND_MANIFEST[cat];
+      assert.ok(urls.length >= 1, `Category ${cat} must have at least 1 OGG file`);
+      for (const relUrl of urls) {
+        const diskPath = path.join(process.cwd(), relUrl);
+        assert.ok(fs.existsSync(diskPath), `Uploaded footstep file must exist at ${diskPath}`);
+        const stat = fs.statSync(diskPath);
+        assert.ok(stat.size > 100, `Uploaded footstep file ${diskPath} must not be empty`);
+      }
+
+      // Verify Fisher-Yates randomized shuffle bag uses EVERY single variation (0..N-1) without back-to-back repeats
+      if (urls.length > 1) {
+        const firstBag = new Set<number>();
+        let prevIdx = -1;
+        for (let step = 0; step < urls.length; step++) {
+          const idx = soundEngine.nextShuffledSampleIndex(cat);
+          assert.ok(idx >= 0 && idx < urls.length, `Sample index ${idx} out of bounds for ${cat}`);
+          assert.notEqual(idx, prevIdx, `Category ${cat} must not repeat sample ${idx} back-to-back`);
+          firstBag.add(idx);
+          prevIdx = idx;
+        }
+        assert.equal(
+          firstBag.size,
+          urls.length,
+          `Category ${cat} must play all ${urls.length} uploaded OGG files in a full cycle`
+        );
+
+        // Next cycle's first sample must also not repeat the last sample of the previous cycle
+        const nextCycleFirst = soundEngine.nextShuffledSampleIndex(cat);
+        assert.notEqual(
+          nextCycleFirst,
+          prevIdx,
+          `Category ${cat} must not repeat sample across shuffle bag boundary`
+        );
+      }
+    }
+
+    // Verify all 7 arena floor surface materials are active in the compound zones
+    assert.equal(getSurfaceMaterialAt(0, 20), 'concrete');
+    assert.equal(getSurfaceMaterialAt(0, 13), 'metal');
+    assert.equal(getSurfaceMaterialAt(-20, 0), 'tile');
+    assert.equal(getSurfaceMaterialAt(-40, 0), 'gravel');
+    assert.equal(getSurfaceMaterialAt(0, -18), 'wood');
+    assert.equal(getSurfaceMaterialAt(0, -58), 'grass');
+    assert.equal(getSurfaceMaterialAt(-36, 30), 'water');
+
+    // Verify walkBobPhase is phase-locked 1:1 with footstepCount * Math.PI when footsteps fire
+    const sim = createSimulationState();
+    sim.player.x = 0;
+    sim.player.z = 20;
+    let verifiedSyncSteps = 0;
+    for (let i = 0; i < 40; i++) {
+      const evts = stepSimulation(
+        sim,
+        0.02,
+        createNeutralInput({ moveX: 1, moveZ: 0, sprintHeld: true }),
+        'normal',
+        true
+      );
+      if (evts.some((e) => e.type === 'footstep')) {
+        verifiedSyncSteps += 1;
+        const expectedMinPhase = sim.player.footstepCount * Math.PI;
+        assert.ok(
+          sim.player.walkBobPhase >= expectedMinPhase &&
+            sim.player.walkBobPhase < expectedMinPhase + Math.PI * 0.35,
+          `walkBobPhase (${sim.player.walkBobPhase}) must align with footstepCount * PI (${expectedMinPhase}) on step impact`
+        );
+      }
+    }
+    assert.ok(verifiedSyncSteps >= 2, 'Must verify at least 2 synchronized footstep phases');
+  });
+
+  it('scales gunshot marks uniquely across all 6 weapons, elongates 360° side-angle grazing hits, and clamps strictly inside wall edges', () => {
+    const arena = ARENA_REGISTRY.foundry_arena;
+
+    // 1. Every weapon has a distinct ballistic impact profile scaled by weapon power
+    const mp5P = WEAPON_IMPACT_PROFILES.mp5;
+    const m4P = WEAPON_IMPACT_PROFILES.m4a1;
+    const akP = WEAPON_IMPACT_PROFILES.ak47;
+    const deagleP = WEAPON_IMPACT_PROFILES.deagle;
+    const spasP = WEAPON_IMPACT_PROFILES.spas12;
+    const awpP = WEAPON_IMPACT_PROFILES.awp;
+
+    assert.ok(mp5P.baseDiameter < m4P.baseDiameter, 'MP5 9mm crater must be smaller than M4A1 5.56mm');
+    assert.ok(m4P.baseDiameter < akP.baseDiameter, 'M4A1 5.56mm crater must be smaller than AK-47 7.62mm');
+    assert.ok(akP.baseDiameter < deagleP.baseDiameter, 'AK-47 crater must be smaller than Deagle .50 AE');
+    assert.ok(deagleP.baseDiameter < awpP.baseDiameter, 'Deagle crater must be smaller than AWP .338 Lapua');
+    assert.ok(spasP.craterDepthFactor > mp5P.craterDepthFactor, 'SPAS-12 buckshot gouge depth must exceed MP5');
+    assert.ok(awpP.crackCount > akP.crackCount && akP.crackCount > m4P.crackCount && m4P.crackCount > mp5P.crackCount);
+
+    // 2. Hit South face of cov_c2 (x: 0, z: 6.5, width: 6.5, height: 1.3, depth: 1.2 -> South face at z = 7.1, normal = (0, 0, 1))
+    // Straight-on perpendicular shot (0 degrees incidence) vs sharp side-angle shot (~75 degrees incidence)
+    const hitZ = 6.5 + 1.2 * 0.5; // 7.1
+    const perpPoseM4 = computeBallisticImpactMarkPose(
+      0,
+      0.65,
+      14,
+      0,
+      0.65,
+      hitZ,
+      0,
+      0,
+      1,
+      'm4a1',
+      arena
+    );
+    const perpPoseAwp = computeBallisticImpactMarkPose(
+      0,
+      0.65,
+      14,
+      0,
+      0.65,
+      hitZ,
+      0,
+      0,
+      1,
+      'awp',
+      arena
+    );
+    assert.equal(perpPoseM4.validSurface, true);
+    assert.equal(perpPoseAwp.validSurface, true);
+    assert.ok(perpPoseAwp.scaleB > perpPoseM4.scaleB, 'AWP impact mark width must exceed M4A1 on same wall');
+    assert.ok(
+      Math.abs(perpPoseM4.scaleT - perpPoseM4.scaleB) < 0.02,
+      'Straight-on shot should produce a near-circular impact crater'
+    );
+
+    // Side-angle (tircha) grazing shot from far left-front (-18, 1.1, 8.5) hitting (0, 0.65, 7.1)
+    const sidePoseAk = computeBallisticImpactMarkPose(
+      -18,
+      1.1,
+      8.5,
+      0,
+      0.65,
+      hitZ,
+      0,
+      0,
+      1,
+      'ak47',
+      arena
+    );
+    assert.equal(sidePoseAk.validSurface, true);
+    assert.ok(
+      sidePoseAk.scaleT > sidePoseAk.scaleB * 1.45,
+      `Side-angle grazing shot must stretch into an oblique oval gouge (scaleT=${sidePoseAk.scaleT} vs scaleB=${sidePoseAk.scaleB})`
+    );
+    // Tangent vector must point along the bullet's horizontal-downward sweep (+X, -Y) across the wall face
+    assert.ok(sidePoseAk.tx > 0.85, 'Tangent X must align with left-to-right bullet travel');
+    assert.ok(sidePoseAk.reflectX > 0.7, 'Ricochet sparks must deflect forward along grazing direction');
+
+    // 3. Strict wall-edge clamping: hit right at the top-right corner of cov_c2 (maxX = 3.25, maxY = 1.3)
+    const cornerPoseAwp = computeBallisticImpactMarkPose(
+      -10,
+      1.6,
+      8.8,
+      3.24,
+      1.29,
+      hitZ,
+      0,
+      0,
+      1,
+      'awp',
+      arena
+    );
+    assert.equal(cornerPoseAwp.validSurface, true);
+    const halfSpanX =
+      0.5 *
+      (Math.abs(cornerPoseAwp.tx) * cornerPoseAwp.scaleT +
+        Math.abs(cornerPoseAwp.bx) * cornerPoseAwp.scaleB);
+    const halfSpanY =
+      0.5 *
+      (Math.abs(cornerPoseAwp.ty) * cornerPoseAwp.scaleT +
+        Math.abs(cornerPoseAwp.by) * cornerPoseAwp.scaleB);
+
+    assert.ok(
+      cornerPoseAwp.x + halfSpanX <= 3.25 + 0.001,
+      `Decal right edge (${cornerPoseAwp.x + halfSpanX}) must never poke out into air past wall maxX (3.25)`
+    );
+    assert.ok(
+      cornerPoseAwp.y + halfSpanY <= 1.3 + 0.001,
+      `Decal top edge (${cornerPoseAwp.y + halfSpanY}) must never poke out into air past wall height (1.3)`
+    );
+
+    // 4. Mid-air coordinate far from any wall or floor must be rejected (validSurface = false)
+    const airPose = computeBallisticImpactMarkPose(
+      0,
+      1.68,
+      20,
+      0,
+      4.5,
+      15,
+      0,
+      0,
+      1,
+      'ak47',
+      arena
+    );
+    assert.equal(airPose.validSurface, false, 'Mid-air point must never spawn a floating gunshot decal');
+  });
+
+  it('defines pure-white humanoid roster, 15 non-overlapping UV islands, and bilateral symmetry', () => {
+    assert.equal(CHARACTER_ORDER.length, 4);
+    for (const cid of CHARACTER_ORDER) {
+      const def = CHARACTER_ROSTER[cid];
+      assert.equal(def.baseWhiteHex, 0xffffff, `Character ${cid} must default to pure white (#ffffff)`);
+      assert.equal(def.defaultEquipment.length, 0, `Character ${cid} must start with no bulky default equipment`);
+      assert.equal(def.uvLayoutId, 'chameleon_humanoid_v1');
+      assert.equal(def.supportedRegions.length, 15);
+      assert.equal(isDesignCompatibleWithCharacter('chameleon_humanoid_v1', cid), true);
+    }
+
+    assert.equal(BODY_REGION_ORDER.length, 15);
+    for (const reg of BODY_REGION_ORDER) {
+      const mapped = mapLocalUvToRegionAtlas(0.5, 0.5, reg);
+      const detected = findBodyRegionAtUV(mapped.u, mapped.v);
+      assert.equal(detected, reg, `Center of ${reg} UV island must resolve back to ${reg}`);
+    }
+
+    // Verify bilateral symmetry maps leftUpperArm <-> rightUpperArm and mirrors within chest
+    const leftArmMid = mapLocalUvToRegionAtlas(0.25, 0.5, 'leftUpperArm');
+    const mirroredArm = getSymmetryMirroredUV(leftArmMid.u, leftArmMid.v, 'leftUpperArm');
+    assert.equal(mirroredArm.regionId, 'rightUpperArm');
+    assert.equal(findBodyRegionAtUV(mirroredArm.u, mirroredArm.v), 'rightUpperArm');
+
+    const chestLeft = mapLocalUvToRegionAtlas(0.2, 0.5, 'chest');
+    const chestMirrored = getSymmetryMirroredUV(chestLeft.u, chestLeft.v, 'chest');
+    assert.equal(chestMirrored.regionId, 'chest');
+    assert.ok(chestMirrored.u > chestLeft.u, 'Chest symmetry must mirror across horizontal U midpoint');
+  });
+
+  it('paints brush strokes, bucket fills, and shapes onto UV layers while erasing cleanly back to pure white (#ffffff)', () => {
+    const layer = createEmptyLayer('test_layer', 'Base Layer');
+    const chestCenter = mapLocalUvToRegionAtlas(0.5, 0.5, 'chest');
+
+    // 1. Unpainted composite must be 100% pure white (#ffffff, alpha 255)
+    const blankComposite = compositePaintLayersToBuffer([layer]);
+    assert.equal(blankComposite[0], 255);
+    assert.equal(blankComposite[1], 255);
+    assert.equal(blankComposite[2], 255);
+    assert.equal(blankComposite[3], 255);
+    assert.equal(sampleColorAtUV([layer], chestCenter.u, chestCenter.v), '#ffffff');
+
+    // 2. Paint a crimson brush stroke on the chest with bilateral symmetry enabled
+    applyBrushStrokeSegment(
+      layer,
+      chestCenter.u,
+      chestCenter.v,
+      chestCenter.u,
+      chestCenter.v,
+      {
+        ...DEFAULT_BRUSH_SETTINGS,
+        tool: 'brush',
+        colorHex: '#ef4444',
+        size: 16,
+        opacity: 1.0,
+        hardness: 1.0,
+        symmetry: true,
+      },
+      'chest'
+    );
+    assert.equal(sampleColorAtUV([layer], chestCenter.u, chestCenter.v), '#ef4444');
+
+    // 3. Erase over the painted chest region and verify it restores pure white (#ffffff) with alpha 255 (never creating holes)
+    applyBrushStrokeSegment(
+      layer,
+      chestCenter.u,
+      chestCenter.v,
+      chestCenter.u,
+      chestCenter.v,
+      {
+        ...DEFAULT_BRUSH_SETTINGS,
+        tool: 'eraser',
+        size: 24,
+        opacity: 1.0,
+        hardness: 1.0,
+      },
+      'chest'
+    );
+    assert.equal(sampleColorAtUV([layer], chestCenter.u, chestCenter.v), '#ffffff');
+    const erasedComposite = compositePaintLayersToBuffer([layer]);
+    const px = Math.floor(chestCenter.u * PAINT_ATLAS_SIZE);
+    const py = Math.floor((1 - chestCenter.v) * PAINT_ATLAS_SIZE);
+    const idx = (py * PAINT_ATLAS_SIZE + px) * 4;
+    assert.equal(erasedComposite[idx], 255);
+    assert.equal(erasedComposite[idx + 1], 255);
+    assert.equal(erasedComposite[idx + 2], 255);
+    assert.equal(erasedComposite[idx + 3], 255, 'Erasing must never reduce composite alpha below 255');
+
+    // 4. Bucket fill leftForearm with symmetry -> fills both leftForearm and rightForearm without bleeding onto head
+    const leftForearmUv = mapLocalUvToRegionAtlas(0.5, 0.5, 'leftForearm');
+    const rightForearmUv = mapLocalUvToRegionAtlas(0.5, 0.5, 'rightForearm');
+    const headUv = mapLocalUvToRegionAtlas(0.5, 0.5, 'head');
+    applyBucketFillToLayer(
+      layer,
+      leftForearmUv.u,
+      leftForearmUv.v,
+      {
+        ...DEFAULT_BRUSH_SETTINGS,
+        tool: 'bucket',
+        colorHex: '#3b82f6',
+        opacity: 1.0,
+        symmetry: true,
+      },
+      'leftForearm'
+    );
+    assert.equal(sampleColorAtUV([layer], leftForearmUv.u, leftForearmUv.v), '#3b82f6');
+    assert.equal(sampleColorAtUV([layer], rightForearmUv.u, rightForearmUv.v), '#3b82f6');
+    assert.equal(sampleColorAtUV([layer], headUv.u, headUv.v), '#ffffff');
+
+    // 5. Geometric shape stamp on head
+    applyGeometricShapeToLayer(
+      layer,
+      headUv.u,
+      headUv.v,
+      'rect',
+      {
+        ...DEFAULT_BRUSH_SETTINGS,
+        colorHex: '#22c55e',
+        size: 16,
+        opacity: 1.0,
+      },
+      'head'
+    );
+    assert.equal(sampleColorAtUV([layer], headUv.u, headUv.v), '#22c55e');
+  });
+
+  it('compresses RGBA paint buffers losslessly via RLE and saves, loads, equips, duplicates, and deletes designs', () => {
+    const layer = createEmptyLayer('l1', 'Layer 1');
+    const backUv = mapLocalUvToRegionAtlas(0.5, 0.5, 'back');
+    applyBucketFillToLayer(
+      layer,
+      backUv.u,
+      backUv.v,
+      {
+        ...DEFAULT_BRUSH_SETTINGS,
+        colorHex: '#f97316',
+        opacity: 1.0,
+      },
+      'back'
+    );
+
+    const rle = encodeRgbaBufferRLE(layer.data);
+    assert.ok(rle.length > 0 && rle.length < 4000, 'RLE string must be compact');
+    const decoded = decodeRgbaBufferRLE(rle, layer.data.length);
+    assert.equal(decoded.length, layer.data.length);
+    const reconstructedLayer = { ...layer, data: decoded };
+    assert.equal(sampleColorAtUV([reconstructedLayer], backUv.u, backUv.v), '#f97316');
+
+    // Save new custom design in paintStorage without overwriting starter samples
+    const beforeCount = paintStorage.getDesigns().length;
+    const saveRes = paintStorage.saveDesign({
+      name: 'Unit Test Orange Back',
+      characterId: 'volt',
+      layers: [layer],
+    });
+    assert.equal(saveRes.ok, true);
+    assert.ok(saveRes.design);
+    const savedId = saveRes.design.id;
+    assert.equal(paintStorage.getDesigns().length, beforeCount + 1);
+
+    // Equip design and verify compatibility across characters
+    assert.equal(paintStorage.equipDesign('volt', savedId), true);
+    assert.equal(paintStorage.getEquippedDesignId('volt'), savedId);
+    assert.equal(paintStorage.equipDesign('kestrel', savedId), true);
+    assert.equal(paintStorage.getEquippedDesignId('kestrel'), savedId);
+
+    // Duplicate and rename
+    const dupRes = paintStorage.duplicateDesign(savedId);
+    assert.equal(dupRes.ok, true);
+    assert.ok(dupRes.design);
+    assert.equal(paintStorage.renameDesign(dupRes.design.id, 'Renamed Copy'), true);
+    assert.equal(paintStorage.getDesignById(dupRes.design.id)?.name, 'Renamed Copy');
+
+    // Delete both test designs and verify equipped state clears cleanly
+    assert.equal(paintStorage.deleteDesign(dupRes.design.id), true);
+    assert.equal(paintStorage.deleteDesign(savedId), true);
+    assert.equal(paintStorage.getEquippedDesignId('volt'), null);
+  });
+
+  it('enforces Solo (1), Duo (2), and Squad (4) party size limits accurately', () => {
+    assert.equal(PARTY_SIZE_LIMITS.solo, 1);
+    assert.equal(PARTY_SIZE_LIMITS.duo, 2);
+    assert.equal(PARTY_SIZE_LIMITS.squad, 4);
+
+    assert.equal(canAddPartyMember(1, 'solo'), false);
+    assert.equal(canAddPartyMember(1, 'duo'), true);
+    assert.equal(canAddPartyMember(2, 'duo'), false);
+    assert.equal(canAddPartyMember(3, 'squad'), true);
+    assert.equal(canAddPartyMember(4, 'squad'), false);
+
+    const fourMembers = ['p1', 'p2', 'p3', 'p4'];
+    assert.deepEqual(enforcePartySizeLimit(fourMembers, 'squad'), ['p1', 'p2', 'p3', 'p4']);
+    assert.deepEqual(enforcePartySizeLimit(fourMembers, 'duo'), ['p1', 'p2']);
+    assert.deepEqual(enforcePartySizeLimit(fourMembers, 'solo'), ['p1']);
+  });
+
+  it('provides sorted color palettes, 5-step shading tones, and 3D shading/blending brushes', () => {
+    assert.equal(SORTED_COLOR_PALETTES.length, 4);
+    assert.deepEqual(
+      SORTED_COLOR_PALETTES.map((g) => g.id),
+      ['vibrant', 'tactical', 'shading', 'accents']
+    );
+
+    const tones = generateShadingTonesForHex('#1877f2');
+    assert.equal(tones.length, 5);
+    const deepRgb = hexToRgb(tones[0].hex);
+    const baseRgb = hexToRgb(tones[2].hex);
+    const specRgb = hexToRgb(tones[4].hex);
+    assert.ok(
+      deepRgb.r + deepRgb.g + deepRgb.b < baseRgb.r + baseRgb.g + baseRgb.b,
+      'deep_shadow must be darker than base tone'
+    );
+    assert.ok(
+      specRgb.r + specRgb.g + specRgb.b > baseRgb.r + baseRgb.g + baseRgb.b,
+      'specular highlight must be brighter than base tone'
+    );
+
+    // Test 3D Gradient Fill, Burn Shading, Dodge Highlight & Smooth Blend on chest region
+    const layer = createEmptyLayer('shade_test', 'Shading Test');
+    const chestMid = mapLocalUvToRegionAtlas(0.5, 0.5, 'chest');
+    applyGradientFillToLayer(
+      layer,
+      chestMid.u,
+      chestMid.v,
+      { ...DEFAULT_BRUSH_SETTINGS, tool: 'gradient_fill', colorHex: '#ef4444', opacity: 1.0 },
+      'chest'
+    );
+    const beforeShadeHex = sampleColorAtUV([layer], chestMid.u, chestMid.v);
+    const beforeRgb = hexToRgb(beforeShadeHex);
+
+    // Apply shade_burn to darken the contour
+    applyBrushDabToLayer(
+      layer,
+      chestMid.u,
+      chestMid.v,
+      { ...DEFAULT_BRUSH_SETTINGS, tool: 'shade_burn', colorHex: '#0f172a', size: 16, opacity: 0.9 },
+      'chest'
+    );
+    const afterBurnRgb = hexToRgb(sampleColorAtUV([layer], chestMid.u, chestMid.v));
+    assert.ok(
+      afterBurnRgb.r < beforeRgb.r,
+      'shade_burn brush must darken existing surface color for 3D shading'
+    );
+
+    // Apply highlight_dodge to brighten the surface
+    applyBrushDabToLayer(
+      layer,
+      chestMid.u,
+      chestMid.v,
+      { ...DEFAULT_BRUSH_SETTINGS, tool: 'highlight_dodge', colorHex: '#ffffff', size: 16, opacity: 0.95 },
+      'chest'
+    );
+    const afterDodgeRgb = hexToRgb(sampleColorAtUV([layer], chestMid.u, chestMid.v));
+    assert.ok(
+      afterDodgeRgb.r > afterBurnRgb.r,
+      'highlight_dodge brush must brighten shaded surface'
+    );
+
+    // Apply soft_blend without throwing or corrupting alpha
+    applyBrushDabToLayer(
+      layer,
+      chestMid.u,
+      chestMid.v,
+      { ...DEFAULT_BRUSH_SETTINGS, tool: 'soft_blend', size: 14, opacity: 0.8 },
+      'chest'
+    );
+    const blendedHex = sampleColorAtUV([layer], chestMid.u, chestMid.v);
+    assert.match(blendedHex, /^#[0-9a-f]{6}$/i);
+  });
+
+  it('assigns valid characterIds and painted faction skins to all in-game enemy bots with zero copyrighted strings', () => {
+    const sim = createSimulationState('volt', 'rift', 'foundry_arena');
+    assert.ok(sim.enemies.length >= 6);
+    for (let i = 0; i < sim.enemies.length; i++) {
+      const bot = sim.enemies[i];
+      assert.ok(
+        CHARACTER_ORDER.includes(bot.characterId),
+        `Enemy bot ${bot.id} must use a valid characterId, got ${bot.characterId}`
+      );
+    }
+
+    const enemyPaintBuf = buildEnemyFactionPaintBuffer('rift', 'flanker', 1);
+    assert.equal(enemyPaintBuf.length, PAINT_ATLAS_SIZE * PAINT_ATLAS_SIZE * 4);
+    let nonWhitePixels = 0;
+    for (let i = 0; i < enemyPaintBuf.length; i += 4) {
+      if (
+        enemyPaintBuf[i] < 250 ||
+        enemyPaintBuf[i + 1] < 250 ||
+        enemyPaintBuf[i + 2] < 250
+      ) {
+        nonWhitePixels++;
+      }
+    }
+    assert.ok(
+      nonWhitePixels > 1000,
+      'Enemy faction paint buffer must contain painted & shaded regions over the white base'
+    );
+
+    // Ensure zero user-facing strings in roster, palettes, or starter designs contain "meccha", "chameleon", or "comelion"
+    const bannedPattern = /meccha|chameleon|comelion/i;
+    for (const cid of CHARACTER_ORDER) {
+      const c = CHARACTER_ROSTER[cid];
+      assert.equal(bannedPattern.test(c.name), false, `Roster name ${c.name} must not match banned pattern`);
+      assert.equal(bannedPattern.test(c.codename), false, `Roster codename ${c.codename} must not match banned pattern`);
+      assert.equal(bannedPattern.test(c.role), false, `Roster role ${c.role} must not match banned pattern`);
+      assert.equal(bannedPattern.test(c.bio), false, `Roster bio must not match banned pattern`);
+    }
+    for (const pal of SORTED_COLOR_PALETTES) {
+      assert.equal(bannedPattern.test(pal.label), false);
+      assert.equal(bannedPattern.test(pal.subtitle), false);
+      for (const sw of pal.swatches) {
+        assert.equal(bannedPattern.test(sw.label), false);
+      }
+    }
+    for (const d of paintStorage.getDesigns()) {
+      assert.equal(bannedPattern.test(d.name), false, `Starter design ${d.name} must not match banned pattern`);
+    }
   });
 });
 

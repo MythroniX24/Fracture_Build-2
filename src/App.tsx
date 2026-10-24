@@ -12,6 +12,8 @@ import {
   GameSettings,
   LOADOUT_PAIRS,
   LoadoutPairId,
+  LobbyTab,
+  PartySize,
   ScreenState,
   TrainingConfig,
   WeaponId,
@@ -24,14 +26,43 @@ import {
   resetRoundPositions,
   setPlayerLoadoutPair,
 } from './game/rules.ts';
-import { GameCanvas } from './components/GameCanvas.tsx';
+import {
+  BODY_REGION_SPECS,
+  type BodyRegionId,
+  CHARACTER_ROSTER,
+  type CharacterPoseId,
+  type CosmeticInventoryItem,
+  type EquipmentSlotId,
+  INITIAL_COSMETIC_INVENTORY,
+  enforcePartySizeLimit,
+} from './game/characterSystem.ts';
+import {
+  type BrushSettings,
+  DEFAULT_BRUSH_SETTINGS,
+  MAX_UNDO_STEPS,
+  PAINT_ATLAS_SIZE,
+  type PaintLayer,
+  type SavedPaintDesign,
+  clonePaintLayer,
+  compositePaintLayersToBuffer,
+  createEmptyLayer,
+  decodeRgbaBufferRLE,
+  deserializePaintLayer,
+  paintStorage,
+} from './game/paintSystem.ts';
+import { CameraFocusPreset, GameCanvas } from './components/GameCanvas.tsx';
 import { CombatHUD, HudDomRefs, TouchInputState } from './components/CombatHUD.tsx';
 import { MenuScreens } from './components/MenuScreens.tsx';
+import {
+  LobbyAndVaultUI,
+  MissionProgressItem,
+  PartyMemberSlot,
+} from './components/LobbyAndVaultUI.tsx';
 import { HUDLayoutEditor } from './components/HUDLayoutEditor.tsx';
 import { soundEngine } from './audio/soundEngine.ts';
 import { multiplayerClient, RoomStatePayload } from './network/multiplayerClient.ts';
 
-const SETTINGS_STORAGE_KEY = 'fracture_fps_settings_v2';
+const SETTINGS_STORAGE_KEY = 'fracture_fps_settings_v3';
 
 function loadStoredSettings(): GameSettings {
   try {
@@ -118,6 +149,475 @@ export function App() {
   const [mpRoom, setMpRoom] = useState<RoomStatePayload | null>(null);
   const [mpStatus, setMpStatus] = useState<string>('disconnected');
   const [mpError, setMpError] = useState<string | null>(null);
+
+  // =========================================================================
+  // 3D LOBBY, CHARACTER ROSTER, PARTY & VAULT 3D PAINTING STUDIO STATE
+  // =========================================================================
+  const [activeLobbyTab, setActiveLobbyTab] = useState<LobbyTab>('home');
+  const [vaultSubTab, setVaultSubTab] = useState<'studio' | 'gallery' | 'inventory'>('studio');
+  const [unlockedChars, setUnlockedChars] = useState<CharacterId[]>([
+    'volt',
+    'rift',
+    'kestrel',
+    'chroma',
+  ]);
+  const [activeEquipment, setActiveEquipment] = useState<EquipmentSlotId[]>([]);
+  const [characterPose, setCharacterPose] = useState<CharacterPoseId>('idle');
+  const [cameraFocusPreset, setCameraFocusPreset] = useState<CameraFocusPreset>('full');
+  const [cameraResetTrigger, setCameraResetTrigger] = useState<number>(0);
+  const [cameraZoomDeltaTrigger, setCameraZoomDeltaTrigger] = useState<{
+    seq: number;
+    delta: number;
+  }>({ seq: 0, delta: 0 });
+
+  const [playerName, setPlayerName] = useState<string>(() => {
+    try {
+      return localStorage.getItem('fracture_player_name_v2') || 'ShadowRider';
+    } catch {
+      return 'ShadowRider';
+    }
+  });
+  const [partySize, setPartySize] = useState<PartySize>('squad');
+  const [partyMembers, setPartyMembers] = useState<PartyMemberSlot[]>([
+    {
+      id: 'local_p1',
+      name: 'ShadowRider',
+      characterId: 'volt',
+      level: 12,
+      ready: true,
+      isLeader: true,
+      statusText: 'Ready',
+    },
+  ]);
+
+  const [playerCredits, setPlayerCredits] = useState<number>(4850);
+  const [playerGems, setPlayerGems] = useState<number>(320);
+  const [playerXp, setPlayerXp] = useState<number>(1250);
+  const playerLevel = Math.max(12, Math.floor((playerXp - 1250) / 1000) + 12);
+  const [cosmeticInventory, setCosmeticInventory] = useState<CosmeticInventoryItem[]>(
+    INITIAL_COSMETIC_INVENTORY
+  );
+  const [missions, setMissions] = useState<MissionProgressItem[]>([
+    {
+      id: 'm_paint_1',
+      title: 'Studio Artisan',
+      description: 'Create and save a custom 3D body-paint design in the Paint Studio.',
+      progress: 0,
+      target: 1,
+      rewardCredits: 450,
+      rewardXp: 500,
+      claimed: false,
+    },
+    {
+      id: 'm_equip_1',
+      title: 'Colors in Combat',
+      description: 'Equip any custom paint design to your active Poly character.',
+      progress: 0,
+      target: 1,
+      rewardCredits: 300,
+      rewardXp: 350,
+      claimed: false,
+    },
+    {
+      id: 'm_kills_5',
+      title: 'Arena Dominator',
+      description: 'Eliminate 5 hostile combatants across Deathmatch or Firing Range.',
+      progress: 0,
+      target: 5,
+      rewardCredits: 600,
+      rewardXp: 750,
+      claimed: false,
+    },
+  ]);
+
+  // Studio Painting State & Undo/Redo Stack
+  const [studioInteractionMode, setStudioInteractionMode] = useState<'paint' | 'orbit'>('paint');
+  const [brushSettings, setBrushSettings] = useState<BrushSettings>(DEFAULT_BRUSH_SETTINGS);
+  const [recentColors, setRecentColors] = useState<string[]>([
+    '#ef4444',
+    '#3b82f6',
+    '#10b981',
+    '#facc15',
+    '#111827',
+  ]);
+  const initialBaseLayer = useRef<PaintLayer>(createEmptyLayer('layer_1', 'Layer 1'));
+  const studioLayersRef = useRef<PaintLayer[]>([initialBaseLayer.current]);
+  const [studioLayers, setStudioLayers] = useState<PaintLayer[]>([initialBaseLayer.current]);
+  const [activeLayerId, setActiveLayerId] = useState<string>('layer_1');
+  const [studioTextureRevision, setStudioTextureRevision] = useState<number>(1);
+
+  const undoStackRef = useRef<PaintLayer[][]>([]);
+  const redoStackRef = useRef<PaintLayer[][]>([]);
+  const [canUndo, setCanUndo] = useState<boolean>(false);
+  const [canRedo, setCanRedo] = useState<boolean>(false);
+
+  const [currentDesignId, setCurrentDesignId] = useState<string | null>(null);
+  const [currentDesignName, setCurrentDesignName] = useState<string>('Poly Custom 01');
+  const [savedDesigns, setSavedDesigns] = useState<SavedPaintDesign[]>(() =>
+    paintStorage.getDesigns()
+  );
+  const [equippedDesignId, setEquippedDesignId] = useState<string | null>(() =>
+    paintStorage.getEquippedDesignId('volt')
+  );
+  const equippedCompositeBufferRef = useRef<Uint8ClampedArray | null>(null);
+  const [equippedDesignRevision, setEquippedDesignRevision] = useState<number>(1);
+  const [hoveredBodyRegion, setHoveredBodyRegion] = useState<BodyRegionId | null>(null);
+  const [statusToast, setStatusToast] = useState<string | null>(null);
+
+  const showToast = useCallback((msg: string) => {
+    setStatusToast(msg);
+  }, []);
+
+  useEffect(() => {
+    if (!statusToast) return;
+    const t = window.setTimeout(() => setStatusToast(null), 2400);
+    return () => window.clearTimeout(t);
+  }, [statusToast]);
+
+  // Sync saved designs & equipped skin from IndexedDB / localStorage on mount and updates
+  useEffect(() => {
+    const syncFromStorage = () => {
+      const designs = paintStorage.getDesigns();
+      setSavedDesigns(designs);
+      const eqId = paintStorage.getEquippedDesignId(p1Char);
+      setEquippedDesignId(eqId);
+      const eqDesign = paintStorage.getDesignById(eqId);
+      if (eqDesign) {
+        equippedCompositeBufferRef.current = decodeRgbaBufferRLE(
+          eqDesign.compositeRleBase64,
+          PAINT_ATLAS_SIZE * PAINT_ATLAS_SIZE * 4
+        );
+      } else {
+        equippedCompositeBufferRef.current = null;
+      }
+      setEquippedDesignRevision((r) => r + 1);
+    };
+    syncFromStorage();
+    return paintStorage.subscribe(syncFromStorage);
+  }, [p1Char]);
+
+  const pushStudioUndoSnapshot = useCallback(() => {
+    const cloned = studioLayersRef.current.map(clonePaintLayer);
+    undoStackRef.current.push(cloned);
+    if (undoStackRef.current.length > MAX_UNDO_STEPS) {
+      undoStackRef.current.shift();
+    }
+    redoStackRef.current = [];
+    setCanUndo(undoStackRef.current.length > 0);
+    setCanRedo(false);
+  }, []);
+
+  const commitStudioLayerUpdate = useCallback((nextLayers: PaintLayer[]) => {
+    studioLayersRef.current = nextLayers;
+    setStudioLayers([...nextLayers]);
+    setStudioTextureRevision((r) => r + 1);
+  }, []);
+
+  const handleUndoStudio = useCallback(() => {
+    if (undoStackRef.current.length === 0) return;
+    const prev = undoStackRef.current.pop()!;
+    redoStackRef.current.push(studioLayersRef.current.map(clonePaintLayer));
+    commitStudioLayerUpdate(prev);
+    setCanUndo(undoStackRef.current.length > 0);
+    setCanRedo(redoStackRef.current.length > 0);
+  }, [commitStudioLayerUpdate]);
+
+  const handleRedoStudio = useCallback(() => {
+    if (redoStackRef.current.length === 0) return;
+    const next = redoStackRef.current.pop()!;
+    undoStackRef.current.push(studioLayersRef.current.map(clonePaintLayer));
+    commitStudioLayerUpdate(next);
+    setCanUndo(undoStackRef.current.length > 0);
+    setCanRedo(redoStackRef.current.length > 0);
+  }, [commitStudioLayerUpdate]);
+
+  const handleAddLayer = useCallback(() => {
+    pushStudioUndoSnapshot();
+    const newId = `layer_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+    const newLayer = createEmptyLayer(
+      newId,
+      `Layer ${studioLayersRef.current.length + 1}`
+    );
+    const next = [...studioLayersRef.current, newLayer];
+    commitStudioLayerUpdate(next);
+    setActiveLayerId(newId);
+  }, [pushStudioUndoSnapshot, commitStudioLayerUpdate]);
+
+  const handleDeleteLayer = useCallback(
+    (layerId: string) => {
+      if (studioLayersRef.current.length <= 1) return;
+      pushStudioUndoSnapshot();
+      const next = studioLayersRef.current.filter((l) => l.id !== layerId);
+      commitStudioLayerUpdate(next);
+      if (activeLayerId === layerId) {
+        setActiveLayerId(next[next.length - 1].id);
+      }
+    },
+    [activeLayerId, pushStudioUndoSnapshot, commitStudioLayerUpdate]
+  );
+
+  const handleRenameLayer = useCallback(
+    (layerId: string, newName: string) => {
+      const clean = newName.trim();
+      if (!clean) return;
+      const next = studioLayersRef.current.map((l) =>
+        l.id === layerId ? { ...l, name: clean } : l
+      );
+      commitStudioLayerUpdate(next);
+    },
+    [commitStudioLayerUpdate]
+  );
+
+  const handleToggleLayerVisible = useCallback(
+    (layerId: string) => {
+      const next = studioLayersRef.current.map((l) =>
+        l.id === layerId ? { ...l, visible: !l.visible } : l
+      );
+      commitStudioLayerUpdate(next);
+    },
+    [commitStudioLayerUpdate]
+  );
+
+  const handleChangeLayerOpacity = useCallback(
+    (layerId: string, opacity: number) => {
+      const next = studioLayersRef.current.map((l) =>
+        l.id === layerId ? { ...l, opacity } : l
+      );
+      commitStudioLayerUpdate(next);
+    },
+    [commitStudioLayerUpdate]
+  );
+
+  const handleMoveLayerOrder = useCallback(
+    (layerId: string, dir: -1 | 1) => {
+      const idx = studioLayersRef.current.findIndex((l) => l.id === layerId);
+      if (idx === -1) return;
+      const targetIdx = idx + dir;
+      if (targetIdx < 0 || targetIdx >= studioLayersRef.current.length) return;
+      pushStudioUndoSnapshot();
+      const next = [...studioLayersRef.current];
+      const [item] = next.splice(idx, 1);
+      next.splice(targetIdx, 0, item);
+      commitStudioLayerUpdate(next);
+    },
+    [pushStudioUndoSnapshot, commitStudioLayerUpdate]
+  );
+
+  const handleDuplicateLayer = useCallback(
+    (layerId: string) => {
+      const orig = studioLayersRef.current.find((l) => l.id === layerId);
+      if (!orig) return;
+      pushStudioUndoSnapshot();
+      const copy = clonePaintLayer(orig);
+      copy.id = `layer_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`;
+      copy.name = `${orig.name} Copy`;
+      const next = [...studioLayersRef.current, copy];
+      commitStudioLayerUpdate(next);
+      setActiveLayerId(copy.id);
+    },
+    [pushStudioUndoSnapshot, commitStudioLayerUpdate]
+  );
+
+  const handleMergeLayerDown = useCallback(
+    (layerId: string) => {
+      const idx = studioLayersRef.current.findIndex((l) => l.id === layerId);
+      if (idx <= 0) return;
+      pushStudioUndoSnapshot();
+      const top = studioLayersRef.current[idx];
+      const bottom = clonePaintLayer(studioLayersRef.current[idx - 1]);
+      const topOp = top.visible ? top.opacity : 0;
+
+      for (let i = 0; i < bottom.data.length; i += 4) {
+        const srcA = (top.data[i + 3] / 255) * topOp;
+        if (srcA <= 0.001) continue;
+        const dstA = bottom.data[i + 3] / 255;
+        const outA = srcA + dstA * (1 - srcA);
+        if (outA > 1e-5) {
+          bottom.data[i] = Math.round(
+            (top.data[i] * srcA + bottom.data[i] * dstA * (1 - srcA)) / outA
+          );
+          bottom.data[i + 1] = Math.round(
+            (top.data[i + 1] * srcA + bottom.data[i + 1] * dstA * (1 - srcA)) /
+              outA
+          );
+          bottom.data[i + 2] = Math.round(
+            (top.data[i + 2] * srcA + bottom.data[i + 2] * dstA * (1 - srcA)) /
+              outA
+          );
+          bottom.data[i + 3] = Math.round(outA * 255);
+        }
+      }
+
+      const next = [...studioLayersRef.current];
+      next.splice(idx - 1, 2, bottom);
+      commitStudioLayerUpdate(next);
+      setActiveLayerId(bottom.id);
+    },
+    [pushStudioUndoSnapshot, commitStudioLayerUpdate]
+  );
+
+  const handleClearActiveLayer = useCallback(() => {
+    pushStudioUndoSnapshot();
+    const next = studioLayersRef.current.map((l) => {
+      if (l.id !== activeLayerId) return l;
+      const cleared = clonePaintLayer(l);
+      cleared.data.fill(0);
+      return cleared;
+    });
+    commitStudioLayerUpdate(next);
+    showToast('Cleared active layer to pure white.');
+  }, [activeLayerId, pushStudioUndoSnapshot, commitStudioLayerUpdate, showToast]);
+
+  const handleClearRegionOnActiveLayer = useCallback(
+    (region: BodyRegionId) => {
+      pushStudioUndoSnapshot();
+      const rect = BODY_REGION_SPECS[region].uvRect;
+      const minX = Math.max(0, Math.floor(rect.uMin * PAINT_ATLAS_SIZE));
+      const maxX = Math.min(
+        PAINT_ATLAS_SIZE - 1,
+        Math.ceil(rect.uMax * PAINT_ATLAS_SIZE)
+      );
+      const minY = Math.max(
+        0,
+        Math.floor((1.0 - rect.vMax) * PAINT_ATLAS_SIZE)
+      );
+      const maxY = Math.min(
+        PAINT_ATLAS_SIZE - 1,
+        Math.ceil((1.0 - rect.vMin) * PAINT_ATLAS_SIZE)
+      );
+
+      const next = studioLayersRef.current.map((l) => {
+        if (l.id !== activeLayerId) return l;
+        const copy = clonePaintLayer(l);
+        for (let py = minY; py <= maxY; py++) {
+          for (let px = minX; px <= maxX; px++) {
+            const idx = (py * PAINT_ATLAS_SIZE + px) * 4;
+            copy.data[idx] = 0;
+            copy.data[idx + 1] = 0;
+            copy.data[idx + 2] = 0;
+            copy.data[idx + 3] = 0;
+          }
+        }
+        return copy;
+      });
+      commitStudioLayerUpdate(next);
+      showToast(`Reset ${BODY_REGION_SPECS[region].label} to pure white.`);
+    },
+    [activeLayerId, pushStudioUndoSnapshot, commitStudioLayerUpdate, showToast]
+  );
+
+  const handleResetCharacterToWhite = useCallback(() => {
+    pushStudioUndoSnapshot();
+    const freshLayer = createEmptyLayer('layer_1', 'Layer 1');
+    commitStudioLayerUpdate([freshLayer]);
+    setActiveLayerId('layer_1');
+    setCurrentDesignId(null);
+    setCurrentDesignName(`Poly Custom ${savedDesigns.length + 1}`);
+    paintStorage.equipDesign(p1Char, null);
+    equippedCompositeBufferRef.current = null;
+    setEquippedDesignId(null);
+    setEquippedDesignRevision((r) => r + 1);
+    showToast('Reset character to pure-white base appearance.');
+  }, [
+    p1Char,
+    savedDesigns.length,
+    pushStudioUndoSnapshot,
+    commitStudioLayerUpdate,
+    showToast,
+  ]);
+
+  const handleSaveStudioDesign = useCallback(
+    (saveAsNew: boolean) => {
+      const res = paintStorage.saveDesign({
+        name: currentDesignName,
+        characterId: p1Char,
+        layers: studioLayersRef.current,
+        overwriteDesignId: saveAsNew ? null : currentDesignId,
+      });
+      if (!res.ok || !res.design) {
+        showToast(res.error || 'Could not save design.');
+        return;
+      }
+      setCurrentDesignId(res.design.id);
+      setCurrentDesignName(res.design.name);
+      setMissions((prev) =>
+        prev.map((m) =>
+          m.id === 'm_paint_1' ? { ...m, progress: Math.max(m.progress, 1) } : m
+        )
+      );
+      showToast(`Saved "${res.design.name}" to Skin Vault.`);
+    },
+    [currentDesignName, p1Char, currentDesignId, showToast]
+  );
+
+  const handleEquipCurrentStudioDesign = useCallback(() => {
+    const res = paintStorage.saveDesign({
+      name: currentDesignName || 'Custom Poly Skin',
+      characterId: p1Char,
+      layers: studioLayersRef.current,
+      overwriteDesignId: currentDesignId,
+    });
+    if (res.ok && res.design) {
+      setCurrentDesignId(res.design.id);
+      paintStorage.equipDesign(p1Char, res.design.id);
+      setEquippedDesignId(res.design.id);
+    }
+    equippedCompositeBufferRef.current = compositePaintLayersToBuffer(
+      studioLayersRef.current
+    );
+    setEquippedDesignRevision((r) => r + 1);
+    setMissions((prev) =>
+      prev.map((m) =>
+        m.id === 'm_paint_1' || m.id === 'm_equip_1'
+          ? { ...m, progress: Math.max(m.progress, 1) }
+          : m
+      )
+    );
+    showToast(`Equipped "${currentDesignName}" to ${CHARACTER_ROSTER[p1Char].name}!`);
+  }, [currentDesignName, p1Char, currentDesignId, showToast]);
+
+  const handleLoadSavedDesignIntoStudio = useCallback(
+    (design: SavedPaintDesign) => {
+      pushStudioUndoSnapshot();
+      const loadedLayers =
+        design.layers.length > 0
+          ? design.layers.map(deserializePaintLayer)
+          : [createEmptyLayer('layer_1', 'Layer 1')];
+      commitStudioLayerUpdate(loadedLayers);
+      setActiveLayerId(loadedLayers[loadedLayers.length - 1].id);
+      setCurrentDesignId(design.isSample ? null : design.id);
+      setCurrentDesignName(
+        design.isSample
+          ? `${design.name.replace(/\s*\[Sample\]$/i, '')} Custom`
+          : design.name
+      );
+      showToast(`Loaded "${design.name}" into 3D Studio for editing.`);
+    },
+    [pushStudioUndoSnapshot, commitStudioLayerUpdate, showToast]
+  );
+
+  const handleEquipSavedDesign = useCallback(
+    (design: SavedPaintDesign) => {
+      const ok = paintStorage.equipDesign(p1Char, design.id);
+      if (!ok) {
+        showToast('Design is not compatible with this character model.');
+        return;
+      }
+      setEquippedDesignId(design.id);
+      equippedCompositeBufferRef.current = decodeRgbaBufferRLE(
+        design.compositeRleBase64,
+        PAINT_ATLAS_SIZE * PAINT_ATLAS_SIZE * 4
+      );
+      setEquippedDesignRevision((r) => r + 1);
+      setMissions((prev) =>
+        prev.map((m) =>
+          m.id === 'm_equip_1' ? { ...m, progress: Math.max(m.progress, 1) } : m
+        )
+      );
+      showToast(`Equipped "${design.name}" to ${CHARACTER_ROSTER[p1Char].name}!`);
+    },
+    [p1Char, showToast]
+  );
 
   // Core simulation state ref
   const simRef = useRef<SimulationState>(
@@ -479,7 +979,16 @@ export function App() {
     const onGlobalKeyDown = (e: KeyboardEvent) => {
       if (settingsOpen || layoutEditorOpen) return;
 
-      if (screenState === 'main_menu' && (e.code === 'Enter' || e.code === 'Space')) {
+      const activeTag = document.activeElement?.tagName;
+      const isTypingInInput =
+        activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT';
+
+      if (
+        screenState === 'main_menu' &&
+        activeLobbyTab === 'home' &&
+        !isTypingInInput &&
+        (e.code === 'Enter' || e.code === 'Space')
+      ) {
         e.preventDefault();
         soundEngine.play('ui_confirm');
         setGameMode('bot');
@@ -521,6 +1030,7 @@ export function App() {
     return () => window.removeEventListener('keydown', onGlobalKeyDown);
   }, [
     screenState,
+    activeLobbyTab,
     settingsOpen,
     layoutEditorOpen,
     gameMode,
@@ -536,6 +1046,17 @@ export function App() {
   const handleCombatEvent = useCallback((evt: CombatEvent) => {
     if (evt.type === 'player_respawn' && simRef.current.player.awaitingRespawn) {
       setLoadoutOverlayMode('respawn');
+    }
+    if (evt.type === 'enemy_killed' || evt.type === 'headshot') {
+      setPlayerCredits((c) => c + (evt.type === 'headshot' ? 75 : 45));
+      setPlayerXp((x) => x + (evt.type === 'headshot' ? 120 : 80));
+      setMissions((prev) =>
+        prev.map((m) =>
+          m.id === 'm_kills_5'
+            ? { ...m, progress: Math.min(m.target, m.progress + 1) }
+            : m
+        )
+      );
     }
     if (
       evt.type === 'headshot' ||
@@ -663,7 +1184,7 @@ export function App() {
 
   return (
     <div className="relative w-screen h-[100dvh] overflow-hidden bg-[#0e1015] select-none">
-      {/* Persistent Three.js WebGL First-Person Shooter Viewport */}
+      {/* Persistent Three.js WebGL First-Person Shooter & 3D Chameleon Studio Viewport */}
       <GameCanvas
         screenState={screenState}
         gameMode={gameMode}
@@ -679,11 +1200,269 @@ export function App() {
         hudRefs={hudRefs}
         touchInputRef={touchInputRef}
         loadoutOverlayOpen={Boolean(loadoutOverlayMode)}
+        activeLobbyTab={activeLobbyTab}
+        vaultSubTab={vaultSubTab}
+        characterPose={characterPose}
+        cameraFocusPreset={cameraFocusPreset}
+        cameraResetTrigger={cameraResetTrigger}
+        cameraZoomDeltaTrigger={cameraZoomDeltaTrigger}
+        activeEquipment={activeEquipment}
+        studioInteractionMode={studioInteractionMode}
+        brushSettings={brushSettings}
+        studioLayersRef={studioLayersRef}
+        activeLayerId={activeLayerId}
+        studioTextureRevision={studioTextureRevision}
+        equippedCompositeBufferRef={equippedCompositeBufferRef}
+        equippedDesignRevision={equippedDesignRevision}
+        selectedWeapon={selectedWeapon}
+        partyMembers={partyMembers}
+        onPaintStrokeBeforeStart={pushStudioUndoSnapshot}
+        onPaintStrokeCommitted={() => {
+          setStudioLayers([...studioLayersRef.current]);
+          setStudioTextureRevision((r) => r + 1);
+        }}
+        onEyedropperSampled={(hex) => {
+          setBrushSettings((prev) => ({ ...prev, colorHex: hex, tool: 'brush' }));
+          showToast(`Sampled color ${hex.toUpperCase()}`);
+        }}
+        onHoverBodyRegion={setHoveredBodyRegion}
         onToggleLockOn={() => setLockedOn((prev) => !prev)}
         onToggleFirstPerson={() => setFirstPersonMode((prev) => !prev)}
         onCombatEvent={handleCombatEvent}
         onRoundFinished={handleRoundFinished}
       />
+
+      {/* 3D Character Lobby, Character Selection Roster & Vault Custom Painting Studio */}
+      {screenState === 'main_menu' && !layoutEditorOpen && (
+        <LobbyAndVaultUI
+          activeTab={activeLobbyTab}
+          vaultSubTab={vaultSubTab}
+          p1Char={p1Char}
+          unlockedChars={unlockedChars}
+          activeEquipment={activeEquipment}
+          characterPose={characterPose}
+          cameraFocusPreset={cameraFocusPreset}
+          gameMode={gameMode}
+          arenaId={arenaId}
+          botDifficulty={botDifficulty}
+          partySize={partySize}
+          partyMembers={partyMembers}
+          selectedLoadoutPairId={selectedLoadoutPairId}
+          loadoutWeapons={loadoutWeapons}
+          selectedWeapon={selectedWeapon}
+          playerName={playerName}
+          onChangePlayerName={(nextName) => {
+            setPlayerName(nextName);
+            try {
+              localStorage.setItem('fracture_player_name_v2', nextName);
+            } catch {
+              // ignore
+            }
+            setPartyMembers((prev) =>
+              prev.map((m) => (m.isLeader ? { ...m, name: nextName } : m))
+            );
+            showToast(`Updated Callsign to "${nextName}".`);
+          }}
+          playerCredits={playerCredits}
+          playerGems={playerGems}
+          onAddCurrency={(coinsDelta, gemsDelta) => {
+            if (coinsDelta) setPlayerCredits((c) => c + coinsDelta);
+            if (gemsDelta) setPlayerGems((g) => g + gemsDelta);
+            showToast(
+              `Added ${coinsDelta ? `+${coinsDelta} Coins ` : ''}${
+                gemsDelta ? `+${gemsDelta} Gems` : ''
+              }!`
+            );
+          }}
+          playerXp={playerXp}
+          playerLevel={playerLevel}
+          cosmeticInventory={cosmeticInventory}
+          missions={missions}
+          settings={settings}
+          isFullscreen={isFullscreen}
+          onUpdateSettings={handleUpdateSettings}
+          onToggleFullscreen={() => void handleToggleFullscreen()}
+          onOpenLayoutEditor={() => {
+            setEditorOpenedFromSettings(false);
+            setLayoutEditorOpen(true);
+          }}
+          studioInteractionMode={studioInteractionMode}
+          brushSettings={brushSettings}
+          recentColors={recentColors}
+          studioLayers={studioLayers}
+          activeLayerId={activeLayerId}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          currentDesignId={currentDesignId}
+          currentDesignName={currentDesignName}
+          equippedDesignId={equippedDesignId}
+          savedDesigns={savedDesigns}
+          hoveredBodyRegion={hoveredBodyRegion}
+          statusToast={statusToast}
+          onSelectTab={setActiveLobbyTab}
+          onSelectVaultSubTab={setVaultSubTab}
+          onSelectCharacter={(cid) => {
+            // Preserve currently equipped design if compatible with the new Poly unit
+            const prevEqId = paintStorage.getEquippedDesignId(p1Char);
+            if (prevEqId && !paintStorage.getEquippedDesignId(cid)) {
+              paintStorage.equipDesign(cid, prevEqId);
+            }
+            setP1Char(cid);
+            simRef.current.p1.characterId = cid;
+            setPartyMembers((prev) =>
+              prev.map((m) => (m.isLeader ? { ...m, characterId: cid } : m))
+            );
+            showToast(`Selected ${CHARACTER_ROSTER[cid].name} Unit.`);
+          }}
+          onUnlockCharacter={(cid, cost) => {
+            if (playerCredits < cost) {
+              showToast(`Need ${cost} CR to unlock ${CHARACTER_ROSTER[cid].name}.`);
+              return;
+            }
+            setPlayerCredits((c) => c - cost);
+            setUnlockedChars((prev) => (prev.includes(cid) ? prev : [...prev, cid]));
+            setP1Char(cid);
+            simRef.current.p1.characterId = cid;
+            showToast(`Unlocked & Equipped ${CHARACTER_ROSTER[cid].name}!`);
+          }}
+          onToggleEquipmentSlot={(slot) => {
+            setActiveEquipment((prev) =>
+              prev.includes(slot) ? prev.filter((s) => s !== slot) : [...prev, slot]
+            );
+          }}
+          onSelectPose={setCharacterPose}
+          onSelectCameraPreset={setCameraFocusPreset}
+          onResetCamera={() => {
+            setCameraFocusPreset('full');
+            setCameraResetTrigger((c) => c + 1);
+          }}
+          onZoomCamera={(delta) =>
+            setCameraZoomDeltaTrigger((prev) => ({ seq: prev.seq + 1, delta }))
+          }
+          onSelectGameMode={setGameMode}
+          onSelectArena={(id) => {
+            setArenaId(id);
+            simRef.current.arenaId = id;
+          }}
+          onSelectDifficulty={setBotDifficulty}
+          onSelectPartySize={(sz) => {
+            setPartySize(sz);
+            setPartyMembers((prev) => enforcePartySizeLimit(prev, sz));
+          }}
+          onInviteFriendToParty={(fr) => {
+            setPartyMembers((prev) => {
+              const next: PartyMemberSlot[] = [
+                ...prev,
+                {
+                  id: fr.id,
+                  name: fr.name,
+                  characterId: fr.characterId,
+                  level: fr.level,
+                  ready: true,
+                  statusText: 'Ready',
+                },
+              ];
+              return enforcePartySizeLimit(next, partySize);
+            });
+            showToast(`${fr.name} joined your ${partySize.toUpperCase()} party.`);
+          }}
+          onRemovePartyMember={(id) => {
+            setPartyMembers((prev) => prev.filter((m) => m.id !== id));
+          }}
+          onTogglePartyReady={() => {
+            setPartyMembers((prev) =>
+              prev.map((m) => (m.isLeader ? { ...m, ready: !m.ready } : m))
+            );
+          }}
+          onSelectLoadoutPair={(pairId, weapons) =>
+            handleSelectLoadoutPair(pairId, weapons, false)
+          }
+          onSelectWeapon={handleSelectWeapon}
+          onStartMatch={() =>
+            launchMatch(p1Char, p2Char, arenaId, roundsToWin, roundTimeSeconds, false)
+          }
+          onOpenSettingsModal={() => setSettingsOpen(true)}
+          onClaimMission={(mid) => {
+            const target = missions.find((m) => m.id === mid);
+            if (!target || target.claimed || target.progress < target.target) return;
+            setMissions((prev) =>
+              prev.map((m) => (m.id === mid ? { ...m, claimed: true } : m))
+            );
+            setPlayerCredits((c) => c + target.rewardCredits);
+            setPlayerXp((x) => x + target.rewardXp);
+            showToast(
+              `Claimed +${target.rewardCredits} CR & +${target.rewardXp} XP!`
+            );
+          }}
+          onPurchaseCosmeticItem={(itemId, price) => {
+            if (playerCredits < price) return;
+            setPlayerCredits((c) => c - price);
+            setCosmeticInventory((prev) =>
+              prev.map((it) => (it.id === itemId ? { ...it, owned: true } : it))
+            );
+            const item = cosmeticInventory.find((it) => it.id === itemId);
+            if (item?.equipmentSlot) {
+              setActiveEquipment((prev) =>
+                prev.includes(item.equipmentSlot!)
+                  ? prev
+                  : [...prev, item.equipmentSlot!]
+              );
+            }
+            showToast(`Unlocked ${item?.name || 'Cosmetic Item'}!`);
+          }}
+          onSetStudioInteractionMode={setStudioInteractionMode}
+          onUpdateBrushSettings={(partial) =>
+            setBrushSettings((prev) => ({ ...prev, ...partial }))
+          }
+          onSelectColor={(hex) => {
+            setBrushSettings((prev) => ({
+              ...prev,
+              colorHex: hex,
+              tool: prev.tool === 'eraser' || prev.tool === 'eyedropper' ? 'brush' : prev.tool,
+            }));
+            setRecentColors((prev) => [
+              hex,
+              ...prev.filter((c) => c.toLowerCase() !== hex.toLowerCase()),
+            ].slice(0, 8));
+          }}
+          onSelectActiveLayer={setActiveLayerId}
+          onAddLayer={handleAddLayer}
+          onDeleteLayer={handleDeleteLayer}
+          onRenameLayer={handleRenameLayer}
+          onToggleLayerVisible={handleToggleLayerVisible}
+          onChangeLayerOpacity={handleChangeLayerOpacity}
+          onMoveLayerOrder={handleMoveLayerOrder}
+          onDuplicateLayer={handleDuplicateLayer}
+          onMergeLayerDown={handleMergeLayerDown}
+          onUndoStudio={handleUndoStudio}
+          onRedoStudio={handleRedoStudio}
+          onClearActiveLayer={handleClearActiveLayer}
+          onClearRegionOnActiveLayer={handleClearRegionOnActiveLayer}
+          onResetCharacterToWhite={handleResetCharacterToWhite}
+          onChangeDesignName={setCurrentDesignName}
+          onSaveDesign={handleSaveStudioDesign}
+          onEquipCurrentStudioDesign={handleEquipCurrentStudioDesign}
+          onLoadSavedDesignIntoStudio={handleLoadSavedDesignIntoStudio}
+          onEquipSavedDesign={handleEquipSavedDesign}
+          onDuplicateSavedDesign={(id) => {
+            const res = paintStorage.duplicateDesign(id);
+            if (res.ok && res.design) {
+              showToast(`Duplicated "${res.design.name}".`);
+            }
+          }}
+          onRenameSavedDesign={(id, newName) => {
+            if (paintStorage.renameDesign(id, newName)) {
+              showToast(`Renamed design to "${newName.trim()}".`);
+            }
+          }}
+          onDeleteSavedDesign={(id) => {
+            if (paintStorage.deleteDesign(id)) {
+              if (currentDesignId === id) setCurrentDesignId(null);
+              showToast('Deleted design from Vault.');
+            }
+          }}
+        />
+      )}
 
       {/* Active FPS Combat HUD (Hidden while Full-Screen Controls Layout Editor is active) */}
       {isCombatVisible && !layoutEditorOpen && (
@@ -753,7 +1532,7 @@ export function App() {
         />
       )}
 
-      {/* Clean Matte Menu, Settings, Pause & Result Screens */}
+      {/* Settings, Pause & Result Modals */}
       {!layoutEditorOpen && (
         <MenuScreens
           screenState={screenState}

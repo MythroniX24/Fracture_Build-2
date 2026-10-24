@@ -1,6 +1,22 @@
 export type WeaponId = 'm4a1' | 'ak47' | 'mp5' | 'spas12' | 'awp' | 'deagle';
-export type CharacterId = 'volt' | 'rift';
+export type CharacterId = 'volt' | 'rift' | 'kestrel' | 'chroma';
+export type PartySize = 'solo' | 'duo' | 'squad';
+export type LobbyTab =
+  | 'home'
+  | 'character'
+  | 'vault'
+  | 'painting_studio'
+  | 'loadout'
+  | 'weapons'
+  | 'events'
+  | 'friends'
+  | 'missions'
+  | 'shop'
+  | 'profile'
+  | 'settings'
+  | 'game_mode';
 export type ArenaId = 'foundry_arena' | 'iron_fortress' | 'overgrown_colossus';
+export const ARENA_ORDER: ArenaId[] = ['foundry_arena', 'iron_fortress', 'overgrown_colossus'];
 export type GameMode = 'bot' | 'training' | 'multiplayer';
 export type BotDifficulty = 'easy' | 'normal' | 'hard';
 export type ScreenState =
@@ -250,7 +266,14 @@ export interface ArenaBreakablePropSpec {
   explosiveDamage?: number;
 }
 
-export type SurfaceMaterial = 'concrete' | 'metal';
+export type SurfaceMaterial =
+  | 'concrete'
+  | 'metal'
+  | 'tile'
+  | 'gravel'
+  | 'wood'
+  | 'grass'
+  | 'water';
 
 export interface SurfaceZone {
   id: string;
@@ -288,52 +311,111 @@ export const TACTICAL_SURFACE_ZONES: SurfaceZone[] = [
   // South Firing Line Steel Grating Deck (directly in front of player spawn at z=20 for Training & Arena)
   {
     id: 'south_firing_deck',
-    minX: -12,
-    maxX: 12,
-    minZ: 8.5,
-    maxZ: 18.8,
+    minX: -11.5,
+    maxX: 11.5,
+    minZ: 9.0,
+    maxZ: 18.5,
     material: 'metal',
     label: 'South Firing Deck',
   },
   // Central Helipad / Tactical Steel Grating Platform
   {
     id: 'central_steel_deck',
-    minX: -9.5,
-    maxX: 9.5,
-    minZ: -9.5,
-    maxZ: 9.5,
+    minX: -9.0,
+    maxX: 9.0,
+    minZ: -9.0,
+    maxZ: 8.5,
     material: 'metal',
     label: 'Central Helipad Deck',
   },
-  // West Hangar & Shipping Container Steel Bay
+  // North Crate & Timber Supply Staging Platform (Wood plank deck under the wooden crates)
   {
-    id: 'west_hangar_deck',
-    minX: -40,
-    maxX: -12,
-    minZ: -18,
-    maxZ: 18,
-    material: 'metal',
-    label: 'West Hangar Bay',
+    id: 'north_crate_wood_deck',
+    minX: -7.5,
+    maxX: 7.5,
+    minZ: -21.5,
+    maxZ: -14.5,
+    material: 'wood',
+    label: 'North Timber Staging Deck',
   },
-  // East Hangar & Shipping Container Steel Bay
+  // West Hangar Interior Ceramic/Tactical Tile Floor
   {
-    id: 'east_hangar_deck',
-    minX: 12,
-    maxX: 40,
-    minZ: -18,
-    maxZ: 18,
-    material: 'metal',
-    label: 'East Hangar Bay',
+    id: 'west_hangar_tile_deck',
+    minX: -24.0,
+    maxX: -15.8,
+    minZ: -18.0,
+    maxZ: 18.0,
+    material: 'tile',
+    label: 'West Hangar Tile Bay',
+  },
+  // East Hangar Interior Ceramic/Tactical Tile Floor
+  {
+    id: 'east_hangar_tile_deck',
+    minX: 15.8,
+    maxX: 24.0,
+    minZ: -18.0,
+    maxZ: 18.0,
+    material: 'tile',
+    label: 'East Hangar Tile Bay',
+  },
+  // West Shipping Container Yard Crushed Gravel Bed
+  {
+    id: 'west_yard_gravel',
+    minX: -52.0,
+    maxX: -32.0,
+    minZ: -20.0,
+    maxZ: 20.0,
+    material: 'gravel',
+    label: 'West Container Gravel Yard',
+  },
+  // East Shipping Container Yard Crushed Gravel Bed
+  {
+    id: 'east_yard_gravel',
+    minX: 32.0,
+    maxX: 52.0,
+    minZ: -20.0,
+    maxZ: 20.0,
+    material: 'gravel',
+    label: 'East Container Gravel Yard',
+  },
+  // Outer Southwest Contained Drainage Basin (away from main dry concrete combat lanes)
+  {
+    id: 'southwest_water_channel',
+    minX: -42.0,
+    maxX: -32.0,
+    minZ: 26.0,
+    maxZ: 34.0,
+    material: 'water',
+    label: 'Southwest Drainage Basin',
   },
   // North Watchtower Steel Catwalk Apron
   {
     id: 'north_tower_deck',
-    minX: -12,
-    maxX: 12,
-    minZ: -50,
-    maxZ: -30,
+    minX: -10.0,
+    maxX: 10.0,
+    minZ: -50.0,
+    maxZ: -38.0,
     material: 'metal',
     label: 'North Watchtower Deck',
+  },
+  // Far North & South Outer Perimeter Turf Verges
+  {
+    id: 'north_perimeter_grass',
+    minX: -46.0,
+    maxX: 46.0,
+    minZ: -65.0,
+    maxZ: -54.0,
+    material: 'grass',
+    label: 'North Perimeter Turf',
+  },
+  {
+    id: 'south_perimeter_grass',
+    minX: -46.0,
+    maxX: 46.0,
+    minZ: 54.0,
+    maxZ: 65.0,
+    material: 'grass',
+    label: 'South Perimeter Turf',
   },
 ];
 
@@ -459,6 +541,8 @@ export const CHARACTER_REGISTRY: Record<
 > = {
   volt: { id: 'volt', name: 'RANGER-01', title: 'Tactical Operator' },
   rift: { id: 'rift', name: 'HOSTILE', title: 'OpFor Unit' },
+  kestrel: { id: 'kestrel', name: 'KESTREL-03', title: 'Spec Ops Unit' },
+  chroma: { id: 'chroma', name: 'CHROMA-04', title: 'Heavy Vanguard' },
 };
 
 export const BOT_DIFFICULTIES: Record<
@@ -715,7 +799,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   particleQuality: 'high',
   cameraDistance: 5.2,
   touchSensitivity: 1.0,
-  fireSensitivity: 0.45,
+  fireSensitivity: 1.0,
   touchDeadzone: 0.12,
   aimAssist: true,
   moveAssist: true,
