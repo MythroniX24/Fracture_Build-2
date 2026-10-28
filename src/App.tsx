@@ -25,7 +25,13 @@ import {
   handleWeaponSlotClick,
   resetRoundPositions,
   setPlayerLoadoutPair,
+  setPlayerWeaponOptic,
 } from './game/rules.ts';
+import {
+  DEFAULT_BASE_FOV,
+  DEFAULT_WEAPON_OPTICS,
+  type OpticId,
+} from './game/ads/index.ts';
 import {
   BODY_REGION_SPECS,
   type BodyRegionId,
@@ -59,10 +65,18 @@ import {
   PartyMemberSlot,
 } from './components/LobbyAndVaultUI.tsx';
 import { HUDLayoutEditor } from './components/HUDLayoutEditor.tsx';
+import { BackpackUI } from './components/inventory/BackpackUI.tsx';
+import {
+  getNearbyWorldLoot,
+  loadInventoryFromLocalStorage,
+  pickupWorldLootItem,
+  saveInventoryToLocalStorage,
+  syncInventoryToPlayerState,
+} from './game/inventory/index.ts';
 import { soundEngine } from './audio/soundEngine.ts';
 import { multiplayerClient, RoomStatePayload } from './network/multiplayerClient.ts';
 
-const SETTINGS_STORAGE_KEY = 'fracture_fps_settings_v3';
+const SETTINGS_STORAGE_KEY = 'fracture_fps_settings_v4';
 
 function loadStoredSettings(): GameSettings {
   try {
@@ -72,6 +86,15 @@ function loadStoredSettings(): GameSettings {
     return {
       ...DEFAULT_SETTINGS,
       ...parsed,
+      baseFov:
+        typeof parsed.baseFov === 'number'
+          ? parsed.baseFov
+          : DEFAULT_BASE_FOV,
+      aimMode: parsed.aimMode === 'toggle' ? 'toggle' : 'hold',
+      weaponOptics: {
+        ...DEFAULT_WEAPON_OPTICS,
+        ...(parsed.weaponOptics || {}),
+      },
       fireSensitivity:
         typeof parsed.fireSensitivity === 'number'
           ? parsed.fireSensitivity
@@ -131,6 +154,11 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [layoutEditorOpen, setLayoutEditorOpen] = useState<boolean>(false);
   const [editorOpenedFromSettings, setEditorOpenedFromSettings] = useState<boolean>(false);
+  const [backpackOpen, setBackpackOpen] = useState<boolean>(false);
+  const [nearbyLootPrompt, setNearbyLootPrompt] = useState<{
+    lootId: string;
+    label: string;
+  } | null>(null);
   const [trainingConfig, setTrainingConfig] = useState<TrainingConfig>(DEFAULT_TRAINING_CONFIG);
 
   const [countdownValue, setCountdownValue] = useState<number | null>(null);
@@ -867,13 +895,45 @@ export function App() {
     }
   }, [screenState]);
 
-  // Sync activeWeapon state from simulation
+  // Load saved inventory from localStorage on initial mount if available
   useEffect(() => {
-    if (screenState !== 'combat') return;
+    const savedInv = loadInventoryFromLocalStorage();
+    if (savedInv) {
+      simRef.current.player.inventory = savedInv;
+      syncInventoryToPlayerState(simRef.current.player);
+      setSelectedWeapon(simRef.current.player.activeWeapon);
+      setLoadoutWeapons([...simRef.current.player.loadoutWeapons]);
+    }
+  }, []);
+
+  // Sync activeWeapon, loadoutWeapons, and nearby world loot state from simulation
+  useEffect(() => {
+    if (screenState !== 'combat') {
+      setNearbyLootPrompt(null);
+      return;
+    }
     const id = window.setInterval(() => {
       const curWep = simRef.current.player.activeWeapon;
       setSelectedWeapon((prev) => (prev !== curWep ? curWep : prev));
-    }, 150);
+      const curPair = simRef.current.player.loadoutWeapons;
+      setLoadoutWeapons((prev) =>
+        prev[0] !== curPair[0] || prev[1] !== curPair[1]
+          ? [curPair[0], curPair[1]]
+          : prev
+      );
+      const nearLoot = getNearbyWorldLoot(simRef.current, 3.5);
+      if (nearLoot.length > 0) {
+        const top = nearLoot[0];
+        const label = top.label || 'Item';
+        setNearbyLootPrompt((prev) =>
+          prev?.lootId === top.lootId && prev?.label === label
+            ? prev
+            : { lootId: top.lootId, label }
+        );
+      } else {
+        setNearbyLootPrompt((prev) => (prev !== null ? null : prev));
+      }
+    }, 100);
     return () => window.clearInterval(id);
   }, [screenState]);
 
@@ -907,6 +967,10 @@ export function App() {
         overrideTimer,
         loadoutWeapons
       );
+      nextSim.player.weaponOptics = {
+        ...DEFAULT_WEAPON_OPTICS,
+        ...(settings.weaponOptics || {}),
+      };
       setSelectedWeapon(nextSim.player.activeWeapon);
       simRef.current = nextSim;
       setLockedOn(false);
@@ -974,7 +1038,7 @@ export function App() {
     });
   }, [p1Char, p2Char, launchMatch]);
 
-  // Global keyboard shortcuts: Enter/Space on title screen starts; Escape/P pauses/resumes; R resets in training; F toggles fullscreen
+  // Global keyboard shortcuts: Enter/Space on title screen starts; B/I/Tab toggles Tactical Backpack; E picks up nearby loot; Escape/P pauses/resumes; F toggles fullscreen
   useEffect(() => {
     const onGlobalKeyDown = (e: KeyboardEvent) => {
       if (settingsOpen || layoutEditorOpen) return;
@@ -983,9 +1047,57 @@ export function App() {
       const isTypingInInput =
         activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT';
 
+      const kb = settings.keybindings || DEFAULT_KEYBINDINGS;
+
+      if (
+        !isTypingInInput &&
+        (e.code === (kb.backpack || 'KeyB') ||
+          e.code === 'KeyB' ||
+          e.code === 'KeyI' ||
+          (e.code === 'Tab' && screenState === 'combat'))
+      ) {
+        e.preventDefault();
+        soundEngine.play('ui_click');
+        setBackpackOpen((prev) => {
+          const next = !prev;
+          if (next && document.pointerLockElement) {
+            try {
+              document.exitPointerLock();
+            } catch {
+              // ignore
+            }
+          }
+          return next;
+        });
+        return;
+      }
+
+      if (
+        !isTypingInInput &&
+        screenState === 'combat' &&
+        !backpackOpen &&
+        (e.code === (kb.interact || 'KeyE') || e.code === 'KeyE')
+      ) {
+        const near = getNearbyWorldLoot(simRef.current, 3.5);
+        if (near.length > 0) {
+          e.preventDefault();
+          const res = pickupWorldLootItem(simRef.current, near[0].lootId);
+          soundEngine.play(res.ok ? 'pickup' : 'ui_click');
+          saveInventoryToLocalStorage(simRef.current.player.inventory);
+          setCombatCallout({
+            id: Date.now() + Math.random(),
+            text: res.message,
+            color: res.ok ? '#10b981' : '#f43f5e',
+          });
+          setSimVersion((v) => v + 1);
+          return;
+        }
+      }
+
       if (
         screenState === 'main_menu' &&
         activeLobbyTab === 'home' &&
+        !backpackOpen &&
         !isTypingInInput &&
         (e.code === 'Enter' || e.code === 'Space')
       ) {
@@ -997,6 +1109,12 @@ export function App() {
       }
 
       if (e.code === 'Escape' || e.code === 'KeyP') {
+        if (backpackOpen && e.code === 'Escape') {
+          e.preventDefault();
+          soundEngine.play('ui_click');
+          setBackpackOpen(false);
+          return;
+        }
         if (screenState === 'combat') {
           e.preventDefault();
           if (document.pointerLockElement) {
@@ -1033,6 +1151,8 @@ export function App() {
     activeLobbyTab,
     settingsOpen,
     layoutEditorOpen,
+    backpackOpen,
+    settings.keybindings,
     gameMode,
     p1Char,
     p2Char,
@@ -1044,6 +1164,9 @@ export function App() {
   ]);
 
   const handleCombatEvent = useCallback((evt: CombatEvent) => {
+    if (evt.type === 'weapon_switch' && evt.weaponId) {
+      setSelectedWeapon(evt.weaponId);
+    }
     if (evt.type === 'player_respawn' && simRef.current.player.awaitingRespawn) {
       setLoadoutOverlayMode('respawn');
     }
@@ -1124,13 +1247,17 @@ export function App() {
 
   const handleUpdateSettings = useCallback((updates: Partial<GameSettings>) => {
     setSettings((prev) => {
-      const next = {
+      const next: GameSettings = {
         ...prev,
         ...updates,
+        weaponOptics: updates.weaponOptics
+          ? { ...prev.weaponOptics, ...updates.weaponOptics }
+          : prev.weaponOptics,
         buttonsLayout: updates.buttonsLayout
           ? { ...prev.buttonsLayout, ...updates.buttonsLayout }
           : prev.buttonsLayout,
       };
+      simRef.current.player.weaponOptics = { ...next.weaponOptics };
       soundEngine.setVolume(next.masterVolume, next.muted);
       try {
         localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(next));
@@ -1140,6 +1267,23 @@ export function App() {
       return next;
     });
   }, []);
+
+  const handleSelectWeaponOptic = useCallback(
+    (weaponId: WeaponId, opticId: OpticId) => {
+      const validOptic = setPlayerWeaponOptic(
+        simRef.current.player,
+        weaponId,
+        opticId
+      );
+      handleUpdateSettings({
+        weaponOptics: {
+          ...settings.weaponOptics,
+          [weaponId]: validOptic,
+        },
+      });
+    },
+    [handleUpdateSettings, settings.weaponOptics]
+  );
 
   const handleSelectWeapon = useCallback((w: WeaponId) => {
     const action = handleWeaponSlotClick(simRef.current.player, w);
@@ -1200,6 +1344,7 @@ export function App() {
         hudRefs={hudRefs}
         touchInputRef={touchInputRef}
         loadoutOverlayOpen={Boolean(loadoutOverlayMode)}
+        backpackOpen={backpackOpen}
         activeLobbyTab={activeLobbyTab}
         vaultSubTab={vaultSubTab}
         characterPose={characterPose}
@@ -1379,9 +1524,13 @@ export function App() {
           }
           onSelectWeapon={handleSelectWeapon}
           onStartMatch={() =>
-            launchMatch(p1Char, p2Char, arenaId, roundsToWin, roundTimeSeconds, false)
+            launchMatch(p1Char, p2Char, arenaId, roundsToWin, roundTimeSeconds, true)
           }
           onOpenSettingsModal={() => setSettingsOpen(true)}
+          onOpenBackpack={() => {
+            soundEngine.play('ui_click');
+            setBackpackOpen(true);
+          }}
           onClaimMission={(mid) => {
             const target = missions.find((m) => m.id === mid);
             if (!target || target.claimed || target.progress < target.target) return;
@@ -1494,6 +1643,7 @@ export function App() {
           onSelectLoadoutPair={handleSelectLoadoutPair}
           onConfirmRespawn={handleConfirmRespawn}
           onSelectWeapon={handleSelectWeapon}
+          onSelectWeaponOptic={handleSelectWeaponOptic}
           onToggleMute={() => handleUpdateSettings({ muted: !settings.muted })}
           onToggleFullscreen={() => void handleToggleFullscreen()}
           onToggleLockOn={() => setLockedOn((prev) => !prev)}
@@ -1529,6 +1679,56 @@ export function App() {
           onUpdateTrainingConfig={(upd) =>
             setTrainingConfig((prev) => ({ ...prev, ...upd }))
           }
+          backpackOpen={backpackOpen}
+          onToggleBackpack={() => {
+            setBackpackOpen((prev) => {
+              const next = !prev;
+              if (next && document.pointerLockElement) {
+                try {
+                  document.exitPointerLock();
+                } catch {
+                  // ignore
+                }
+              }
+              return next;
+            });
+          }}
+          nearbyLootPrompt={nearbyLootPrompt}
+          onPickupNearbyLoot={(lootId) => {
+            const res = pickupWorldLootItem(simRef.current, lootId);
+            saveInventoryToLocalStorage(simRef.current.player.inventory);
+            setCombatCallout({
+              id: Date.now() + Math.random(),
+              text: res.message,
+              color: res.ok ? '#10b981' : '#f43f5e',
+            });
+            setSimVersion((v) => v + 1);
+          }}
+          armorHp={simRef.current.player.inventory?.armorHp ?? 0}
+          maxArmorHp={simRef.current.player.inventory?.maxArmorHp ?? 100}
+        />
+      )}
+
+      {/* Tactical Backpack, Weapon Storage, Attachment & World Loot Interface */}
+      {backpackOpen && !layoutEditorOpen && (
+        <BackpackUI
+          sim={simRef.current}
+          isOpen={backpackOpen}
+          onClose={() => setBackpackOpen(false)}
+          onInventoryMutated={() => {
+            const p = simRef.current.player;
+            setSelectedWeapon(p.activeWeapon);
+            setLoadoutWeapons([p.loadoutWeapons[0], p.loadoutWeapons[1]]);
+            if (p.weaponOptics) {
+              handleUpdateSettings({
+                weaponOptics: {
+                  ...settings.weaponOptics,
+                  ...p.weaponOptics,
+                },
+              });
+            }
+            setSimVersion((v) => v + 1);
+          }}
         />
       )}
 

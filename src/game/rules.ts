@@ -14,6 +14,34 @@ import {
   WEAPON_REGISTRY,
   type WeaponId,
 } from './config.ts';
+import type {
+  ADSControllerState,
+  AimInputMode,
+  OpticId,
+  WeaponOpticLoadout,
+} from './ads/ads.types.ts';
+import { DEFAULT_WEAPON_OPTICS } from './ads/optic.config.ts';
+import {
+  cancelADSController,
+  createInitialADSControllerState,
+  stepADSController,
+} from './ads/ADSController.ts';
+import { computeAimSensitivityMultiplier } from './ads/AimSensitivityController.ts';
+import {
+  cycleWeaponOptic,
+  equipOpticForWeapon,
+  resolveEquippedOptic,
+} from './ads/ScopeAttachmentSystem.ts';
+import {
+  computeEffectiveWeaponStats,
+  createInitialPlayerInventory,
+  type EffectiveWeaponStats,
+  findWeaponInstanceForWeaponId,
+  type PlayerInventoryState,
+  syncExternalOpticSelectionToInventory,
+  syncInventoryToPlayerState,
+  type WorldLootItem,
+} from './inventory/index.ts';
 
 export type { SurfaceMaterial };
 
@@ -30,6 +58,7 @@ export interface PlayerInputSnapshot {
   fireHeld: boolean;
   fireJustPressed: boolean;
   adsHeld: boolean;
+  aimMode?: AimInputMode;
   reloadPressed: boolean;
   selectWeapon?: WeaponId | null;
   cycleWeaponDelta?: number; // +1 or -1
@@ -64,6 +93,9 @@ export interface PlayerShooterState {
   isSprinting: boolean;
   isAds: boolean;
   adsBlend: number; // 0 (hip) to 1 (full ADS)
+  adsState: ADSControllerState;
+  weaponOptics: WeaponOpticLoadout;
+  inventory: PlayerInventoryState;
   eyeHeight: number;
   loadoutWeapons: [WeaponId, WeaponId];
   activeWeapon: WeaponId;
@@ -157,6 +189,8 @@ export interface BulletTrace {
   hitNormalY: number;
   hitNormalZ: number;
   hitKind: 'wall' | 'enemy' | 'headshot' | 'prop' | 'sky';
+  propKind?: 'crate' | 'barrel';
+  damage?: number;
 }
 
 export interface BreakablePropState {
@@ -221,6 +255,7 @@ export interface SimulationState {
   traces: BulletTrace[];
   breakableProps: BreakablePropState[];
   pickups: MapPickupState[];
+  worldLoot: WorldLootItem[];
   waveNumber: number;
   waveKills: number;
   waveTargetKills: number;
@@ -288,6 +323,12 @@ export function createPlayerShooterState(
     isSprinting: false,
     isAds: false,
     adsBlend: 0,
+    adsState: createInitialADSControllerState(
+      initialActive,
+      DEFAULT_WEAPON_OPTICS[initialActive] ?? 'none'
+    ),
+    weaponOptics: { ...DEFAULT_WEAPON_OPTICS },
+    inventory: createInitialPlayerInventory(pair, { ...DEFAULT_WEAPON_OPTICS }),
     eyeHeight: 1.68,
     loadoutWeapons: pair,
     activeWeapon: initialActive,
@@ -433,6 +474,57 @@ export function createSimulationState(
     respawnTimerMs: 0,
   }));
 
+  const worldLoot: WorldLootItem[] = [
+    {
+      lootId: 'loot_spawn_acog',
+      x: 2.2,
+      y: 0,
+      z: 17.5,
+      item: {
+        instanceId: 'loot_itm_acog',
+        itemId: 'att_optic_4x',
+        quantity: 1,
+      },
+      label: '4.0× ACOG Marksman Scope',
+    },
+    {
+      lootId: 'loot_spawn_medkit',
+      x: -2.2,
+      y: 0,
+      z: 17.5,
+      item: {
+        instanceId: 'loot_itm_medkit',
+        itemId: 'med_trauma_kit',
+        quantity: 1,
+      },
+      label: 'Surgical Field Trauma Kit',
+    },
+    {
+      lootId: 'loot_spawn_extmag',
+      x: -1.8,
+      y: 0,
+      z: 15.8,
+      item: {
+        instanceId: 'loot_itm_extmag',
+        itemId: 'att_mag_ext_ar',
+        quantity: 1,
+      },
+      label: '40-Round Extended Rifle Mag',
+    },
+    {
+      lootId: 'loot_spawn_ammo556',
+      x: 1.8,
+      y: 0,
+      z: 15.8,
+      item: {
+        instanceId: 'loot_itm_ammo556',
+        itemId: 'ammo_556',
+        quantity: 30,
+      },
+      label: '30× 5.56×45mm NATO Ammo',
+    },
+  ];
+
   return {
     arenaId,
     player,
@@ -440,6 +532,7 @@ export function createSimulationState(
     traces: [],
     breakableProps,
     pickups,
+    worldLoot,
     waveNumber: 1,
     waveKills: 0,
     waveTargetKills: 10,
@@ -465,10 +558,23 @@ export function createSimulationState(
 
 export function resetRoundPositions(sim: SimulationState): void {
   const arena = ARENA_REGISTRY[sim.arenaId] || ARENA_REGISTRY.foundry_arena;
+  const preservedOptics = sim.player.weaponOptics
+    ? { ...sim.player.weaponOptics }
+    : { ...DEFAULT_WEAPON_OPTICS };
+  const preservedInventory = sim.player.inventory;
   const freshPlayer = createPlayerShooterState(
     sim.player.characterId,
     sim.player.loadoutWeapons[0],
     sim.player.loadoutWeapons
+  );
+  freshPlayer.weaponOptics = preservedOptics;
+  if (preservedInventory) {
+    freshPlayer.inventory = preservedInventory;
+    syncInventoryToPlayerState(freshPlayer);
+  }
+  freshPlayer.adsState = createInitialADSControllerState(
+    freshPlayer.activeWeapon,
+    resolveEquippedOptic(freshPlayer.activeWeapon, freshPlayer.weaponOptics)
   );
   Object.assign(sim.player, freshPlayer);
   sim.enemies = createInitialEnemies(arena);
@@ -568,7 +674,7 @@ function resolveCircleVsBox2D(
   return { x: cx, z: maxZ + radius };
 }
 
-export const PLAYER_COLLISION_RADIUS = 0.68;
+export const PLAYER_COLLISION_RADIUS = 0.74;
 export const BOT_COLLISION_RADIUS = 0.62;
 
 export function resolveEntityCollisions(
@@ -791,11 +897,63 @@ function findClosestWallHitWithNormal(
   if (dy < -1e-5 && oy > 0) {
     const tFloor = -oy / dy;
     if (tFloor > 0 && tFloor < closest) {
-      closest = tFloor;
-      nx = 0;
-      ny = 1;
-      nz = 0;
-      hitSurface = true;
+      const fx = ox + dx * tFloor;
+      const fz = oz + dz * tFloor;
+      if (
+        fx >= arena.bounds.minX &&
+        fx <= arena.bounds.maxX &&
+        fz >= arena.bounds.minZ &&
+        fz <= arena.bounds.maxZ
+      ) {
+        closest = tFloor;
+        nx = 0;
+        ny = 1;
+        nz = 0;
+        hitSurface = true;
+      }
+    }
+  }
+
+  // Outer Perimeter Compound Walls (minX, maxX, minZ, maxZ, height = 9.0m)
+  const perimHeight = 9.0;
+  if (Math.abs(dx) > 1e-6) {
+    const targetX = dx > 0 ? arena.bounds.maxX : arena.bounds.minX;
+    const tWallX = (targetX - ox) / dx;
+    if (tWallX > 0 && tWallX < closest) {
+      const wy = oy + dy * tWallX;
+      const wz = oz + dz * tWallX;
+      if (
+        wy >= 0 &&
+        wy <= perimHeight &&
+        wz >= arena.bounds.minZ &&
+        wz <= arena.bounds.maxZ
+      ) {
+        closest = tWallX;
+        nx = dx > 0 ? -1 : 1;
+        ny = 0;
+        nz = 0;
+        hitSurface = true;
+      }
+    }
+  }
+  if (Math.abs(dz) > 1e-6) {
+    const targetZ = dz > 0 ? arena.bounds.maxZ : arena.bounds.minZ;
+    const tWallZ = (targetZ - oz) / dz;
+    if (tWallZ > 0 && tWallZ < closest) {
+      const wy = oy + dy * tWallZ;
+      const wx = ox + dx * tWallZ;
+      if (
+        wy >= 0 &&
+        wy <= perimHeight &&
+        wx >= arena.bounds.minX &&
+        wx <= arena.bounds.maxX
+      ) {
+        closest = tWallZ;
+        nx = 0;
+        ny = 0;
+        nz = dz > 0 ? -1 : 1;
+        hitSurface = true;
+      }
     }
   }
 
@@ -905,8 +1063,363 @@ function findClosestWallHitWithNormal(
   return { dist: closest, nx, ny, nz, hitSurface };
 }
 
+// ============================================================================
+// 6-DOF PHYSICS-BASED WEAPON SWAY & MASS INERTIA SOLVER (IDLE & MOVEMENT)
+// ============================================================================
+
+export interface WeaponMassSwayProfile {
+  weaponId: WeaponId;
+  /** Physical loaded weapon mass in kilograms */
+  massKg: number;
+  /** Positional natural spring frequency omega_n (rad/s) */
+  omegaPos: number;
+  /** Rotational natural spring frequency omega_n (rad/s) */
+  omegaRot: number;
+  /** Damping ratio zeta (< 1.0 gives authentic slight mass overshoot & settle) */
+  zeta: number;
+  /** Rotational & translational lag multiplier from look/movement acceleration */
+  inertiaScale: number;
+  /** Amplitude multiplier for idle respiratory & postural Lissajous micro-sway */
+  idleAmpScale: number;
+}
+
+export const WEAPON_MASS_SWAY_PROFILES: Record<WeaponId, WeaponMassSwayProfile> = {
+  deagle: {
+    weaponId: 'deagle',
+    massKg: 2.0,
+    omegaPos: 22.0,
+    omegaRot: 24.0,
+    zeta: 0.78,
+    inertiaScale: 0.78,
+    idleAmpScale: 0.82,
+  },
+  mp5: {
+    weaponId: 'mp5',
+    massKg: 2.55,
+    omegaPos: 20.5,
+    omegaRot: 22.0,
+    zeta: 0.76,
+    inertiaScale: 0.86,
+    idleAmpScale: 0.88,
+  },
+  m4a1: {
+    weaponId: 'm4a1',
+    massKg: 3.1,
+    omegaPos: 18.0,
+    omegaRot: 19.5,
+    zeta: 0.74,
+    inertiaScale: 1.0,
+    idleAmpScale: 1.0,
+  },
+  ak47: {
+    weaponId: 'ak47',
+    massKg: 4.3,
+    omegaPos: 15.8,
+    omegaRot: 17.0,
+    zeta: 0.71,
+    inertiaScale: 1.18,
+    idleAmpScale: 1.12,
+  },
+  spas12: {
+    weaponId: 'spas12',
+    massKg: 4.4,
+    omegaPos: 15.2,
+    omegaRot: 16.5,
+    zeta: 0.7,
+    inertiaScale: 1.22,
+    idleAmpScale: 1.15,
+  },
+  awp: {
+    weaponId: 'awp',
+    massKg: 6.5,
+    omegaPos: 12.8,
+    omegaRot: 13.8,
+    zeta: 0.66,
+    inertiaScale: 1.45,
+    idleAmpScale: 1.32,
+  },
+};
+
+export interface WeaponSwayPhysicsState {
+  /** Spring-damper translational offset in torso/weapon space (meters) */
+  posX: number;
+  posY: number;
+  posZ: number;
+  /** Spring-damper translational velocity (m/s) */
+  velX: number;
+  velY: number;
+  velZ: number;
+  /** Spring-damper rotational offset (radians) */
+  pitch: number;
+  yaw: number;
+  roll: number;
+  /** Spring-damper angular velocity (rad/s) */
+  angVelPitch: number;
+  angVelYaw: number;
+  angVelRoll: number;
+  /** Continuous respiratory & heartbeat Lissajous phase (radians) */
+  breathPhase: number;
+  /** Fine neuromuscular postural micro-tremor phase (radians) */
+  microTremorPhase: number;
+  /** Smoothed cardiorespiratory exertion level [0..1] (builds during sprint, recovers in idle) */
+  exertion: number;
+  /** Smoothed locomotion blend [0..1] */
+  moveBlend: number;
+  /** Previous frame player-local velocity components for acceleration impulse calculation */
+  prevLocalVelRight: number;
+  prevLocalVelFwd: number;
+  prevVelY: number;
+  /** Instantaneous idle harmonic component (exposed for diagnostics & testing) */
+  idlePosX: number;
+  idlePosY: number;
+  idlePitch: number;
+  idleYaw: number;
+  /** Instantaneous movement bob + inertia component (exposed for diagnostics & testing) */
+  moveBobX: number;
+  moveBobY: number;
+}
+
+export interface WeaponSwayStepInput {
+  weaponId: WeaponId;
+  /** Frame look yaw delta (radians) */
+  lookDeltaYaw: number;
+  /** Frame look pitch delta (radians) */
+  lookDeltaPitch: number;
+  /** Player-local lateral velocity (+right, -left in m/s) */
+  localVelRight: number;
+  /** Player-local forward velocity (+forward, -backward in m/s) */
+  localVelFwd: number;
+  /** World vertical velocity (+up, -down in m/s) */
+  velY: number;
+  /** Grounded horizontal speed (m/s) */
+  moveSpeed: number;
+  /** Phase-locked footstep walk bob phase (radians) */
+  walkBobPhase: number;
+  /** Aim-down-sights blend [0..1] */
+  adsBlend: number;
+  isCrouching: boolean;
+  isSprinting: boolean;
+  isSliding: boolean;
+  isGrounded: boolean;
+}
+
+export function createWeaponSwayPhysicsState(): WeaponSwayPhysicsState {
+  return {
+    posX: 0,
+    posY: 0,
+    posZ: 0,
+    velX: 0,
+    velY: 0,
+    velZ: 0,
+    pitch: 0,
+    yaw: 0,
+    roll: 0,
+    angVelPitch: 0,
+    angVelYaw: 0,
+    angVelRoll: 0,
+    breathPhase: 0,
+    microTremorPhase: 0,
+    exertion: 0,
+    moveBlend: 0,
+    prevLocalVelRight: 0,
+    prevLocalVelFwd: 0,
+    prevVelY: 0,
+    idlePosX: 0,
+    idlePosY: 0,
+    idlePitch: 0,
+    idleYaw: 0,
+    moveBobX: 0,
+    moveBobY: 0,
+  };
+}
+
+/**
+ * Advances the 6-DOF second-order coupled spring-damper weapon sway physics state:
+ * 1. Idle State: Multi-frequency Lissajous figure-8 breathing oscillation + subtle postural micro-tremor
+ *    that speeds up with exertion after sprinting and steadies when crouching or ADS.
+ * 2. Movement State: 2:1 Lissajous pendulum stride bob + Newton's First Law linear acceleration lag
+ *    (weapon mass trails behind strafe/forward/vertical acceleration and banks into turns).
+ * 3. Look/Aim Inertia: Centrifugal rotational lag, stock-to-muzzle pivot offset, and wrist roll torque
+ *    scaled by the active firearm's physical mass (`WEAPON_MASS_SWAY_PROFILES`).
+ */
+export function stepWeaponSwayPhysics(
+  state: WeaponSwayPhysicsState,
+  dt: number,
+  input: WeaponSwayStepInput
+): WeaponSwayPhysicsState {
+  const clampedDt = Math.min(0.05, Math.max(0.001, dt));
+  const profile =
+    WEAPON_MASS_SWAY_PROFILES[input.weaponId] || WEAPON_MASS_SWAY_PROFILES.m4a1;
+
+  // 1. Update Cardiorespiratory Exertion & Smooth Locomotion Blend
+  const targetExertion = input.isGrounded
+    ? Math.min(1, input.moveSpeed / 7.5) * 0.72 + (input.isSprinting ? 0.28 : 0)
+    : 0.45;
+  const exertionRate = targetExertion > state.exertion ? 2.4 : 0.65;
+  state.exertion +=
+    (targetExertion - state.exertion) * (1 - Math.exp(-exertionRate * clampedDt));
+
+  const targetMoveBlend =
+    input.isGrounded && !input.isSliding ? Math.min(1, input.moveSpeed / 5.4) : 0;
+  state.moveBlend +=
+    (targetMoveBlend - state.moveBlend) * (1 - Math.exp(-10.5 * clampedDt));
+
+  // Advance continuous harmonic phases (never freezes at 0 even when standing still!)
+  const breathFreq = 1.85 + state.exertion * 2.05;
+  state.breathPhase = (state.breathPhase + clampedDt * breathFreq) % (Math.PI * 4);
+  state.microTremorPhase =
+    (state.microTremorPhase + clampedDt * (5.2 + state.exertion * 2.4)) % (Math.PI * 4);
+
+  // 2. Compute Target Idle Lissajous Breathing & Postural Micro-Sway Equilibrium
+  const crouchScale = input.isCrouching ? 0.64 : 1.0;
+  const adsIdleScale = 1 - input.adsBlend * 0.74;
+  const idleAmp =
+    profile.idleAmpScale * crouchScale * adsIdleScale * (1 + state.exertion * 0.7);
+
+  const bSin = Math.sin(state.breathPhase);
+  const bCos = Math.cos(state.breathPhase);
+  const bHalfSin = Math.sin(state.breathPhase * 0.5);
+  const bHalfCos = Math.cos(state.breathPhase * 0.5);
+  const tremorSin = Math.sin(state.microTremorPhase);
+  const tremorCos = Math.cos(state.microTremorPhase * 0.75);
+
+  // Note: in torsoPivot space, -X is character right, +Y is up, +Z is forward
+  const idleX = (bHalfSin * 0.0052 + tremorCos * 0.0011) * idleAmp;
+  const idleY = (bSin * 0.0074 + Math.sin(state.breathPhase * 2.0 + 0.5) * 0.0019) * idleAmp;
+  const idleZ = bCos * 0.0036 * idleAmp;
+  const idlePitch = (-bSin * 0.0155 + tremorSin * 0.0028) * idleAmp;
+  const idleYaw = (bHalfCos * 0.0125 + tremorCos * 0.0022) * idleAmp;
+  const idleRoll = Math.sin(state.breathPhase * 0.5 + 0.38) * 0.0175 * idleAmp;
+
+  state.idlePosX = idleX;
+  state.idlePosY = idleY;
+  state.idlePitch = idlePitch;
+  state.idleYaw = idleYaw;
+
+  // 3. Compute Locomotion Lissajous Pendulum Target (2:1 Vertical-to-Horizontal Figure-8 Stride)
+  const wPhase = input.walkBobPhase;
+  const wSin = Math.sin(wPhase);
+  const wCos = Math.cos(wPhase);
+  const wDoubleSin = Math.sin(wPhase * 2);
+  const wDoubleCos = Math.cos(wPhase * 2);
+
+  const sprintMult = input.isSprinting ? 1.34 : 1.0;
+  const locoAmp =
+    state.moveBlend *
+    (1 - input.adsBlend * 0.76) *
+    profile.inertiaScale *
+    sprintMult;
+
+  // Keep lateral bob biased slightly toward the right (-X) so the rifle never drifts across to the left
+  const bobX = (wCos * 0.0125 - 0.0045 * state.moveBlend) * locoAmp;
+  const bobY = (-Math.abs(wSin) * 0.0175 + wDoubleSin * 0.0075) * locoAmp;
+  const bobZ = -wDoubleCos * 0.0085 * locoAmp;
+  const bobPitch = (wDoubleCos * 0.028 + Math.abs(wSin) * 0.015) * locoAmp;
+  const bobYaw = -wSin * 0.025 * locoAmp;
+  const bobRoll = wCos * 0.034 * locoAmp;
+
+  state.moveBobX = bobX;
+  state.moveBobY = bobY;
+
+  // Steady-state velocity drag offset (gun trails slightly behind sustained strafe/vertical motion)
+  const adsInertiaScale = (1 - input.adsBlend * 0.62) * profile.inertiaScale;
+  const strafeNorm = Math.max(-1, Math.min(1, input.localVelRight / 6.5));
+  const fwdNorm = Math.max(-1, Math.min(1, input.localVelFwd / 7.5));
+  const vertNorm = Math.max(-1, Math.min(1, input.velY / 8.5));
+
+  // In torso space (-X = right, +X = left): moving right (+strafeNorm) trails the gun slightly left (+X)
+  // while banking/rolling into the turn; capped so it always stays on the right side of the body
+  const steadyLagX = strafeNorm * 0.0095 * adsInertiaScale;
+  const steadyLagY = -vertNorm * 0.014 * adsInertiaScale;
+  const steadyLagZ = -fwdNorm * 0.011 * adsInertiaScale;
+  const steadyLagPitch = vertNorm * 0.032 * adsInertiaScale + fwdNorm * 0.016 * adsInertiaScale;
+  const steadyLagYaw = -strafeNorm * 0.022 * adsInertiaScale;
+  const steadyLagRoll = strafeNorm * 0.052 * adsInertiaScale;
+
+  // 4. Inject Instantaneous Linear & Angular Acceleration Impulses (Newtonian Mass Inertia)
+  const dvRight = Math.max(
+    -12,
+    Math.min(12, input.localVelRight - state.prevLocalVelRight)
+  );
+  const dvFwd = Math.max(-12, Math.min(12, input.localVelFwd - state.prevLocalVelFwd));
+  const dvUp = Math.max(-16, Math.min(16, input.velY - state.prevVelY));
+  state.prevLocalVelRight = input.localVelRight;
+  state.prevLocalVelFwd = input.localVelFwd;
+  state.prevVelY = input.velY;
+
+  // Linear acceleration impulse: heavy weapons resist velocity changes
+  state.velX += dvRight * 0.018 * adsInertiaScale;
+  state.velY -= dvUp * 0.024 * adsInertiaScale;
+  state.velZ -= dvFwd * 0.02 * adsInertiaScale;
+
+  state.angVelRoll += dvRight * 0.085 * adsInertiaScale;
+  state.angVelPitch += (dvUp * 0.055 - dvFwd * 0.035) * adsInertiaScale;
+  state.angVelYaw -= dvRight * 0.042 * adsInertiaScale;
+
+  // Camera look angular velocity impulse: weapon barrel lags and twists on wrist pivot
+  const clampedLookYaw = Math.max(-0.35, Math.min(0.35, input.lookDeltaYaw));
+  const clampedLookPitch = Math.max(-0.35, Math.min(0.35, input.lookDeltaPitch));
+
+  state.velX += clampedLookYaw * 1.45 * adsInertiaScale;
+  state.velY += clampedLookPitch * 1.25 * adsInertiaScale;
+  state.angVelYaw += clampedLookYaw * 9.2 * adsInertiaScale;
+  state.angVelPitch += clampedLookPitch * 8.6 * adsInertiaScale;
+  state.angVelRoll -= clampedLookYaw * 11.4 * adsInertiaScale;
+
+  // 5. Second-Order Underdamped Spring-Damper Integration (2 substeps for unconditional stability)
+  const targetPosX = idleX + bobX + steadyLagX;
+  const targetPosY = idleY + bobY + steadyLagY;
+  const targetPosZ = idleZ + bobZ + steadyLagZ;
+  const targetPitch = idlePitch + bobPitch + steadyLagPitch;
+  const targetYaw = idleYaw + bobYaw + steadyLagYaw;
+  const targetRoll = idleRoll + bobRoll + steadyLagRoll;
+
+  const subSteps = 2;
+  const subDt = clampedDt / subSteps;
+  const kPos = profile.omegaPos * profile.omegaPos;
+  const cPos = 2 * profile.zeta * profile.omegaPos;
+  const kRot = profile.omegaRot * profile.omegaRot;
+  const cRot = 2 * profile.zeta * profile.omegaRot;
+
+  for (let s = 0; s < subSteps; s++) {
+    const ax = -kPos * (state.posX - targetPosX) - cPos * state.velX;
+    const ay = -kPos * (state.posY - targetPosY) - cPos * state.velY;
+    const az = -kPos * (state.posZ - targetPosZ) - cPos * state.velZ;
+    state.velX += ax * subDt;
+    state.velY += ay * subDt;
+    state.velZ += az * subDt;
+    state.posX += state.velX * subDt;
+    state.posY += state.velY * subDt;
+    state.posZ += state.velZ * subDt;
+
+    const aPitch = -kRot * (state.pitch - targetPitch) - cRot * state.angVelPitch;
+    const aYaw = -kRot * (state.yaw - targetYaw) - cRot * state.angVelYaw;
+    const aRoll = -kRot * (state.roll - targetRoll) - cRot * state.angVelRoll;
+    state.angVelPitch += aPitch * subDt;
+    state.angVelYaw += aYaw * subDt;
+    state.angVelRoll += aRoll * subDt;
+    state.pitch += state.angVelPitch * subDt;
+    state.yaw += state.angVelYaw * subDt;
+    state.roll += state.angVelRoll * subDt;
+  }
+
+  // Clamp physical bounds so extreme flicks never clip through torso or leave viewport
+  state.posX = Math.max(-0.065, Math.min(0.045, state.posX));
+  state.posY = Math.max(-0.055, Math.min(0.055, state.posY));
+  state.posZ = Math.max(-0.048, Math.min(0.048, state.posZ));
+  state.pitch = Math.max(-0.16, Math.min(0.16, state.pitch));
+  state.yaw = Math.max(-0.18, Math.min(0.18, state.yaw));
+  state.roll = Math.max(-0.24, Math.min(0.24, state.roll));
+
+  return state;
+}
+
 export interface WeaponImpactProfile {
   weaponId: WeaponId;
+  caliberLabel: string;
+  coreBoreMm: number;
+  spallCraterMm: number;
+  /** World-space outer spall & dust diameter in meters (physically scaled by caliber energy) */
   baseDiameter: number;
   maxGrazingStretch: number;
   craterDepthFactor: number;
@@ -917,72 +1430,99 @@ export interface WeaponImpactProfile {
   ringScale: number;
 }
 
+/**
+ * Researched Forensic Ballistic Caliber Impact Profiles:
+ * - spas12 (12-Gauge 00 Buckshot): 8.4mm lead pellets -> 9.5cm per-pellet spall pit (8 pellets form a multi-pit cluster)
+ * - mp5 (9x19mm Parabellum): 9.01mm FMJ -> 13.5cm shallow conical concrete pit & lead wipe collar
+ * - m4a1 (5.56x45mm NATO): 5.70mm high-velocity FMJ -> 17.5cm sharp hydraulic spall crater & copper flecks
+ * - ak47 (7.62x39mm M43): 7.82mm heavy rifle -> 22.5cm deep jagged masonry blowout & aggregate rubble
+ * - deagle (.50 Action Express): 12.7mm blunt slug -> 25.5cm wide pulverized concrete bowl & compression rings
+ * - awp (.338 Lapua Magnum): 8.58mm anti-materiel -> 33.0cm catastrophic structural cavern & 12 radial fissures
+ */
 export const WEAPON_IMPACT_PROFILES: Record<WeaponId, WeaponImpactProfile> = {
+  spas12: {
+    weaponId: 'spas12',
+    caliberLabel: '12-Gauge 00 Buckshot (8.4mm Pellet)',
+    coreBoreMm: 8.4,
+    spallCraterMm: 26,
+    baseDiameter: 0.095,
+    maxGrazingStretch: 1.82,
+    craterDepthFactor: 0.44,
+    crackCount: 4,
+    emberGlow: 0.45,
+    sparkCount: 5,
+    sparkColorHex: 0xfb923c,
+    ringScale: 1.15,
+  },
   mp5: {
     weaponId: 'mp5',
-    baseDiameter: 0.16,
-    maxGrazingStretch: 2.3,
-    craterDepthFactor: 0.35,
+    caliberLabel: '9x19mm Parabellum',
+    coreBoreMm: 9.01,
+    spallCraterMm: 32,
+    baseDiameter: 0.135,
+    maxGrazingStretch: 1.92,
+    craterDepthFactor: 0.38,
     crackCount: 4,
-    emberGlow: 0.3,
-    sparkCount: 5,
-    sparkColorHex: 0xfde047,
-    ringScale: 1.55,
+    emberGlow: 0.38,
+    sparkCount: 7,
+    sparkColorHex: 0x38bdf8,
+    ringScale: 1.4,
   },
   m4a1: {
     weaponId: 'm4a1',
-    baseDiameter: 0.22,
-    maxGrazingStretch: 2.45,
-    craterDepthFactor: 0.54,
+    caliberLabel: '5.56x45mm NATO',
+    coreBoreMm: 5.7,
+    spallCraterMm: 46,
+    baseDiameter: 0.175,
+    maxGrazingStretch: 2.08,
+    craterDepthFactor: 0.58,
     crackCount: 6,
-    emberGlow: 0.48,
-    sparkCount: 7,
+    emberGlow: 0.62,
+    sparkCount: 10,
     sparkColorHex: 0xfbbf24,
-    ringScale: 2.05,
+    ringScale: 1.85,
   },
   ak47: {
     weaponId: 'ak47',
-    baseDiameter: 0.28,
-    maxGrazingStretch: 2.65,
-    craterDepthFactor: 0.74,
+    caliberLabel: '7.62x39mm M43',
+    coreBoreMm: 7.82,
+    spallCraterMm: 68,
+    baseDiameter: 0.225,
+    maxGrazingStretch: 2.22,
+    craterDepthFactor: 0.78,
     crackCount: 9,
-    emberGlow: 0.72,
-    sparkCount: 10,
+    emberGlow: 0.84,
+    sparkCount: 14,
     sparkColorHex: 0xf97316,
-    ringScale: 2.55,
+    ringScale: 2.35,
   },
   deagle: {
     weaponId: 'deagle',
-    baseDiameter: 0.32,
-    maxGrazingStretch: 2.5,
-    craterDepthFactor: 0.84,
+    caliberLabel: '.50 Action Express (12.7mm)',
+    coreBoreMm: 12.7,
+    spallCraterMm: 84,
+    baseDiameter: 0.255,
+    maxGrazingStretch: 2.12,
+    craterDepthFactor: 0.88,
     crackCount: 8,
-    emberGlow: 0.8,
-    sparkCount: 12,
-    sparkColorHex: 0xf59e0b,
-    ringScale: 2.9,
-  },
-  spas12: {
-    weaponId: 'spas12',
-    baseDiameter: 0.135,
-    maxGrazingStretch: 2.25,
-    craterDepthFactor: 0.44,
-    crackCount: 5,
-    emberGlow: 0.38,
-    sparkCount: 4,
-    sparkColorHex: 0xfdba74,
-    ringScale: 1.38,
+    emberGlow: 0.9,
+    sparkCount: 16,
+    sparkColorHex: 0xfacc15,
+    ringScale: 2.65,
   },
   awp: {
     weaponId: 'awp',
-    baseDiameter: 0.42,
-    maxGrazingStretch: 2.85,
+    caliberLabel: '.338 Lapua Magnum (8.58mm)',
+    coreBoreMm: 8.58,
+    spallCraterMm: 138,
+    baseDiameter: 0.33,
+    maxGrazingStretch: 2.42,
     craterDepthFactor: 1.0,
     crackCount: 12,
     emberGlow: 1.0,
-    sparkCount: 16,
+    sparkCount: 22,
     sparkColorHex: 0xea580c,
-    ringScale: 3.85,
+    ringScale: 3.4,
   },
 };
 
@@ -1003,7 +1543,7 @@ export interface BallisticImpactMarkPose {
   bx: number;
   by: number;
   bz: number;
-  /** Specular/grazing 3D reflection direction for angled spark deflection */
+  /** Specular/grazing 3D reflection direction for angled spark & spall deflection */
   reflectX: number;
   reflectY: number;
   reflectZ: number;
@@ -1022,9 +1562,10 @@ export interface BallisticImpactMarkPose {
 }
 
 /**
- * Computes the weapon-specific 3D gunshot mark pose, 360° incident-angle elongation
- * basis (t, b, n), grazing spark reflection vector, and strict wall-face boundary
- * clamping so no part of a gunshot mark ever floats in mid-air outside a wall edge.
+ * Dynamic Multi-Caliber Gunshot Impact Pose Solver:
+ * Computes the caliber-scaled 3D crater pose, 360° grazing elongation basis (t, b, n),
+ * spall reflection vector, and strict wall-edge boundary clamping so no gunshot mark
+ * ever floats in mid-air outside a wall edge.
  */
 export function computeBallisticImpactMarkPose(
   fromX: number,
@@ -1041,7 +1582,7 @@ export function computeBallisticImpactMarkPose(
 ): BallisticImpactMarkPose {
   const profile = WEAPON_IMPACT_PROFILES[weaponId] || WEAPON_IMPACT_PROFILES.m4a1;
 
-  // 1. Incoming 3D bullet direction vector d
+  // 1. Incoming 3D unit bullet trajectory vector d
   const vx = hitX - fromX;
   const vy = hitY - fromY;
   const vz = hitZ - fromZ;
@@ -1050,7 +1591,7 @@ export function computeBallisticImpactMarkPose(
   const dy = vLen > 1e-6 ? vy / vLen : 0;
   const dz = vLen > 1e-6 ? vz / vLen : -1;
 
-  // 2. Unit surface normal n (pointing outward against incoming ray)
+  // 2. Outward surface normal n
   const nLen = Math.hypot(normalX, normalY, normalZ);
   let nx = nLen > 1e-6 ? normalX / nLen : 0;
   let ny = nLen > 1e-6 ? normalY / nLen : 1;
@@ -1061,14 +1602,14 @@ export function computeBallisticImpactMarkPose(
     nz = -nz;
   }
 
-  // 3. Incidence cosine & 360° grazing angle stretch
+  // 3. Incidence cosine & 360° oblique grazing stretch
   const rawDot = -(dx * nx + dy * ny + dz * nz);
   const incidenceCos = Math.max(0.14, Math.min(1.0, Math.abs(rawDot)));
   const grazingRatio = 1.0 - incidenceCos;
   const stretchFactor =
-    1.0 + (profile.maxGrazingStretch - 1.0) * Math.pow(grazingRatio, 1.08);
+    1.0 + (profile.maxGrazingStretch - 1.0) * Math.pow(grazingRatio, 1.12);
 
-  // 4. Project bullet vector d onto the surface tangent plane: t = normalize(d - (d·n)n)
+  // 4. Tangent basis (t along projected bullet travel, b orthogonal on surface plane)
   const dotDN = dx * nx + dy * ny + dz * nz;
   let tx = dx - dotDN * nx;
   let ty = dy - dotDN * ny;
@@ -1080,7 +1621,6 @@ export function computeBallisticImpactMarkPose(
     ty /= tLen;
     tz /= tLen;
   } else {
-    // Dead-on perpendicular shot: construct a stable tangent in the surface plane
     const upX = Math.abs(ny) < 0.9 ? 0 : 1;
     const upY = Math.abs(ny) < 0.9 ? 1 : 0;
     const upZ = 0;
@@ -1093,7 +1633,6 @@ export function computeBallisticImpactMarkPose(
     tz = cz / cLen;
   }
 
-  // Bitangent b = normalize(n × t)
   let bx = ny * tz - nz * ty;
   let by = nz * tx - nx * tz;
   let bz = nx * ty - ny * tx;
@@ -1102,7 +1641,7 @@ export function computeBallisticImpactMarkPose(
   by /= bLen;
   bz /= bLen;
 
-  // Grazing reflection vector r = d - 2(d·n)n
+  // Specular grazing reflection vector r = d - 2(d·n)n
   let reflectX = dx - 2 * dotDN * nx;
   let reflectY = dy - 2 * dotDN * ny;
   let reflectZ = dz - 2 * dotDN * nz;
@@ -1112,16 +1651,13 @@ export function computeBallisticImpactMarkPose(
   reflectZ /= rLen;
 
   let scaleT = profile.baseDiameter * stretchFactor;
-  let scaleB = profile.baseDiameter * (1.0 - grazingRatio * 0.12);
+  let scaleB = profile.baseDiameter * (1.0 - grazingRatio * 0.1);
 
-  // Shift decal center slightly forward along +t on grazing shots so the entry hole sits at impact
-  // and the directional carbon burn streak extends forward along the bullet path
-  const streakShift = (scaleT - scaleB) * 0.18;
+  const streakShift = (scaleT - scaleB) * 0.16;
   let posX = hitX + tx * streakShift;
   let posY = hitY + ty * streakShift;
   let posZ = hitZ + tz * streakShift;
 
-  // 5. Strict Surface Verification & Wall-Edge Clamping (Never allow floating in air)
   const edgePad = 0.015;
 
   // Case A: Arena Floor (y ≈ 0, ny > 0.75)
@@ -1136,7 +1672,7 @@ export function computeBallisticImpactMarkPose(
       arena.bounds.minZ + extZ + edgePad,
       Math.min(arena.bounds.maxZ - extZ - edgePad, posZ)
     );
-    posY = 0.012;
+    posY = 0.016;
     return {
       validSurface: true,
       weaponId,
@@ -1164,7 +1700,7 @@ export function computeBallisticImpactMarkPose(
     };
   }
 
-  // Case B: Solid Architectural Block Face (Wall, Building, Container, Cover, Tower)
+  // Case B: Solid Architectural Block Face
   const faceTol = 0.18;
   let matchedBlock: MapBoxBlock | null = null;
   let bestFaceDist = Infinity;
@@ -1203,7 +1739,94 @@ export function computeBallisticImpactMarkPose(
   }
 
   if (!matchedBlock) {
-    // Reject hits that are not on a verified solid wall/floor face (e.g. narrow round pillars, breakable props, or sky)
+    const perimHeight = 9.0;
+    if (hitY >= -faceTol && hitY <= perimHeight + faceTol) {
+      if (
+        Math.abs(nx) > 0.7 &&
+        (Math.abs(hitX - arena.bounds.minX) <= faceTol ||
+          Math.abs(hitX - arena.bounds.maxX) <= faceTol)
+      ) {
+        const isMinX =
+          Math.abs(hitX - arena.bounds.minX) <= Math.abs(hitX - arena.bounds.maxX);
+        const wallX = isMinX ? arena.bounds.minX : arena.bounds.maxX;
+        const extZ = 0.5 * (Math.abs(tz) * scaleT + Math.abs(bz) * scaleB);
+        const extY = 0.5 * (Math.abs(ty) * scaleT + Math.abs(by) * scaleB);
+        posZ = Math.max(
+          arena.bounds.minZ + extZ + edgePad,
+          Math.min(arena.bounds.maxZ - extZ - edgePad, posZ)
+        );
+        posY = Math.max(extY + edgePad, Math.min(perimHeight - extY - edgePad, posY));
+        posX = wallX + (isMinX ? 0.014 : -0.014);
+        return {
+          validSurface: true,
+          weaponId,
+          x: posX,
+          y: posY,
+          z: posZ,
+          nx: isMinX ? 1 : -1,
+          ny: 0,
+          nz: 0,
+          tx,
+          ty,
+          tz,
+          bx,
+          by,
+          bz,
+          reflectX,
+          reflectY,
+          reflectZ,
+          incidenceCos,
+          grazingRatio,
+          stretchFactor,
+          scaleT,
+          scaleB,
+          surfaceId: isMinX ? 'perimeter_west' : 'perimeter_east',
+        };
+      }
+      if (
+        Math.abs(nz) > 0.7 &&
+        (Math.abs(hitZ - arena.bounds.minZ) <= faceTol ||
+          Math.abs(hitZ - arena.bounds.maxZ) <= faceTol)
+      ) {
+        const isMinZ =
+          Math.abs(hitZ - arena.bounds.minZ) <= Math.abs(hitZ - arena.bounds.maxZ);
+        const wallZ = isMinZ ? arena.bounds.minZ : arena.bounds.maxZ;
+        const extX = 0.5 * (Math.abs(tx) * scaleT + Math.abs(bx) * scaleB);
+        const extY = 0.5 * (Math.abs(ty) * scaleT + Math.abs(by) * scaleB);
+        posX = Math.max(
+          arena.bounds.minX + extX + edgePad,
+          Math.min(arena.bounds.maxX - extX - edgePad, posX)
+        );
+        posY = Math.max(extY + edgePad, Math.min(perimHeight - extY - edgePad, posY));
+        posZ = wallZ + (isMinZ ? 0.014 : -0.014);
+        return {
+          validSurface: true,
+          weaponId,
+          x: posX,
+          y: posY,
+          z: posZ,
+          nx: 0,
+          ny: 0,
+          nz: isMinZ ? 1 : -1,
+          tx,
+          ty,
+          tz,
+          bx,
+          by,
+          bz,
+          reflectX,
+          reflectY,
+          reflectZ,
+          incidenceCos,
+          grazingRatio,
+          stretchFactor,
+          scaleT,
+          scaleB,
+          surfaceId: isMinZ ? 'perimeter_north' : 'perimeter_south',
+        };
+      }
+    }
+
     return {
       validSurface: false,
       weaponId,
@@ -1240,13 +1863,15 @@ export function computeBallisticImpactMarkPose(
   const maxY = matchedBlock.height;
 
   if (Math.abs(nx) > 0.7) {
-    // ±X Wall Face: spans Z in [minZ, maxZ] and Y in [0, maxY]
     let extZ = 0.5 * (Math.abs(tz) * scaleT + Math.abs(bz) * scaleB);
     let extY = 0.5 * (Math.abs(ty) * scaleT + Math.abs(by) * scaleB);
-    const maxAllowedZ = Math.max(0.04, matchedBlock.depth * 0.45);
-    const maxAllowedY = Math.max(0.04, maxY * 0.45);
+    const maxAllowedZ = Math.max(0.03, matchedBlock.depth * 0.45);
+    const maxAllowedY = Math.max(0.03, maxY * 0.45);
     if (extZ > maxAllowedZ || extY > maxAllowedY) {
-      const shrink = Math.min(maxAllowedZ / Math.max(1e-4, extZ), maxAllowedY / Math.max(1e-4, extY));
+      const shrink = Math.min(
+        maxAllowedZ / Math.max(1e-4, extZ),
+        maxAllowedY / Math.max(1e-4, extY)
+      );
       scaleT *= shrink;
       scaleB *= shrink;
       extZ *= shrink;
@@ -1254,15 +1879,17 @@ export function computeBallisticImpactMarkPose(
     }
     posZ = Math.max(minZ + extZ + edgePad, Math.min(maxZ - extZ - edgePad, posZ));
     posY = Math.max(extY + edgePad, Math.min(maxY - extY - edgePad, posY));
-    posX = (nx > 0 ? maxX : minX) + (nx > 0 ? 0.008 : -0.008);
+    posX = (nx > 0 ? maxX : minX) + (nx > 0 ? 0.011 : -0.011);
   } else if (Math.abs(nz) > 0.7) {
-    // ±Z Wall Face: spans X in [minX, maxX] and Y in [0, maxY]
     let extX = 0.5 * (Math.abs(tx) * scaleT + Math.abs(bx) * scaleB);
     let extY = 0.5 * (Math.abs(ty) * scaleT + Math.abs(by) * scaleB);
-    const maxAllowedX = Math.max(0.04, matchedBlock.width * 0.45);
-    const maxAllowedY = Math.max(0.04, maxY * 0.45);
+    const maxAllowedX = Math.max(0.03, matchedBlock.width * 0.45);
+    const maxAllowedY = Math.max(0.03, maxY * 0.45);
     if (extX > maxAllowedX || extY > maxAllowedY) {
-      const shrink = Math.min(maxAllowedX / Math.max(1e-4, extX), maxAllowedY / Math.max(1e-4, extY));
+      const shrink = Math.min(
+        maxAllowedX / Math.max(1e-4, extX),
+        maxAllowedY / Math.max(1e-4, extY)
+      );
       scaleT *= shrink;
       scaleB *= shrink;
       extX *= shrink;
@@ -1270,15 +1897,17 @@ export function computeBallisticImpactMarkPose(
     }
     posX = Math.max(minX + extX + edgePad, Math.min(maxX - extX - edgePad, posX));
     posY = Math.max(extY + edgePad, Math.min(maxY - extY - edgePad, posY));
-    posZ = (nz > 0 ? maxZ : minZ) + (nz > 0 ? 0.008 : -0.008);
+    posZ = (nz > 0 ? maxZ : minZ) + (nz > 0 ? 0.011 : -0.011);
   } else {
-    // +Y Top Face: spans X in [minX, maxX] and Z in [minZ, maxZ]
     let extX = 0.5 * (Math.abs(tx) * scaleT + Math.abs(bx) * scaleB);
     let extZ = 0.5 * (Math.abs(tz) * scaleT + Math.abs(bz) * scaleB);
-    const maxAllowedX = Math.max(0.04, matchedBlock.width * 0.45);
-    const maxAllowedZ = Math.max(0.04, matchedBlock.depth * 0.45);
+    const maxAllowedX = Math.max(0.03, matchedBlock.width * 0.45);
+    const maxAllowedZ = Math.max(0.03, matchedBlock.depth * 0.45);
     if (extX > maxAllowedX || extZ > maxAllowedZ) {
-      const shrink = Math.min(maxAllowedX / Math.max(1e-4, extX), maxAllowedZ / Math.max(1e-4, extZ));
+      const shrink = Math.min(
+        maxAllowedX / Math.max(1e-4, extX),
+        maxAllowedZ / Math.max(1e-4, extZ)
+      );
       scaleT *= shrink;
       scaleB *= shrink;
       extX *= shrink;
@@ -1286,7 +1915,7 @@ export function computeBallisticImpactMarkPose(
     }
     posX = Math.max(minX + extX + edgePad, Math.min(maxX - extX - edgePad, posX));
     posZ = Math.max(minZ + extZ + edgePad, Math.min(maxZ - extZ - edgePad, posZ));
-    posY = maxY + 0.008;
+    posY = maxY + 0.011;
   }
 
   return {
@@ -1396,17 +2025,17 @@ export function computeWeaponWallObstruction(
   const wid = player.activeWeapon;
   const barrelReach =
     wid === 'awp'
-      ? 1.42
+      ? 1.56
       : wid === 'spas12'
-      ? 1.26
+      ? 1.42
       : wid === 'ak47'
-      ? 1.22
+      ? 1.38
       : wid === 'm4a1'
-      ? 1.18
+      ? 1.34
       : wid === 'mp5'
-      ? 1.02
-      : 0.90;
-  const minClearance = 0.56;
+      ? 1.18
+      : 1.05;
+  const minClearance = 0.72;
 
   const ox = player.x;
   const oy = player.y + player.eyeHeight;
@@ -1434,9 +2063,10 @@ export function computeWeaponWallObstruction(
     breakableProps
   );
 
-  // Sensor 2: Right-hand weapon bore axis ray
+  // High-ready cover-mounted barrel elevation: when near low cover (waist/chest walls <= 1.35m),
+  // the operator naturally holds the rifle at high-shoulder level so the barrel clears low walls.
   const bx = ox + rightX * hipOffsetX;
-  const by = Math.max(0.25, oy - hipOffsetY);
+  const by = Math.max(0.45, oy - hipOffsetY * 0.65);
   const bz = oz + rightZ * hipOffsetX;
   const hit2 = findClosestWallHitWithNormal(
     bx,
@@ -1484,11 +2114,11 @@ export function computeWeaponWallObstruction(
     breakableProps
   );
 
-  // Sensor 5: Horizontal chest-forward ray (prevents clipping even when looking straight up/down near a wall)
-  const chestY = Math.max(0.35, player.y + player.eyeHeight * 0.76);
+  // Sensor 5: Horizontal high-shoulder forward ray (above low cover walls <= 1.35m, catches tall walls)
+  const highReadyY = Math.max(0.45, oy - 0.12);
   const hit5 = findClosestWallHitWithNormal(
     bx,
-    chestY,
+    highReadyY,
     bz,
     forwardX,
     0,
@@ -1505,9 +2135,11 @@ export function computeWeaponWallObstruction(
   if (hit4.hitSurface && hit4.dist < closestDist) closestDist = hit4.dist;
   if (hit5.hitSurface && hit5.dist < closestDist) closestDist = hit5.dist;
 
-  // Sensor 6: 3D Volumetric Barrel Capsule Sample Points vs Blocks, Pillars & Props
+  // Sensor 6: 3D Volumetric Barrel Capsule Sample Points vs Tall Blocks, Pillars & Props
+  // Ignores low cover walls that are below the high-ready sight/barrel line so shooting over cover is unobstructed
   const sampleFractions = [0.35, 0.62, 0.88];
   const barrelRadius = 0.22;
+  const minBlockingWallHeight = oy - 0.22;
   for (let s = 0; s < sampleFractions.length; s++) {
     const distAlong = sampleFractions[s] * barrelReach;
     const sx = bx + dx * distAlong;
@@ -1524,9 +2156,9 @@ export function computeWeaponWallObstruction(
       closestDist = Math.min(closestDist, distAlong * 0.82);
     }
 
-    // Check all solid blocks
+    // Check solid blocks that actually block the barrel height (skip low cover walls below barrel/sight line)
     for (const block of arena.blocks) {
-      if (sy > block.height + 0.14) continue;
+      if (sy > block.height + 0.02 || block.height < minBlockingWallHeight) continue;
       const hw = block.width * 0.5;
       const hd = block.depth * 0.5;
       const cx = Math.max(block.x - hw, Math.min(block.x + hw, sx));
@@ -1539,7 +2171,7 @@ export function computeWeaponWallObstruction(
 
     // Check cylindrical pillars
     for (const col of arena.colliders) {
-      if (sy > col.height + 0.14) continue;
+      if (sy > col.height + 0.02 || col.height < minBlockingWallHeight) continue;
       const d2 = (sx - col.x) ** 2 + (sz - col.z) ** 2;
       const minR = col.radius + barrelRadius;
       if (d2 < minR * minR) {
@@ -1547,10 +2179,10 @@ export function computeWeaponWallObstruction(
       }
     }
 
-    // Check unbroken crates & barrels
+    // Check unbroken crates & barrels only if barrel aims directly into them
     if (breakableProps) {
       for (const prop of breakableProps) {
-        if (prop.broken || sy > prop.height + 0.14) continue;
+        if (prop.broken || sy > prop.height + 0.02 || prop.height < minBlockingWallHeight) continue;
         const d2 = (sx - prop.x) ** 2 + (sz - prop.z) ** 2;
         const minR = prop.radius + barrelRadius;
         if (d2 < minR * minR) {
@@ -1575,26 +2207,63 @@ export function computeWeaponWallObstruction(
 // ============================================================================
 
 /**
- * Computes the camera & fire-joystick look sensitivity multiplier when scoped in (ADS).
- * Larger scope magnification (smaller adsFov, e.g. AWP 8x at 22° vs M4A1 2x at 46° vs MP5 at 52°)
- * yields a proportionally lower sensitivity multiplier for steady precision aiming.
+ * Computes the camera & fire-joystick look sensitivity multiplier when in ADS.
+ * Delegates to the centralized AimSensitivityController:
+ * - Hip-fire (adsBlend = 0):  1.00x
+ * - ADS without scope ('none'): 0.70x
+ * - 2x Scope ('scope_2x'):      0.50x
+ * - 4x Scope ('scope_4x'):      0.35x
  */
 export function getScopeSensitivityMultiplier(
   weaponId: WeaponId,
-  adsBlend: number
+  adsBlend: number,
+  opticId?: OpticId
 ): number {
-  const clampedBlend = Math.max(0, Math.min(1, adsBlend));
-  if (clampedBlend <= 0.001) return 1.0;
+  const resolvedOptic =
+    opticId ?? DEFAULT_WEAPON_OPTICS[weaponId] ?? 'none';
+  return computeAimSensitivityMultiplier(adsBlend, resolvedOptic);
+}
 
-  const spec = WEAPON_REGISTRY[weaponId] || WEAPON_REGISTRY.m4a1;
-  const hipFov = 78;
-  const fovRatio = spec.adsFov / hipFov;
-  const fullScopeMultiplier =
-    spec.id === 'awp'
-      ? 0.22
-      : Math.max(0.22, Math.min(0.62, Number((fovRatio * 0.76).toFixed(4))));
+export function getPlayerEffectiveWeaponStats(
+  player: PlayerShooterState,
+  weaponId: WeaponId = player.activeWeapon
+): EffectiveWeaponStats {
+  const wInst = findWeaponInstanceForWeaponId(player.inventory, weaponId);
+  return computeEffectiveWeaponStats(weaponId, wInst?.attachments);
+}
 
-  return 1.0 - clampedBlend * (1.0 - fullScopeMultiplier);
+/**
+ * Equips a compatible optic attachment on a weapon for the player.
+ */
+export function setPlayerWeaponOptic(
+  player: PlayerShooterState,
+  weaponId: WeaponId,
+  opticId: OpticId
+): OpticId {
+  player.weaponOptics = equipOpticForWeapon(
+    player.weaponOptics || { ...DEFAULT_WEAPON_OPTICS },
+    weaponId,
+    opticId
+  );
+  const resolved = player.weaponOptics[weaponId];
+  syncExternalOpticSelectionToInventory(player, weaponId, resolved);
+  return resolved;
+}
+
+/**
+ * Cycles the active optic attachment ('none' -> 'scope_2x' -> 'scope_4x') on the target weapon.
+ */
+export function cyclePlayerWeaponOptic(
+  player: PlayerShooterState,
+  weaponId: WeaponId = player.activeWeapon
+): OpticId {
+  const res = cycleWeaponOptic(
+    player.weaponOptics || { ...DEFAULT_WEAPON_OPTICS },
+    weaponId
+  );
+  player.weaponOptics = res.nextLoadout;
+  syncExternalOpticSelectionToInventory(player, weaponId, res.nextOpticId);
+  return res.nextOpticId;
 }
 
 export function setPlayerLoadoutPair(
@@ -1603,6 +2272,29 @@ export function setPlayerLoadoutPair(
   events?: CombatEvent[]
 ): void {
   player.loadoutWeapons = [pair[0], pair[1]];
+  if (player.inventory) {
+    // Keep inventory equipped primary/secondary aligned with pair selection
+    const p0 = findWeaponInstanceForWeaponId(player.inventory, pair[0]);
+    const p1 = findWeaponInstanceForWeaponId(player.inventory, pair[1]);
+    if (p0 && p1 && p0.instanceId !== p1.instanceId) {
+      const all = [
+        player.inventory.equippedWeapons.primary,
+        player.inventory.equippedWeapons.secondary,
+        ...(player.inventory.equippedWeapons.sidearm
+          ? [player.inventory.equippedWeapons.sidearm]
+          : []),
+        ...player.inventory.storedWeapons,
+      ];
+      player.inventory.equippedWeapons.primary = p0;
+      player.inventory.equippedWeapons.secondary = p1;
+      player.inventory.storedWeapons = all.filter(
+        (w) =>
+          w.instanceId !== p0.instanceId &&
+          w.instanceId !== p1.instanceId &&
+          w.instanceId !== player.inventory.equippedWeapons.sidearm?.instanceId
+      );
+    }
+  }
   if (!player.loadoutWeapons.includes(player.activeWeapon)) {
     switchPlayerWeapon(player, pair[0], events);
   }
@@ -1616,10 +2308,23 @@ export function switchPlayerWeapon(
   if (player.activeWeapon === targetWeapon) return false;
   if (!WEAPON_REGISTRY[targetWeapon]) return false;
 
+  if (!player.loadoutWeapons.includes(targetWeapon)) {
+    player.loadoutWeapons = [player.loadoutWeapons[0], targetWeapon];
+  }
   player.previousWeapon = player.activeWeapon;
   player.activeWeapon = targetWeapon;
   player.isReloading = false;
   player.reloadTimerMs = 0;
+  player.isAds = false;
+  player.adsBlend = 0;
+  if (player.adsState) {
+    cancelADSController(player.adsState, true);
+    player.adsState.activeWeaponId = targetWeapon;
+    player.adsState.activeOpticId = resolveEquippedOptic(
+      targetWeapon,
+      player.weaponOptics
+    );
+  }
   player.weaponSwitchDurationMs = 340;
   player.weaponSwitchTimerMs = 340;
   player.fireCooldownMs = Math.max(player.fireCooldownMs, 220);
@@ -1638,13 +2343,16 @@ export function startPlayerReload(
   events?: CombatEvent[]
 ): boolean {
   if (player.isReloading) return false;
-  const spec = WEAPON_REGISTRY[player.activeWeapon];
+  const effSpec = getPlayerEffectiveWeaponStats(player, player.activeWeapon);
   const ammo = player.weapons[player.activeWeapon];
-  if (ammo.mag >= spec.magSize || ammo.reserve <= 0) return false;
+  if (ammo.mag >= effSpec.magSize || ammo.reserve <= 0) return false;
 
   player.isReloading = true;
-  player.reloadTimerMs = spec.reloadTimeMs;
+  player.reloadTimerMs = effSpec.reloadTimeMs;
   player.isAds = false;
+  if (player.adsState) {
+    cancelADSController(player.adsState, false);
+  }
   events?.push({
     type: 'reload_start',
     actor: 'p1',
@@ -1673,6 +2381,119 @@ export function handleWeaponSlotClick(
 }
 
 // ============================================================================
+// DYNAMIC CROSSHAIR & BALLISTIC SPREAD SYSTEM
+// ============================================================================
+
+export interface DynamicCrosshairMetrics {
+  weaponId: WeaponId;
+  /** Weapon base spread in degrees (interpolated by ADS and crouch stance) */
+  baseSpreadDeg: number;
+  /** Movement & stance dispersion penalty in degrees (walk, strafe, sprint, slide, airborne) */
+  movementSpreadDeg: number;
+  /** Active recoil & firing bloom dispersion in degrees */
+  recoilSpreadDeg: number;
+  /** Total effective ballistic spread cone in degrees */
+  totalSpreadDeg: number;
+  /** Target crosshair inner-to-outer expansion gap in CSS pixels */
+  targetGapPx: number;
+  /** Normalized recoil bloom intensity in [0, 1] */
+  recoilIntensity: number;
+  /** Normalized movement dispersion intensity in [0, 1] */
+  movementIntensity: number;
+}
+
+const _crosshairMetricsScratch: DynamicCrosshairMetrics = {
+  weaponId: 'm4a1',
+  baseSpreadDeg: 1.6,
+  movementSpreadDeg: 0,
+  recoilSpreadDeg: 0,
+  totalSpreadDeg: 1.6,
+  targetGapPx: 12,
+  recoilIntensity: 0,
+  movementIntensity: 0,
+};
+
+/**
+ * Computes real-time dynamic weapon dispersion & crosshair expansion metrics
+ * based on weapon accuracy (hip vs ADS spread), character movement/stance
+ * (velocity, crouch, sprint, slide, airborne), and active recoil state.
+ */
+export function computeDynamicCrosshairState(
+  player: PlayerShooterState,
+  extraRecoilPitchRad = 0,
+  out: DynamicCrosshairMetrics = _crosshairMetricsScratch
+): DynamicCrosshairMetrics {
+  const spec = getPlayerEffectiveWeaponStats(player, player.activeWeapon);
+  const adsBlend = Math.max(0, Math.min(1, player.adsBlend));
+
+  // 1. Weapon Base Accuracy (smoothly interpolated between hipfire and ADS, tightened by crouching)
+  const rawWeaponSpread =
+    spec.hipSpreadDeg + (spec.adsSpreadDeg - spec.hipSpreadDeg) * adsBlend;
+  const stanceMultiplier = player.isCrouching
+    ? 0.65
+    : player.isSliding
+      ? 1.18
+      : 1.0;
+  const baseSpreadDeg = rawWeaponSpread * stanceMultiplier;
+
+  // 2. Character Movement & Airborne Dispersion
+  const horizSpeed = Math.hypot(player.vx, player.vz);
+  const walkSpeedRef = 7.8;
+  const speedRatio = Math.min(1.65, horizSpeed / walkSpeedRef);
+  const adsMoveDamp = 1 - adsBlend * 0.42;
+
+  let movementSpreadDeg =
+    speedRatio * (0.55 + spec.hipSpreadDeg * 0.38) * adsMoveDamp;
+  if (player.isSprinting && horizSpeed > 1.0) {
+    movementSpreadDeg += 0.95;
+  }
+  if (player.isSliding) {
+    movementSpreadDeg += 0.65;
+  }
+  if (!player.isGrounded || Math.abs(player.vy) > 0.15) {
+    const vertPenalty = Math.min(1.35, Math.abs(player.vy) * 0.14);
+    movementSpreadDeg += (1.85 + vertPenalty) * (1 - adsBlend * 0.25);
+  }
+
+  // 3. Active Recoil & Firing Bloom State
+  const totalRecoilPitch =
+    Math.abs(player.recoilKickPitch) + Math.abs(extraRecoilPitchRad);
+  const recoilMagRad = Math.hypot(totalRecoilPitch, player.recoilKickYaw);
+  const recoilFromKickDeg = ((recoilMagRad * 180) / Math.PI) * 0.72;
+  const muzzleBloomRatio =
+    player.muzzleFlashTimerMs > 0
+      ? Math.min(1, player.muzzleFlashTimerMs / 65)
+      : 0;
+  const cooldownBloomRatio =
+    player.fireCooldownMs > 0 && spec.fireIntervalMs > 0
+      ? Math.min(1, player.fireCooldownMs / spec.fireIntervalMs)
+      : 0;
+  const shotPulseDeg =
+    Math.max(muzzleBloomRatio, cooldownBloomRatio * 0.55) *
+    spec.recoilPitchDeg *
+    0.78;
+  const recoilSpreadDeg =
+    (recoilFromKickDeg + shotPulseDeg) * (1 - adsBlend * 0.35);
+
+  const totalSpreadDeg = baseSpreadDeg + movementSpreadDeg + recoilSpreadDeg;
+
+  // Map total angular spread (degrees) to screen-space crosshair gap (px)
+  // Minimum 4px for pinpoint ADS/crouch accuracy, up to 54px under heavy recoil + movement
+  const rawGapPx = 4.0 + totalSpreadDeg * 5.6;
+  const targetGapPx = Math.max(4.0, Math.min(54.0, rawGapPx));
+
+  out.weaponId = spec.weaponId;
+  out.baseSpreadDeg = baseSpreadDeg;
+  out.movementSpreadDeg = movementSpreadDeg;
+  out.recoilSpreadDeg = recoilSpreadDeg;
+  out.totalSpreadDeg = totalSpreadDeg;
+  out.targetGapPx = targetGapPx;
+  out.recoilIntensity = Math.max(0, Math.min(1, recoilSpreadDeg / 3.2));
+  out.movementIntensity = Math.max(0, Math.min(1, movementSpreadDeg / 3.0));
+  return out;
+}
+
+// ============================================================================
 // PLAYER FIRING & BALLISTIC HITSCAN RESOLUTION
 // ============================================================================
 
@@ -1682,7 +2503,8 @@ export function firePlayerWeapon(
   infiniteAmmo = false
 ): boolean {
   const player = sim.player;
-  const spec = WEAPON_REGISTRY[player.activeWeapon];
+  const baseSpec = WEAPON_REGISTRY[player.activeWeapon];
+  const spec = getPlayerEffectiveWeaponStats(player, player.activeWeapon);
   const ammo = player.weapons[player.activeWeapon];
 
   if (player.isReloading || player.fireCooldownMs > 0 || player.weaponSwitchTimerMs > 0) {
@@ -1695,7 +2517,7 @@ export function firePlayerWeapon(
       type: 'dry_fire',
       actor: 'p1',
       label: 'OUT OF AMMO',
-      weaponId: spec.id,
+      weaponId: baseSpec.id,
     });
     if (ammo.reserve > 0) {
       startPlayerReload(player, events);
@@ -1707,6 +2529,10 @@ export function firePlayerWeapon(
     ammo.mag -= 1;
   }
 
+  const spreadMetrics = computeDynamicCrosshairState(player);
+  const spreadDeg = spreadMetrics.totalSpreadDeg;
+  const spreadRad = (spreadDeg * Math.PI) / 180;
+
   player.fireCooldownMs = spec.fireIntervalMs;
   player.muzzleFlashTimerMs = 65;
   player.shotsFired += 1;
@@ -1715,11 +2541,6 @@ export function firePlayerWeapon(
   const ox = player.x;
   const oy = player.y + player.eyeHeight;
   const oz = player.z;
-
-  const spreadDeg =
-    (player.isAds ? spec.adsSpreadDeg : spec.hipSpreadDeg) *
-    (player.isCrouching ? 0.65 : 1.0);
-  const spreadRad = (spreadDeg * Math.PI) / 180;
 
   let anyHit = false;
   let anyHeadshot = false;
@@ -1837,21 +2658,34 @@ export function firePlayerWeapon(
       hitNormalZ = -dz;
     } else if (hitProp) {
       hitKind = 'prop';
-      hitNormalX = -dx;
-      hitNormalY = 0.3;
-      hitNormalZ = -dz;
+      const propNormal = computeAABBHitNormal(
+        hitX,
+        hitY,
+        hitZ,
+        hitProp.x - hitProp.radius,
+        0,
+        hitProp.z - hitProp.radius,
+        hitProp.x + hitProp.radius,
+        hitProp.height,
+        hitProp.z + hitProp.radius
+      );
+      hitNormalX = propNormal.nx;
+      hitNormalY = propNormal.ny;
+      hitNormalZ = propNormal.nz;
     }
 
-    const rightScale = player.isAds ? 0.015 : 0.22;
+    const muzzleDist = Math.min(0.88, Math.max(0.05, bestDist * 0.35));
+    const distScale = muzzleDist / 0.88;
+    const rightScale = (player.isAds ? 0.015 : 0.22) * distScale;
     const rightX = Math.cos(player.yaw) * rightScale;
     const rightZ = -Math.sin(player.yaw) * rightScale;
-    const downOffset = player.isAds ? 0.06 : 0.14;
+    const downOffset = (player.isAds ? 0.06 : 0.14) * distScale;
 
     sim.traces.push({
       id: sim.nextTraceId++,
-      fromX: ox + rightX + dx * 0.88,
-      fromY: oy - downOffset + dy * 0.88,
-      fromZ: oz + rightZ + dz * 0.88,
+      fromX: ox + rightX + dx * muzzleDist,
+      fromY: oy - downOffset + dy * muzzleDist,
+      fromZ: oz + rightZ + dz * muzzleDist,
       toX: hitX,
       toY: hitY,
       toZ: hitZ,
@@ -1860,11 +2694,13 @@ export function firePlayerWeapon(
       colorHex: hitIsHeadshot ? 0xfacc15 : 0xfbbf24,
       isHeadshot: hitIsHeadshot,
       isEnemyShot: false,
-      weaponId: spec.id,
+      weaponId: baseSpec.id,
       hitNormalX,
       hitNormalY,
       hitNormalZ,
       hitKind,
+      propKind: hitProp ? hitProp.kind : undefined,
+      damage: spec.damage,
     });
 
     if (hitEnemy) {
@@ -1902,7 +2738,7 @@ export function firePlayerWeapon(
           type: 'enemy_killed',
           actor: 'p1',
           label: hitIsHeadshot ? 'HEADSHOT ELIMINATION' : 'HOSTILE ELIMINATED',
-          weaponId: spec.id,
+          weaponId: baseSpec.id,
           damage: dmg,
           x: hitEnemy.x,
           y: hitEnemy.y + 1.2,
@@ -1970,14 +2806,14 @@ export function firePlayerWeapon(
     ((Math.random() - 0.5) * 2 * (spec.recoilYawDeg * Math.PI)) / 180;
   sim.cameraShakeTrauma = Math.min(
     1,
-    sim.cameraShakeTrauma + (spec.id === 'awp' || spec.id === 'spas12' ? 0.28 : 0.11)
+    sim.cameraShakeTrauma + (baseSpec.id === 'awp' || baseSpec.id === 'spas12' ? 0.28 : 0.11)
   );
 
   events.push({
     type: 'shot_fired',
     actor: 'p1',
-    label: spec.shortName,
-    weaponId: spec.id,
+    label: baseSpec.shortName,
+    weaponId: baseSpec.id,
   });
 
   if (anyHit) {
@@ -2069,10 +2905,10 @@ export function stepSimulation(
   if (player.isReloading) {
     player.reloadTimerMs -= dtMs;
     if (player.reloadTimerMs <= 0) {
-      const spec = WEAPON_REGISTRY[player.activeWeapon];
+      const effSpec = getPlayerEffectiveWeaponStats(player, player.activeWeapon);
       const ammo = player.weapons[player.activeWeapon];
-      const needed = spec.magSize - ammo.mag;
-      const transfer = Math.min(needed, ammo.reserve);
+      const needed = effSpec.magSize - ammo.mag;
+      const transfer = Math.max(0, Math.min(needed, ammo.reserve));
       ammo.mag += transfer;
       if (!trainingConfig?.infiniteAmmo) {
         ammo.reserve -= transfer;
@@ -2151,19 +2987,46 @@ export function stepSimulation(
     }
   }
 
-  player.isAds = Boolean(p1Input.adsHeld && !player.isReloading);
-  const targetAds = player.isAds ? 1 : 0;
-  player.adsBlend += (targetAds - player.adsBlend) * (1 - Math.exp(-16 * clampedDt));
+  // Sprint initiation cancels active ADS when player presses sprint while moving forward
+  const sprintRequestedForward =
+    Boolean(p1Input.sprintHeld) &&
+    !player.isCrouching &&
+    !player.isSliding &&
+    normMoveZ < -0.2;
+
+  if (!player.adsState) {
+    player.adsState = createInitialADSControllerState(
+      player.activeWeapon,
+      resolveEquippedOptic(player.activeWeapon, player.weaponOptics)
+    );
+  }
+
+  const activeOpticId = resolveEquippedOptic(
+    player.activeWeapon,
+    player.weaponOptics
+  );
+
+  stepADSController(player.adsState, {
+    dt: clampedDt,
+    rawAimInputDown: Boolean(p1Input.adsHeld),
+    aimMode: p1Input.aimMode ?? 'hold',
+    weaponId: player.activeWeapon,
+    opticId: activeOpticId,
+    isReloading: player.isReloading,
+    isSprinting: sprintRequestedForward,
+    isSliding: player.isSliding,
+    isDeadOrRespawning: Boolean(player.awaitingRespawn || player.hp <= 0),
+    equipTimerSec: player.weaponSwitchTimerMs / 1000,
+  });
+
+  player.isAds = player.adsState.isAimingRequested;
+  player.adsBlend = player.adsState.adsProgress;
 
   const targetEye = player.isSliding ? 0.76 : player.isCrouching ? 1.08 : 1.68;
   player.eyeHeight += (targetEye - player.eyeHeight) * (1 - Math.exp(-16 * clampedDt));
 
   player.isSprinting =
-    p1Input.sprintHeld &&
-    !player.isAds &&
-    !player.isCrouching &&
-    !player.isSliding &&
-    normMoveZ < -0.2;
+    sprintRequestedForward && !player.isAds;
 
   if (player.isSliding) {
     const slideDecay = 0.5 + 0.5 * (player.slideTimerMs / 520);
@@ -2310,8 +3173,14 @@ export function stepSimulation(
       (player.footstepCount + Math.min(0.85, player.footstepDistance / 1.98)) * Math.PI;
   }
 
-  // 5. Firing Weapon
-  const wantsToFire = weaponSpec.autoFire
+  // 5. Firing Weapon (respects configured weapon instance fireMode: 'auto' vs 'semi')
+  const activeWepInst = findWeaponInstanceForWeaponId(
+    player.inventory,
+    player.activeWeapon
+  );
+  const isAutoFireAllowed =
+    weaponSpec.autoFire && (!activeWepInst || activeWepInst.fireMode === 'auto');
+  const wantsToFire = isAutoFireAllowed
     ? p1Input.fireHeld || p1Input.fireJustPressed
     : p1Input.fireJustPressed;
   if (wantsToFire) {
@@ -2598,6 +3467,7 @@ export function stepSimulation(
           colorHex: 0xf87171,
           isHeadshot: false,
           isEnemyShot: true,
+          weaponId: bot.weaponId,
           hitNormalX: shotWallHit.nx,
           hitNormalY: shotWallHit.ny,
           hitNormalZ: shotWallHit.nz,
@@ -2644,14 +3514,26 @@ export function stepSimulation(
       });
 
       if (hitRoll < hitChance) {
-        player.hp = Math.max(0, player.hp - botDamage);
+        let hpLoss = botDamage;
+        if (player.inventory && player.inventory.armorHp > 0) {
+          const absorbed = Math.min(
+            player.inventory.armorHp,
+            Math.ceil(botDamage * 0.5)
+          );
+          player.inventory.armorHp = Math.max(
+            0,
+            player.inventory.armorHp - absorbed
+          );
+          hpLoss = Math.max(1, botDamage - absorbed);
+        }
+        player.hp = Math.max(0, player.hp - hpLoss);
         player.hurtFlashMs = 180;
         sim.cameraShakeTrauma = Math.min(1, sim.cameraShakeTrauma + 0.25);
         events.push({
           type: 'player_hurt',
           actor: 'p2',
           label: 'TAKING FIRE',
-          damage: botDamage,
+          damage: hpLoss,
         });
 
         if (player.hp <= 0) {
@@ -2664,11 +3546,16 @@ export function stepSimulation(
             player.hp = player.maxHp;
             player.isReloading = false;
             player.reloadTimerMs = 0;
+            player.isAds = false;
+            player.adsBlend = 0;
+            if (player.adsState) {
+              cancelADSController(player.adsState, true);
+            }
             for (const wid of player.loadoutWeapons) {
-              const wSpec = WEAPON_REGISTRY[wid];
+              const effWSpec = getPlayerEffectiveWeaponStats(player, wid);
               player.weapons[wid] = {
-                mag: wSpec.magSize,
-                reserve: wSpec.reserveMax,
+                mag: effWSpec.magSize,
+                reserve: effWSpec.reserveMax,
               };
             }
             // Respawn player at south courtyard or safest spawn point and flag awaitingRespawn for Loadout UI

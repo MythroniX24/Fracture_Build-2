@@ -97,8 +97,8 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
       {/* 2. PAUSE MODAL                                                      */}
       {/* =================================================================== */}
       {screenState === 'paused' && (
-        <div className="fixed inset-0 z-30 bg-[#0b0d12]/80 flex items-center justify-center p-4 select-none">
-          <div className="w-full max-w-xs bg-[#14171e] border border-white/15 rounded-2xl p-6 flex flex-col gap-3 shadow-2xl">
+        <div className="fixed inset-0 z-30 bg-[#0b0d12]/45 backdrop-blur-sm flex items-center justify-center p-4 select-none">
+          <div className="w-full max-w-xs bg-[#14171e]/95 border border-white/15 rounded-2xl p-6 flex flex-col gap-3 shadow-2xl">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <h2 className="font-display font-bold text-lg text-zinc-100">Paused</h2>
               <span className="font-mono text-xs text-zinc-400 tabular-nums">
@@ -277,7 +277,7 @@ export const MenuScreens: React.FC<MenuScreensProps> = ({
           aria-label="Settings"
           onKeyDown={handleKeyCapture}
           tabIndex={-1}
-          className="fixed inset-0 z-50 bg-[#0b0d12]/85 backdrop-blur-md flex items-center justify-center p-4 select-none"
+          className="fixed inset-0 z-50 bg-[#0b0d12]/65 flex items-center justify-center p-4 select-none"
         >
           <div className="w-full max-w-2xl bg-[#111726] border border-white/15 rounded-2xl p-5 sm:p-6 flex flex-col gap-4 shadow-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
@@ -537,6 +537,49 @@ export const SharedSettingsPanel: React.FC<SharedSettingsPanelProps> = ({
           />
         </label>
 
+        {/* Base Hip-Fire FOV & Aim Input Mode (Hold vs Toggle) */}
+        <div className="flex items-center justify-between pt-2 border-t border-white/10">
+          <span className="text-xs font-medium text-zinc-300">ADS Aim Mode</span>
+          <div className="flex gap-1 bg-[#0e1015] p-1 rounded-lg border border-white/10">
+            {(['hold', 'toggle'] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                data-testid={`aim-mode-${m}`}
+                onClick={() => onUpdateSettings({ aimMode: m })}
+                className={`px-2.5 py-1 rounded text-xs font-medium uppercase cursor-pointer ${
+                  (settings.aimMode ?? 'hold') === m
+                    ? 'bg-emerald-500 text-zinc-950 font-bold'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <label className="flex flex-col gap-1">
+          <div className="flex justify-between text-xs text-zinc-300">
+            <span>Base Hip-Fire FOV</span>
+            <span className="font-mono text-emerald-400 font-bold tabular-nums">
+              {Math.round(settings.baseFov ?? 90)}°
+            </span>
+          </div>
+          <input
+            type="range"
+            aria-label="Base Hip-Fire FOV"
+            min={70}
+            max={110}
+            step={1}
+            value={settings.baseFov ?? 90}
+            onChange={(e) =>
+              onUpdateSettings({ baseFov: parseFloat(e.target.value) })
+            }
+            className="w-full accent-emerald-400 cursor-pointer"
+          />
+        </label>
+
         {/* Aim Assist, Move Assist, Control Hints */}
         <div className="grid grid-cols-3 gap-1.5 pt-2 border-t border-white/10">
           <button
@@ -620,7 +663,7 @@ export const SharedSettingsPanel: React.FC<SharedSettingsPanelProps> = ({
             Reset Keys
           </button>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-1.5">
+        <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-8 gap-1.5">
           {(
             [
               ['fire', 'Fire'],
@@ -630,6 +673,7 @@ export const SharedSettingsPanel: React.FC<SharedSettingsPanelProps> = ({
               ['crouch', 'Crouch'],
               ['slide', 'Slide'],
               ['nextWeapon', 'Switch Gun'],
+              ['toggleView', '1P/3P View'],
             ] as [keyof KeyBindingsConfig, string][]
           ).map(([key, label]) => (
             <button

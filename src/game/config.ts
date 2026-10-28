@@ -1,3 +1,9 @@
+import type { AimInputMode, WeaponOpticLoadout } from './ads/ads.types.ts';
+import {
+  DEFAULT_BASE_FOV,
+  DEFAULT_WEAPON_OPTICS,
+} from './ads/optic.config.ts';
+
 export type WeaponId = 'm4a1' | 'ak47' | 'mp5' | 'spas12' | 'awp' | 'deagle';
 export type CharacterId = 'volt' | 'rift' | 'kestrel' | 'chroma';
 export type PartySize = 'solo' | 'duo' | 'squad';
@@ -611,6 +617,9 @@ export interface KeyBindingsConfig {
   slide: string;
   sprint: string;
   nextWeapon: string;
+  toggleView: string;
+  backpack?: string;
+  interact?: string;
 }
 
 export type HudButtonId =
@@ -768,6 +777,9 @@ export interface GameSettings {
   graphicsQuality: 'low' | 'medium' | 'high';
   particleQuality: 'low' | 'medium' | 'high';
   cameraDistance: number;
+  baseFov: number;
+  aimMode: AimInputMode;
+  weaponOptics: WeaponOpticLoadout;
   touchSensitivity: number;
   fireSensitivity: number;
   touchDeadzone: number;
@@ -787,9 +799,12 @@ export const DEFAULT_KEYBINDINGS: KeyBindingsConfig = {
   reload: 'KeyR',
   jump: 'Space',
   crouch: 'KeyC',
-  slide: 'KeyV',
+  slide: 'KeyX',
   sprint: 'ShiftLeft',
   nextWeapon: 'KeyQ',
+  toggleView: 'KeyV',
+  backpack: 'KeyB',
+  interact: 'KeyE',
 };
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -798,8 +813,11 @@ export const DEFAULT_SETTINGS: GameSettings = {
   graphicsQuality: 'high',
   particleQuality: 'high',
   cameraDistance: 5.2,
+  baseFov: DEFAULT_BASE_FOV,
+  aimMode: 'hold',
+  weaponOptics: { ...DEFAULT_WEAPON_OPTICS },
   touchSensitivity: 1.0,
-  fireSensitivity: 1.0,
+  fireSensitivity: 1.35,
   touchDeadzone: 0.12,
   aimAssist: true,
   moveAssist: true,

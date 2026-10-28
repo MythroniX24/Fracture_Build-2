@@ -21,19 +21,34 @@ import {
   type PlayerInputSnapshot,
   type SimulationState,
   WEAPON_IMPACT_PROFILES,
+  type WeaponSwayPhysicsState,
+  type WeaponSwayStepInput,
   computeBallisticImpactMarkPose,
+  computeDynamicCrosshairState,
   computeWeaponWallObstruction,
-  getScopeSensitivityMultiplier,
+  createWeaponSwayPhysicsState,
   resolveEntityCollisions,
   stepSimulation,
+  stepWeaponSwayPhysics,
 } from '../game/rules.ts';
 import {
   buildDetailedWeaponViewModel,
   createProceduralTextureSet,
+  setWeaponRigOpticAttachment,
   type WeaponViewModelRig,
 } from '../game/visualModels.ts';
 import {
+  computeAimSensitivityMultiplier,
+  computeComposedCameraFOV,
+  computeWeaponADSPose,
+  resolveEquippedOptic,
+  syncScopeOverlayDom,
+} from '../game/ads/index.ts';
+import { BulletImpactSystem } from '../game/impact/BulletImpactSystem.ts';
+import type { ImpactRequest } from '../game/impact/impact.types.ts';
+import {
   type BodyRegionId,
+  CHARACTER_ROSTER,
   type CharacterPoseId,
   type EquipmentSlotId,
   getSymmetryMirroredUV,
@@ -51,10 +66,12 @@ import {
 } from '../game/paintSystem.ts';
 import {
   type ChameleonHumanoidRig,
+  type CombatWeaponKinematicsInput,
   type EnemyChameleonCombatRig,
   buildChameleonHumanoidRig,
   buildCompactHandheldWeaponProp,
   buildEnemyChameleonCombatRig,
+  enforceWeaponBodyClearance,
   setCharacterEquipmentSlotVisible,
   syncLayersToCharacterRigTexture,
   updateChameleonRigAnimation,
@@ -91,6 +108,7 @@ export interface GameCanvasProps {
   onCombatEvent: (evt: CombatEvent) => void;
   onRoundFinished: (winner: 'p1' | 'p2' | 'draw') => void;
   loadoutOverlayOpen?: boolean;
+  backpackOpen?: boolean;
   // 3D Lobby & Custom Chameleon Painting Studio Props
   activeLobbyTab?: LobbyTab;
   vaultSubTab?: 'studio' | 'gallery' | 'inventory';
@@ -120,19 +138,6 @@ export interface GameCanvasProps {
   onHoverBodyRegion?: (region: BodyRegionId | null) => void;
 }
 
-interface ShellCasingParticle {
-  mesh: THREE.Mesh;
-  active: boolean;
-  ageMs: number;
-  maxAgeMs: number;
-  vx: number;
-  vy: number;
-  vz: number;
-  rx: number;
-  ry: number;
-  rz: number;
-}
-
 interface ImpactParticle {
   mesh: THREE.Mesh;
   mat: THREE.MeshBasicMaterial;
@@ -159,6 +164,52 @@ interface BulletDecalFX {
   mesh: THREE.Mesh;
   mat: THREE.MeshBasicMaterial;
   active: boolean;
+  ageMs: number;
+  emberGlow: number;
+  isBlood: boolean;
+}
+
+interface ExplosionCoreFlashFX {
+  group: THREE.Group;
+  innerMat: THREE.MeshBasicMaterial;
+  outerMat: THREE.MeshBasicMaterial;
+  active: boolean;
+  ageMs: number;
+  maxAgeMs: number;
+  maxScale: number;
+}
+
+interface ExplosionPlumeFX {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  active: boolean;
+  delayMs: number;
+  ageMs: number;
+  maxAgeMs: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  rx: number;
+  ry: number;
+  rz: number;
+  startScale: number;
+  endScale: number;
+  isSmoke: boolean;
+}
+
+interface BarrelShrapnelFX {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshStandardMaterial;
+  active: boolean;
+  ageMs: number;
+  maxAgeMs: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  rx: number;
+  ry: number;
+  rz: number;
+  bounces: number;
 }
 
 export const GameCanvas: React.FC<GameCanvasProps> = ({
@@ -168,6 +219,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   arenaId,
   botDifficulty,
   firstPersonMode = true,
+  onToggleFirstPerson,
   settings,
   trainingConfig,
   simRef,
@@ -176,6 +228,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   onCombatEvent,
   onRoundFinished,
   loadoutOverlayOpen = false,
+  backpackOpen = false,
   activeLobbyTab = 'home',
   vaultSubTab = 'studio',
   characterPose = 'idle',
@@ -205,8 +258,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
   p1CharRef.current = p1Char;
   const firstPersonModeRef = useRef(firstPersonMode);
   firstPersonModeRef.current = firstPersonMode;
+  const onToggleFirstPersonRef = useRef(onToggleFirstPerson);
+  onToggleFirstPersonRef.current = onToggleFirstPerson;
   const loadoutOverlayOpenRef = useRef(loadoutOverlayOpen);
   loadoutOverlayOpenRef.current = loadoutOverlayOpen;
+  const backpackOpenRef = useRef(backpackOpen);
+  backpackOpenRef.current = backpackOpen;
   const gameModeRef = useRef(gameMode);
   gameModeRef.current = gameMode;
   const arenaIdRef = useRef(arenaId);
@@ -274,9 +331,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         const rendererStr = dbg
           ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL))
           : String(gl.getParameter(gl.RENDERER));
-        isSoftwareGl = /SwiftShader|llvmpipe|Software|Microsoft Basic Render/i.test(
+        isSoftwareGl = /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(
           rendererStr
         );
+        gl.getExtension('WEBGL_lose_context')?.loseContext();
       }
     } catch {
       // ignore
@@ -352,10 +410,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     const viewmodelRig = new THREE.Group();
     camera.add(viewmodelRig);
 
-    // Dynamic Muzzle Flash PointLight attached to viewmodel
-    const muzzlePointLight = new THREE.PointLight(0xffb732, 0, 11, 1.6);
-    muzzlePointLight.position.set(0.2, -0.1, -1.1);
-    camera.add(muzzlePointLight);
+    // Dynamic Muzzle Flash PointLight positioned at the active 3D weapon barrel muzzle tip in world space
+    const muzzlePointLight = new THREE.PointLight(0xffb732, 0, 12, 1.5);
+    scene.add(muzzlePointLight);
 
     const weaponModels: Record<WeaponId, WeaponViewModelRig> = {} as Record<
       WeaponId,
@@ -420,7 +477,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         stripeMat
       );
       centerRing.rotation.x = -Math.PI / 2;
-      centerRing.position.y = 0.025;
+      centerRing.position.y = 0.011;
       mapGroup.add(centerRing);
 
       // Material-Specific 3D Floor Zones (Visually matching every Footstep Surface Material)
@@ -498,7 +555,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
               ? grassDeckMat
               : waterDeckMat;
 
-          const plateHeight = sz.material === 'wood' ? 0.042 : 0.026;
+          const plateHeight = sz.material === 'wood' ? 0.012 : 0.01;
           const deckPlate = new THREE.Mesh(
             new THREE.BoxGeometry(zw, plateHeight, zd),
             zoneMat
@@ -508,10 +565,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           mapGroup.add(deckPlate);
 
           const deckRim = new THREE.Mesh(
-            new THREE.BoxGeometry(zw + 0.16, 0.016, zd + 0.16),
+            new THREE.BoxGeometry(zw + 0.16, 0.006, zd + 0.16),
             zoneBevelMat
           );
-          deckRim.position.set(cx, 0.008, cz);
+          deckRim.position.set(cx, 0.003, cz);
           deckRim.receiveShadow = true;
           mapGroup.add(deckRim);
         }
@@ -578,26 +635,26 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         mesh.receiveShadow = true;
         mapGroup.add(mesh);
 
-        // Reinforced Steel Roof Cap & Base Plinth for visual Crispness
+        // Reinforced Steel Roof Cap & Base Plinth for visual Crispness (kept flush so wall decals at +0.012m are never occluded)
         if (!isPerimeter) {
           const cap = new THREE.Mesh(
-            new THREE.BoxGeometry(bw + 0.18, 0.16, bd + 0.18),
+            new THREE.BoxGeometry(bw + 0.06, 0.14, bd + 0.06),
             trimMat
           );
-          cap.position.set(b.x, bh + 0.04, b.z);
+          cap.position.set(b.x, bh + 0.07, b.z);
           mapGroup.add(cap);
 
           const plinth = new THREE.Mesh(
-            new THREE.BoxGeometry(bw + 0.14, 0.18, bd + 0.14),
+            new THREE.BoxGeometry(bw + 0.008, 0.12, bd + 0.008),
             trimMat
           );
-          plinth.position.set(b.x, 0.09, b.z);
+          plinth.position.set(b.x, 0.06, b.z);
           mapGroup.add(plinth);
 
           // Yellow tactical caution band on waist-high concrete barriers
           if (b.kind === 'cover' && bh <= 1.6) {
             const band = new THREE.Mesh(
-              new THREE.BoxGeometry(bw + 0.04, 0.1, bd + 0.04),
+              new THREE.BoxGeometry(bw + 0.006, 0.1, bd + 0.006),
               hazardStripeMat
             );
             band.position.set(b.x, bh - 0.18, b.z);
@@ -660,19 +717,34 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
     const barrelMat = new THREE.MeshStandardMaterial({
       color: 0xdc2626,
-      roughness: 0.36,
-      metalness: 0.48,
+      roughness: 0.32,
+      metalness: 0.56,
+      envMapIntensity: 1.35,
     });
     const barrelStripeMat = new THREE.MeshStandardMaterial({
       color: 0xfacc15,
-      roughness: 0.42,
-      metalness: 0.25,
+      roughness: 0.38,
+      metalness: 0.32,
+      envMapIntensity: 1.2,
+    });
+    const barrelRimMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      roughness: 0.36,
+      metalness: 0.82,
+      envMapIntensity: 1.35,
+    });
+    const barrelBungMat = new THREE.MeshStandardMaterial({
+      color: 0x94a3b8,
+      roughness: 0.25,
+      metalness: 0.88,
+      envMapIntensity: 1.4,
     });
     const crateMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       map: texSet.crateMap,
-      roughness: 0.76,
-      metalness: 0.12,
+      roughness: 0.72,
+      metalness: 0.14,
+      envMapIntensity: 1.15,
     });
 
     const syncBreakableProps = (sim: SimulationState) => {
@@ -682,31 +754,80 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           if (p.kind === 'barrel') {
             const grp = new THREE.Group();
             const cyl = new THREE.Mesh(
-              new THREE.CylinderGeometry(p.radius, p.radius, p.height, 16),
-              barrelMat.clone()
+              new THREE.CylinderGeometry(p.radius, p.radius, p.height, 20),
+              barrelMat
             );
             cyl.position.y = p.height * 0.5;
             cyl.castShadow = !isLow;
             cyl.receiveShadow = true;
 
+            // Rolled steel top & bottom chime rims
+            const chimeTop = new THREE.Mesh(
+              new THREE.CylinderGeometry(p.radius * 1.045, p.radius * 1.045, 0.045, 20),
+              barrelRimMat
+            );
+            chimeTop.position.y = p.height - 0.022;
+            const chimeBot = new THREE.Mesh(
+              new THREE.CylinderGeometry(p.radius * 1.045, p.radius * 1.045, 0.045, 20),
+              barrelRimMat
+            );
+            chimeBot.position.y = 0.022;
+
+            // Corrugated expansion ribs & high-visibility yellow hazard bands
             const ringTop = new THREE.Mesh(
-              new THREE.CylinderGeometry(p.radius * 1.04, p.radius * 1.04, 0.12, 16),
+              new THREE.CylinderGeometry(p.radius * 1.038, p.radius * 1.038, 0.11, 20),
               barrelStripeMat
             );
-            ringTop.position.y = p.height * 0.74;
+            ringTop.position.y = p.height * 0.72;
+
+            const ribMidTop = new THREE.Mesh(
+              new THREE.TorusGeometry(p.radius * 1.02, 0.018, 8, 20),
+              barrelRimMat
+            );
+            ribMidTop.rotation.x = Math.PI * 0.5;
+            ribMidTop.position.y = p.height * 0.64;
 
             const ringBot = new THREE.Mesh(
-              new THREE.CylinderGeometry(p.radius * 1.04, p.radius * 1.04, 0.12, 16),
+              new THREE.CylinderGeometry(p.radius * 1.038, p.radius * 1.038, 0.11, 20),
               barrelStripeMat
             );
-            ringBot.position.y = p.height * 0.26;
+            ringBot.position.y = p.height * 0.28;
 
-            grp.add(cyl, ringTop, ringBot);
+            const ribMidBot = new THREE.Mesh(
+              new THREE.TorusGeometry(p.radius * 1.02, 0.018, 8, 20),
+              barrelRimMat
+            );
+            ribMidBot.rotation.x = Math.PI * 0.5;
+            ribMidBot.position.y = p.height * 0.36;
+
+            // Top steel bungs (2-inch & 3/4-inch drum plugs)
+            const bungMain = new THREE.Mesh(
+              new THREE.CylinderGeometry(0.048, 0.048, 0.028, 10),
+              barrelBungMat
+            );
+            bungMain.position.set(p.radius * 0.42, p.height + 0.012, 0.06);
+            const bungVent = new THREE.Mesh(
+              new THREE.CylinderGeometry(0.028, 0.028, 0.024, 8),
+              barrelBungMat
+            );
+            bungVent.position.set(-p.radius * 0.38, p.height + 0.01, -0.08);
+
+            grp.add(
+              cyl,
+              chimeTop,
+              chimeBot,
+              ringTop,
+              ribMidTop,
+              ringBot,
+              ribMidBot,
+              bungMain,
+              bungVent
+            );
             obj = grp;
           } else {
             const box = new THREE.Mesh(
               new THREE.BoxGeometry(p.radius * 1.85, p.height, p.radius * 1.85),
-              crateMat.clone()
+              crateMat
             );
             box.position.y = p.height * 0.5;
             box.castShadow = !isLow;
@@ -729,6 +850,43 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     const pickupGroup = new THREE.Group();
     scene.add(pickupGroup);
     const pickupMeshes = new Map<string, { group: THREE.Group; ring: THREE.Mesh }>();
+
+    // Shared 3D World Loot Group & Geometries (zero per-frame allocations)
+    const worldLootGroup = new THREE.Group();
+    scene.add(worldLootGroup);
+    const worldLootCaseGeo = new THREE.BoxGeometry(0.46, 0.24, 0.34);
+    const worldLootStripeGeo = new THREE.BoxGeometry(0.48, 0.05, 0.36);
+    const worldLootRingGeo = new THREE.RingGeometry(0.36, 0.44, 20);
+    const worldLootTrimMat = new THREE.MeshStandardMaterial({
+      color: 0xf8fafc,
+      roughness: 0.25,
+      metalness: 0.3,
+    });
+    const worldLootWeaponMat = new THREE.MeshStandardMaterial({
+      color: 0xf59e0b,
+      roughness: 0.3,
+      metalness: 0.6,
+    });
+    const worldLootAttachmentMat = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      roughness: 0.28,
+      metalness: 0.55,
+    });
+    const worldLootSupplyMat = new THREE.MeshStandardMaterial({
+      color: 0x10b981,
+      roughness: 0.32,
+      metalness: 0.45,
+    });
+    const worldLootRingMat = new THREE.MeshBasicMaterial({
+      color: 0x34d399,
+      transparent: true,
+      opacity: 0.6,
+      side: THREE.DoubleSide,
+    });
+    const worldLootMeshes = new Map<
+      string,
+      { group: THREE.Group; ring: THREE.Mesh }
+    >();
 
     // 6B. MECCHA CHAMELEON 3D Lobby Stage (Sunlit Sky-Island Tactical Outpost matching reference image)
     const LOBBY_STAGE_Y = 46;
@@ -1131,6 +1289,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
 
     let currentLobbyCharId: CharacterId = p1CharRef.current;
     let currentLobbyWeaponId: WeaponId = selectedWeaponRef.current;
+    let currentCombatWeaponId: WeaponId = selectedWeaponRef.current;
     let lobbyCharRig: ChameleonHumanoidRig = buildChameleonHumanoidRig(
       currentLobbyCharId,
       maxAnisotropy
@@ -1152,59 +1311,139 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     combatPlayerRig.root.visible = false;
     scene.add(combatPlayerRig.root);
 
-    // 1st-Person Chameleon Forearms & Hands attached to viewmodelRig (uses combatPlayerRig.paintMaterial)
+    // 1st-Person Dedicated Viewmodel Arms & Hands parented directly to active weapon
     const fpChameleonArmsGroup = new THREE.Group();
-    viewmodelRig.add(fpChameleonArmsGroup);
 
-    const buildFpChameleonArm = (
-      side: -1 | 1,
+    const buildFpViewmodelArm = (
+      isRight: boolean,
       forearmRegion: BodyRegionId
     ): THREE.Group => {
       const armGrp = new THREE.Group();
-      const forearmGeo = new THREE.CylinderGeometry(0.036, 0.044, 0.28, 16, 8);
-      const uvAttr = forearmGeo.attributes.uv;
-      if (uvAttr) {
+
+      const mapGeoUvToRegion = (
+        geo: THREE.BufferGeometry,
+        reg: BodyRegionId,
+        subU?: [number, number]
+      ) => {
+        const uvAttr = geo.attributes.uv;
+        if (!uvAttr) return;
         for (let i = 0; i < uvAttr.count; i++) {
+          let u = uvAttr.getX(i);
+          if (subU) {
+            u = subU[0] + u * (subU[1] - subU[0]);
+          }
           const mapped = mapLocalUvToRegionAtlas(
-            uvAttr.getX(i),
+            u,
             uvAttr.getY(i),
-            forearmRegion
+            reg
           );
           uvAttr.setXY(i, mapped.u, mapped.v);
         }
         uvAttr.needsUpdate = true;
+      };
+
+      // Fingerless Sculpted Rounded Low-Poly Bulb/Mitten Hand matching ChameleonCharacter3D
+      const handGrp = new THREE.Group();
+      handGrp.name = isRight ? 'fpRightHandPivot' : 'fpLeftHandPivot';
+      const handSubRange: [number, number] = isRight ? [0.52, 0.98] : [0.02, 0.48];
+      const upperReg: BodyRegionId = isRight ? 'rightUpperArm' : 'leftUpperArm';
+
+      if (isRight) {
+        // Stocky rounded bulb/mitten firing hand wrapping the pistol grip (NO individual fingers)
+        const bulbHandGeo = new THREE.SphereGeometry(0.044, 12, 10);
+        mapGeoUvToRegion(bulbHandGeo, 'hands', handSubRange);
+        const bulbHandMesh = new THREE.Mesh(
+          bulbHandGeo,
+          combatPlayerRig.paintMaterial
+        );
+        bulbHandMesh.scale.set(0.96, 1.18, 1.14);
+        bulbHandMesh.position.set(0.012, -0.004, 0.006);
+        bulbHandMesh.rotation.set(0.28, -0.12, 0.08);
+        handGrp.add(bulbHandMesh);
+      } else {
+        // Stocky rounded bulb/mitten support hand cradling the handguard/forend (NO individual fingers)
+        const bulbHandGeo = new THREE.SphereGeometry(0.046, 12, 10);
+        mapGeoUvToRegion(bulbHandGeo, 'hands', handSubRange);
+        const bulbHandMesh = new THREE.Mesh(
+          bulbHandGeo,
+          combatPlayerRig.paintMaterial
+        );
+        bulbHandMesh.scale.set(1.14, 0.94, 1.24);
+        bulbHandMesh.position.set(-0.008, -0.014, 0.004);
+        bulbHandMesh.rotation.set(0.12, 0.18, -0.22);
+        handGrp.add(bulbHandMesh);
       }
+
+      // Stocky Flared Forearm extending naturally from the lower shoulder/elbow into the rounded bulb hand
+      const wristPos = isRight
+        ? new THREE.Vector3(0.018, -0.014, 0.028)
+        : new THREE.Vector3(-0.024, -0.018, 0.024);
+      const elbowPos = isRight
+        ? new THREE.Vector3(0.16, -0.15, 0.30)
+        : new THREE.Vector3(-0.34, -0.15, 0.34);
+
+      const forearmDir = new THREE.Vector3().subVectors(wristPos, elbowPos);
+      const forearmLen = forearmDir.length();
+      // Flared low-poly tubular forearm (wider at wrist, matching buildArmAssembly in chameleonCharacter3D.ts)
+      const forearmGeo = new THREE.CylinderGeometry(
+        0.048,
+        0.040,
+        forearmLen,
+        12,
+        4
+      );
+      mapGeoUvToRegion(forearmGeo, forearmRegion);
       const forearmMesh = new THREE.Mesh(
         forearmGeo,
         combatPlayerRig.paintMaterial
       );
-      forearmMesh.rotation.x = Math.PI * 0.42;
-      forearmMesh.position.set(side * 0.04, -0.05, 0.14);
+      forearmMesh.position
+        .addVectors(elbowPos, wristPos)
+        .multiplyScalar(0.5);
+      forearmMesh.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        forearmDir.clone().normalize()
+      );
 
-      const handGeo = new THREE.SphereGeometry(0.038, 14, 12);
-      const handUv = handGeo.attributes.uv;
-      if (handUv) {
-        for (let i = 0; i < handUv.count; i++) {
-          const mapped = mapLocalUvToRegionAtlas(
-            handUv.getX(i),
-            handUv.getY(i),
-            'hands'
-          );
-          handUv.setXY(i, mapped.u, mapped.v);
-        }
-        handUv.needsUpdate = true;
-      }
-      const handMesh = new THREE.Mesh(handGeo, combatPlayerRig.paintMaterial);
-      handMesh.scale.set(0.95, 0.85, 1.25);
-      handMesh.position.set(side * 0.02, -0.015, 0.01);
+      // Seamless rounded elbow bridge & upper-arm sleeve continuation so no gap ever shows during reload/recoil
+      const elbowCapGeo = new THREE.SphereGeometry(0.042, 10, 8);
+      mapGeoUvToRegion(elbowCapGeo, upperReg);
+      const elbowCap = new THREE.Mesh(
+        elbowCapGeo,
+        combatPlayerRig.paintMaterial
+      );
+      elbowCap.position.copy(elbowPos);
 
-      armGrp.add(forearmMesh, handMesh);
+      const shoulderPos = isRight
+        ? new THREE.Vector3(0.24, -0.22, 0.48)
+        : new THREE.Vector3(-0.44, -0.22, 0.52);
+      const upperDir = new THREE.Vector3().subVectors(elbowPos, shoulderPos);
+      const upperGeo = new THREE.CylinderGeometry(
+        0.041,
+        0.036,
+        upperDir.length(),
+        12,
+        3
+      );
+      mapGeoUvToRegion(upperGeo, upperReg);
+      const upperMesh = new THREE.Mesh(
+        upperGeo,
+        combatPlayerRig.paintMaterial
+      );
+      upperMesh.position.addVectors(shoulderPos, elbowPos).multiplyScalar(0.5);
+      upperMesh.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        upperDir.clone().normalize()
+      );
+
+      armGrp.add(handGrp, forearmMesh, elbowCap, upperMesh);
       return armGrp;
     };
 
-    const fpRightArm = buildFpChameleonArm(1, 'rightForearm');
-    const fpLeftArm = buildFpChameleonArm(-1, 'leftForearm');
+    const fpRightArm = buildFpViewmodelArm(true, 'rightForearm');
+    const fpLeftArm = buildFpViewmodelArm(false, 'leftForearm');
     fpChameleonArmsGroup.add(fpRightArm, fpLeftArm);
+    viewmodelRig.add(fpChameleonArmsGroup);
 
     // Flanking Squadmate Pedestals for Duo (2P) and Squad (4P) Lobby Preview
     const squadSlotPositions: [number, number, number][] = [
@@ -1302,61 +1541,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       tracerPool.push({ group: grp, coreMat, glowMat });
     }
 
-    // 7B. Spinning Brass Shell Casing Pool (24 casings)
-    const CASING_POOL_SIZE = 24;
-    const casingPool: ShellCasingParticle[] = [];
-    const casingGeo = new THREE.CylinderGeometry(0.006, 0.006, 0.028, 8);
-    const casingMat = new THREE.MeshStandardMaterial({
-      color: 0xfacc15,
-      roughness: 0.22,
-      metalness: 0.92,
-    });
-    for (let i = 0; i < CASING_POOL_SIZE; i++) {
-      const mesh = new THREE.Mesh(casingGeo, casingMat);
-      mesh.visible = false;
-      vfxGroup.add(mesh);
-      casingPool.push({
-        mesh,
-        active: false,
-        ageMs: 0,
-        maxAgeMs: 950,
-        vx: 0,
-        vy: 0,
-        vz: 0,
-        rx: 0,
-        ry: 0,
-        rz: 0,
-      });
-    }
-    let casingCursor = 0;
-
-    const spawnShellCasing = () => {
-      const c = casingPool[casingCursor];
-      casingCursor = (casingCursor + 1) % CASING_POOL_SIZE;
-      const activeRig = weaponModels[simRef.current.player.activeWeapon];
-      if (!activeRig) return;
-
-      const worldPos = activeRig.ejectionPortLocal.clone();
-      activeRig.gunGroup.localToWorld(worldPos);
-      c.mesh.position.copy(worldPos);
-
-      // Eject up and to the right in camera space
-      const rightDir = new THREE.Vector3(1, 0.45, -0.15)
-        .applyQuaternion(camera.quaternion)
-        .normalize();
-      const speed = 2.2 + Math.random() * 1.1;
-      c.vx = rightDir.x * speed;
-      c.vy = rightDir.y * speed + 1.4;
-      c.vz = rightDir.z * speed;
-      c.rx = (Math.random() - 0.5) * 28;
-      c.ry = (Math.random() - 0.5) * 28;
-      c.rz = (Math.random() - 0.5) * 28;
-      c.ageMs = 0;
-      c.maxAgeMs = 900;
-      c.active = true;
-      c.mesh.visible = true;
-    };
-
     // 7C. 3D Impact Sparks, Concrete Dust, Blood & Explosion Particle Pool (96 particles)
     const PARTICLE_POOL_SIZE = 96;
     const particlePool: ImpactParticle[] = [];
@@ -1445,55 +1629,57 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     }
     let ringCursor = 0;
 
-    // 7E. Surface-Aligned Weapon-Specific Bullet Decals & Blood Splatters (120 decals)
-    const DECAL_POOL_SIZE = 120;
+    // 7E. Production-Quality Hybrid Procedural Bullet Impact Engine + Blood Splatter Decal Pool
+    const bulletImpactSystem = new BulletImpactSystem(
+      vfxGroup,
+      settingsRef.current.particleQuality,
+      isSoftwareGl
+    );
+    let lastImpactQualitySetting = settingsRef.current.particleQuality;
+
+    const _impactRequestScratch: ImpactRequest = {
+      point: { x: 0, y: 0, z: 0 },
+      normal: { x: 0, y: 1, z: 0 },
+      direction: { x: 0, y: 0, z: -1 },
+      origin: { x: 0, y: 0, z: 0 },
+      weaponId: 'm4a1',
+      arena: undefined,
+      propKind: null,
+      damage: 28,
+      isEnemyShot: false,
+    };
+
+    // Dedicated lightweight pool for floor blood splatters & barrel blast scorch marks (24 decals)
+    const DECAL_POOL_SIZE = 24;
     const decalPool: BulletDecalFX[] = [];
-    // Unit 1m x 1m plane so mesh.scale.set(scaleT, scaleB, 1) directly sets exact world-space dimensions
     const decalGeo = new THREE.PlaneGeometry(1, 1);
     for (let i = 0; i < DECAL_POOL_SIZE; i++) {
       const mat = new THREE.MeshBasicMaterial({
-        map: texSet.bulletHoleM4a1Map,
+        map: texSet.bloodSplatterMap,
         transparent: true,
-        opacity: 0.94,
+        opacity: 0.9,
         depthWrite: false,
         polygonOffset: true,
-        polygonOffsetFactor: -3,
+        polygonOffsetFactor: -4,
+        polygonOffsetUnits: -4,
       });
       const mesh = new THREE.Mesh(decalGeo, mat);
       mesh.visible = false;
       vfxGroup.add(mesh);
-      decalPool.push({ mesh, mat, active: false });
+      decalPool.push({
+        mesh,
+        mat,
+        active: false,
+        ageMs: 2000,
+        emberGlow: 0,
+        isBlood: true,
+      });
     }
     let decalCursor = 0;
 
     let highestProcessedTraceId = 0;
     const normalVec = new THREE.Vector3();
-    const tangentVec = new THREE.Vector3();
-    const bitangentVec = new THREE.Vector3();
-    const decalBasisMat = new THREE.Matrix4();
     const defaultForward = new THREE.Vector3(0, 0, 1);
-    const decalRaycaster = new THREE.Raycaster();
-    const rayOriginVec = new THREE.Vector3();
-    const rayDirVec = new THREE.Vector3();
-
-    const getWeaponDecalTexture = (weaponId?: WeaponId): THREE.CanvasTexture => {
-      switch (weaponId) {
-        case 'mp5':
-          return texSet.bulletHoleMp5Map;
-        case 'm4a1':
-          return texSet.bulletHoleM4a1Map;
-        case 'ak47':
-          return texSet.bulletHoleAk47Map;
-        case 'deagle':
-          return texSet.bulletHoleDeagleMap;
-        case 'spas12':
-          return texSet.bulletHoleShotgunMap;
-        case 'awp':
-          return texSet.bulletHoleAwpMap;
-        default:
-          return texSet.bulletHoleM4a1Map;
-      }
-    };
 
     const spawnTraceImpactVFX = (
       fromX: number,
@@ -1507,150 +1693,68 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       nz: number,
       hitKind: 'wall' | 'enemy' | 'headshot' | 'prop' | 'sky',
       weaponId?: WeaponId,
-      isEnemyShot?: boolean
+      isEnemyShot?: boolean,
+      propKind?: 'crate' | 'barrel',
+      damage?: number
     ) => {
       if (hitKind === 'sky') return;
 
       const wid: WeaponId = weaponId || 'm4a1';
-      const impactProfile = WEAPON_IMPACT_PROFILES[wid] || WEAPON_IMPACT_PROFILES.m4a1;
       normalVec.set(nx, ny, nz).normalize();
 
-      // 1. Expanding Shockwave / Blood Mist Ring at Impact Point (scaled by weapon ballistic power)
-      const ring = ringPool[ringCursor];
-      ringCursor = (ringCursor + 1) % RING_POOL_SIZE;
-      ring.active = true;
-      ring.ageMs = 0;
-      ring.maxAgeMs =
-        hitKind === 'headshot'
-          ? 320
-          : hitKind === 'enemy'
-          ? 260
-          : Math.round(170 + impactProfile.craterDepthFactor * 75);
-      ring.maxScale =
-        hitKind === 'headshot'
-          ? 4.2
-          : hitKind === 'enemy'
-          ? 3.1
-          : impactProfile.ringScale;
-      ring.mat.color.setHex(
-        hitKind === 'headshot'
-          ? 0xdc2626
-          : hitKind === 'enemy'
-          ? 0xb91c1c
-          : impactProfile.sparkColorHex
-      );
-      ring.mesh.position.set(x + nx * 0.03, y + ny * 0.03, z + nz * 0.03);
-      ring.mesh.quaternion.setFromUnitVectors(defaultForward, normalVec);
-      ring.mesh.scale.setScalar(0.32);
-      ring.mesh.visible = true;
+      // 1. Expanding Blood Mist Ring ONLY on enemy/headshot hits
+      if (hitKind === 'headshot' || hitKind === 'enemy') {
+        const ring = ringPool[ringCursor];
+        ringCursor = (ringCursor + 1) % RING_POOL_SIZE;
+        ring.active = true;
+        ring.ageMs = 0;
+        ring.maxAgeMs = hitKind === 'headshot' ? 320 : 260;
+        ring.maxScale = hitKind === 'headshot' ? 4.2 : 3.1;
+        ring.mat.color.setHex(hitKind === 'headshot' ? 0xdc2626 : 0xb91c1c);
+        ring.mesh.position.set(x + nx * 0.03, y + ny * 0.03, z + nz * 0.03);
+        ring.mesh.quaternion.setFromUnitVectors(defaultForward, normalVec);
+        ring.mesh.scale.setScalar(0.32);
+        ring.mesh.visible = true;
+      }
 
-      // 2. Directional 360° Deflected Sparks / Blood Burst / Clamped Weapon-Specific Gunshot Mark
+      // 2. Hybrid Procedural Bullet Impact Engine on Wall, Floor, Container, Pillar, Tower & Prop Surfaces
       if (hitKind === 'wall' || hitKind === 'prop') {
         const arenaDefNow =
           ARENA_REGISTRY[simRef.current.arenaId] || ARENA_REGISTRY.foundry_arena;
 
-        rayOriginVec.set(fromX, fromY, fromZ);
-        rayDirVec.set(x - fromX, y - fromY, z - fromZ);
-        const rayLen = rayDirVec.length();
+        _impactRequestScratch.origin!.x = fromX;
+        _impactRequestScratch.origin!.y = fromY;
+        _impactRequestScratch.origin!.z = fromZ;
+        _impactRequestScratch.point.x = x;
+        _impactRequestScratch.point.y = y;
+        _impactRequestScratch.point.z = z;
+        _impactRequestScratch.normal.x = nx;
+        _impactRequestScratch.normal.y = ny;
+        _impactRequestScratch.normal.z = nz;
+        _impactRequestScratch.direction.x = x - fromX;
+        _impactRequestScratch.direction.y = y - fromY;
+        _impactRequestScratch.direction.z = z - fromZ;
+        _impactRequestScratch.weaponId = wid;
+        _impactRequestScratch.arena = arenaDefNow;
+        _impactRequestScratch.propKind = propKind || null;
+        _impactRequestScratch.damage = damage;
+        _impactRequestScratch.isEnemyShot = Boolean(isEnemyShot);
 
-        let hitPointX = x;
-        let hitPointY = y;
-        let hitPointZ = z;
-        let surfNx = nx;
-        let surfNy = ny;
-        let surfNz = nz;
-        let verifiedStaticSurface = false;
+        const impactMeta = bulletImpactSystem.addImpact(_impactRequestScratch);
 
-        if (hitKind === 'wall' && rayLen > 0.05) {
-          rayDirVec.divideScalar(rayLen);
-          decalRaycaster.near = 0.01;
-          decalRaycaster.far = rayLen + 1.5;
-          decalRaycaster.set(rayOriginVec, rayDirVec);
-          const hits = decalRaycaster.intersectObjects(mapGroup.children, true);
-          const validHit = hits.find(
-            (h) => h.face && h.distance <= rayLen + 0.65 && h.object.visible
-          );
-          if (validHit && validHit.face) {
-            normalVec
-              .copy(validHit.face.normal)
-              .transformDirection(validHit.object.matrixWorld)
-              .normalize();
-            hitPointX = validHit.point.x;
-            hitPointY = validHit.point.y;
-            hitPointZ = validHit.point.z;
-            surfNx = normalVec.x;
-            surfNy = normalVec.y;
-            surfNz = normalVec.z;
-            verifiedStaticSurface = true;
-          }
-        }
-
-        const pose = computeBallisticImpactMarkPose(
-          fromX,
-          fromY,
-          fromZ,
-          hitPointX,
-          hitPointY,
-          hitPointZ,
-          surfNx,
-          surfNy,
-          surfNz,
-          wid,
-          arenaDefNow
-        );
-
-        // Deflect sparks along the 360° grazing reflection direction (tircha ricochet spray)
-        const sparkDirX = pose.validSurface ? pose.reflectX : surfNx;
-        const sparkDirY = pose.validSurface ? pose.reflectY : surfNy;
-        const sparkDirZ = pose.validSurface ? pose.reflectZ : surfNz;
-        const sparkCount = isLow
-          ? Math.max(3, Math.round(impactProfile.sparkCount * 0.5))
-          : impactProfile.sparkCount;
-
-        spawnImpactBurst(
-          hitPointX,
-          hitPointY,
-          hitPointZ,
-          sparkDirX,
-          sparkDirY,
-          sparkDirZ,
-          impactProfile.sparkColorHex,
-          sparkCount,
-          0.95 + impactProfile.craterDepthFactor * 0.45,
-          0.8 + impactProfile.craterDepthFactor * 0.35
-        );
-        spawnImpactBurst(
-          hitPointX,
-          hitPointY,
-          hitPointZ,
-          surfNx,
-          surfNy,
-          surfNz,
-          0x94a3b8,
-          isLow ? 2 : Math.max(3, Math.round(sparkCount * 0.45)),
-          0.55,
-          1.15
-        );
-
-        // Place weapon-specific gunshot mark ONLY on verified solid wall/floor surfaces and strictly clamped inside face bounds
-        if (hitKind === 'wall' && !isEnemyShot && verifiedStaticSurface && pose.validSurface) {
-          const dec = decalPool[decalCursor];
-          decalCursor = (decalCursor + 1) % DECAL_POOL_SIZE;
-          dec.mat.map = getWeaponDecalTexture(wid);
-          dec.mat.opacity = 0.95;
-          dec.mat.needsUpdate = true;
-          dec.active = true;
-
-          dec.mesh.position.set(pose.x, pose.y, pose.z);
-          tangentVec.set(pose.tx, pose.ty, pose.tz).normalize();
-          bitangentVec.set(pose.bx, pose.by, pose.bz).normalize();
-          normalVec.set(pose.nx, pose.ny, pose.nz).normalize();
-          decalBasisMat.makeBasis(tangentVec, bitangentVec, normalVec);
-          dec.mesh.quaternion.setFromRotationMatrix(decalBasisMat);
-
-          // Non-uniform grazing scale: stretches along local X (tangent trajectory) at oblique 360° angles
-          dec.mesh.scale.set(pose.scaleT, pose.scaleB, 1);
-          dec.mesh.visible = true;
+        if (impactMeta && container) {
+          const telemetry = bulletImpactSystem.getDebugTelemetry();
+          container.dataset.activeDecals = String(telemetry.activeImpactCount);
+          container.dataset.lastDecalWeapon = wid;
+          container.dataset.lastDecalSurface = impactMeta.surfaceId || 'wall';
+          container.dataset.lastDecalStretch = impactMeta.elongation.toFixed(2);
+          container.dataset.lastImpactMaterial = impactMeta.materialType;
+          container.dataset.lastImpactRegime = impactMeta.regime;
+          container.dataset.lastImpactAngleDeg = impactMeta.incidenceDeg.toFixed(1);
+          container.dataset.lastImpactShapeFamily = String(impactMeta.shapeFamily);
+          container.dataset.lastImpactOverlap = String(impactMeta.localOverlapCount);
+          container.dataset.impactDrawCalls = String(telemetry.impactDrawCalls);
+          container.dataset.impactPoolUtilization = telemetry.poolUtilizationRatio.toFixed(3);
         }
       } else if (hitKind === 'headshot' || hitKind === 'enemy') {
         const isHs = hitKind === 'headshot';
@@ -1688,11 +1792,15 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         decalCursor = (decalCursor + 1) % DECAL_POOL_SIZE;
         dec.mat.map = texSet.bloodSplatterMap;
         dec.mat.opacity = 0.88;
+        dec.mat.color.setHex(0xffffff);
         dec.mat.needsUpdate = true;
         dec.active = true;
+        dec.ageMs = 2000;
+        dec.emberGlow = 0;
+        dec.isBlood = true;
         dec.mesh.position.set(
           x + (Math.random() - 0.5) * 0.35,
-          0.012,
+          0.018,
           z + (Math.random() - 0.5) * 0.35
         );
         normalVec.set(0, 1, 0);
@@ -1701,6 +1809,302 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         const bloodDiam = (isHs ? 0.52 : 0.38) * (0.85 + Math.random() * 0.3);
         dec.mesh.scale.set(bloodDiam, bloodDiam, 1);
         dec.mesh.visible = true;
+      }
+    };
+
+    // 7F. Complex Dynamic Multi-Stage Red Drum Explosion System (Zero-GC Pooled Volumetric Sprites)
+    const explosionPointLight = new THREE.PointLight(0xff7b00, 0, 32, 1.35);
+    vfxGroup.add(explosionPointLight);
+
+    const CORE_FLASH_POOL_SIZE = 4;
+    const explosionCoreFlashPool: ExplosionCoreFlashFX[] = [];
+    const coreInnerGeo = new THREE.PlaneGeometry(1.6, 1.6);
+    const coreOuterGeo = new THREE.PlaneGeometry(2.4, 2.4);
+    for (let i = 0; i < CORE_FLASH_POOL_SIZE; i++) {
+      const innerMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        map: texSet.fireballCloudMap,
+        transparent: true,
+        opacity: 1,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const outerMat = new THREE.MeshBasicMaterial({
+        color: 0xff7b00,
+        map: texSet.fireballCloudMap,
+        transparent: true,
+        opacity: 0.96,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const grp = new THREE.Group();
+      const mIn1 = new THREE.Mesh(coreInnerGeo, innerMat);
+      const mIn2 = new THREE.Mesh(coreInnerGeo, innerMat);
+      mIn2.rotation.y = Math.PI * 0.5;
+      const mOut1 = new THREE.Mesh(coreOuterGeo, outerMat);
+      const mOut2 = new THREE.Mesh(coreOuterGeo, outerMat);
+      mOut2.rotation.y = Math.PI * 0.5;
+      const mOut3 = new THREE.Mesh(coreOuterGeo, outerMat);
+      mOut3.rotation.x = Math.PI * 0.5;
+      grp.add(mIn1, mIn2, mOut1, mOut2, mOut3);
+      grp.visible = false;
+      vfxGroup.add(grp);
+      explosionCoreFlashPool.push({
+        group: grp,
+        innerMat,
+        outerMat,
+        active: false,
+        ageMs: 0,
+        maxAgeMs: 280,
+        maxScale: 4.4,
+      });
+    }
+    let coreFlashCursor = 0;
+
+    const EXPLOSION_PLUME_POOL_SIZE = 48;
+    const explosionPlumePool: ExplosionPlumeFX[] = [];
+    // Camera-facing volumetric billboard quad instead of solid geometric spheres
+    const plumeGeo = new THREE.PlaneGeometry(1.38, 1.38);
+    for (let i = 0; i < EXPLOSION_PLUME_POOL_SIZE; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0xfef08a,
+        map: texSet.fireballCloudMap,
+        transparent: true,
+        opacity: 0.95,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(plumeGeo, mat);
+      mesh.visible = false;
+      vfxGroup.add(mesh);
+      explosionPlumePool.push({
+        mesh,
+        mat,
+        active: false,
+        delayMs: 0,
+        ageMs: 0,
+        maxAgeMs: 950,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        rx: 0,
+        ry: 0,
+        rz: 0,
+        startScale: 0.7,
+        endScale: 2.6,
+        isSmoke: false,
+      });
+    }
+    let plumeCursor = 0;
+
+    const SHRAPNEL_POOL_SIZE = 28;
+    const barrelShrapnelPool: BarrelShrapnelFX[] = [];
+    const shrapnelGeo = new THREE.DodecahedronGeometry(0.12, 0);
+    shrapnelGeo.scale(1.55, 0.38, 1.05);
+    for (let i = 0; i < SHRAPNEL_POOL_SIZE; i++) {
+      const mat = new THREE.MeshStandardMaterial({
+        color: i % 3 === 0 ? 0xdc2626 : i % 3 === 1 ? 0x991b1b : 0x1e293b,
+        emissive: 0xff6b00,
+        emissiveIntensity: 1.6,
+        roughness: 0.42,
+        metalness: 0.82,
+      });
+      const mesh = new THREE.Mesh(shrapnelGeo, mat);
+      mesh.visible = false;
+      vfxGroup.add(mesh);
+      barrelShrapnelPool.push({
+        mesh,
+        mat,
+        active: false,
+        ageMs: 0,
+        maxAgeMs: 1550,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        rx: 0,
+        ry: 0,
+        rz: 0,
+        bounces: 0,
+      });
+    }
+    let shrapnelCursor = 0;
+
+    const spawnBarrelExplosionVFX = (bx: number, bz: number) => {
+      // 1. Dynamic High-Intensity Thermal PointLight Flash
+      explosionPointLight.position.set(bx, 1.45, bz);
+      explosionPointLight.color.setHex(0xff8c1a);
+      explosionPointLight.intensity = 26.0;
+
+      // 2. Blinding White-Gold Volumetric Core Detonation Flash
+      const core = explosionCoreFlashPool[coreFlashCursor];
+      coreFlashCursor = (coreFlashCursor + 1) % CORE_FLASH_POOL_SIZE;
+      core.active = true;
+      core.ageMs = 0;
+      core.maxAgeMs = 280;
+      core.maxScale = 4.6;
+      core.group.position.set(bx, 1.05, bz);
+      core.group.scale.setScalar(0.55);
+      core.innerMat.opacity = 1;
+      core.outerMat.opacity = 0.98;
+      core.group.visible = true;
+
+      // 3. Triple Supersonic Ground & Air Mach Shockwave Rings
+      for (let w = 0; w < 3; w++) {
+        const ring = ringPool[ringCursor];
+        ringCursor = (ringCursor + 1) % RING_POOL_SIZE;
+        ring.active = true;
+        ring.ageMs = 0;
+        ring.maxAgeMs = w === 0 ? 320 : w === 1 ? 460 : 580;
+        ring.maxScale = w === 0 ? 58 : w === 1 ? 82 : 104;
+        ring.mat.color.setHex(w === 0 ? 0xffffff : w === 1 ? 0xfef08a : 0xf97316);
+        ring.mesh.position.set(bx, w === 2 ? 0.85 : 0.06 + w * 0.04, bz);
+        normalVec.set(0, 1, 0);
+        ring.mesh.quaternion.setFromUnitVectors(defaultForward, normalVec);
+        ring.mesh.scale.setScalar(1.25);
+        ring.mesh.visible = true;
+      }
+
+      // 4. Persistent Scorched Blast Crater Floor Decal with Glowing Thermal Ember Fissures
+      const scorch = decalPool[decalCursor];
+      decalCursor = (decalCursor + 1) % DECAL_POOL_SIZE;
+      scorch.mat.map = texSet.blastScorchMap;
+      scorch.mat.opacity = 0.99;
+      scorch.mat.color.setHex(0xffb478);
+      scorch.mat.needsUpdate = true;
+      scorch.active = true;
+      scorch.ageMs = 0;
+      scorch.emberGlow = 1.0;
+      scorch.isBlood = false;
+      scorch.mesh.position.set(bx, 0.019, bz);
+      normalVec.set(0, 1, 0);
+      scorch.mesh.quaternion.setFromUnitVectors(defaultForward, normalVec);
+      scorch.mesh.rotateZ(Math.random() * Math.PI * 2);
+      scorch.mesh.scale.set(3.6, 3.6, 1);
+      scorch.mesh.visible = true;
+
+      // 5. Volumetric Camera-Facing Pyroclastic Fireball Billows + Staggered Fuel-Air Sub-Blasts + Mushroom Smoke + Ground Fire
+      const plumeCount = isLow ? 22 : 36;
+      for (let i = 0; i < plumeCount; i++) {
+        const pl = explosionPlumePool[plumeCursor];
+        plumeCursor = (plumeCursor + 1) % EXPLOSION_PLUME_POOL_SIZE;
+        const isLingeringGroundFire = i >= plumeCount - (isLow ? 4 : 6);
+        const isSmoke = !isLingeringGroundFire && i >= Math.floor(plumeCount * 0.52);
+        const isSecondaryWave =
+          !isSmoke && !isLingeringGroundFire && i >= Math.floor(plumeCount * 0.28);
+        const angle = (i / plumeCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.45;
+
+        if (isLingeringGroundFire) {
+          const gfDist = 0.18 + Math.random() * 1.15;
+          pl.active = true;
+          pl.delayMs = 120 + Math.random() * 240;
+          pl.ageMs = 0;
+          pl.maxAgeMs = 1450 + Math.random() * 850;
+          pl.isSmoke = false;
+          pl.startScale = 0.55 + Math.random() * 0.35;
+          pl.endScale = 1.15 + Math.random() * 0.45;
+          pl.mesh.position.set(
+            bx + Math.cos(angle) * gfDist,
+            0.32 + Math.random() * 0.22,
+            bz + Math.sin(angle) * gfDist
+          );
+          pl.vx = (Math.random() - 0.5) * 0.35;
+          pl.vy = 0.42 + Math.random() * 0.45;
+          pl.vz = (Math.random() - 0.5) * 0.35;
+          pl.rx = 0;
+          pl.ry = 0;
+          pl.rz = (Math.random() - 0.5) * 3.2;
+          pl.mat.blending = THREE.AdditiveBlending;
+          pl.mat.color.setHex(0xf97316);
+          pl.mat.opacity = 0;
+          pl.mat.needsUpdate = true;
+          pl.mesh.scale.setScalar(pl.startScale);
+          pl.mesh.visible = false;
+          continue;
+        }
+
+        const radialDist = isSmoke
+          ? 0.25 + Math.random() * 0.95
+          : isSecondaryWave
+            ? 0.65 + Math.random() * 1.35
+            : 0.12 + Math.random() * 0.65;
+
+        pl.active = true;
+        pl.delayMs = isSecondaryWave
+          ? 55 + Math.random() * 125
+          : isSmoke
+            ? 35 + Math.random() * 95
+            : 0;
+        pl.ageMs = 0;
+        pl.maxAgeMs = isSmoke
+          ? 1350 + Math.random() * 650
+          : isSecondaryWave
+            ? 680 + Math.random() * 280
+            : 580 + Math.random() * 240;
+        pl.isSmoke = isSmoke;
+        pl.startScale = isSmoke ? 0.85 + Math.random() * 0.45 : 0.75 + Math.random() * 0.45;
+        pl.endScale = isSmoke ? 3.2 + Math.random() * 1.4 : 2.45 + Math.random() * 1.15;
+
+        pl.mesh.position.set(
+          bx + Math.cos(angle) * radialDist,
+          0.48 + Math.random() * 0.85,
+          bz + Math.sin(angle) * radialDist
+        );
+        const outSpd = isSmoke ? 1.5 + Math.random() * 2.4 : 3.2 + Math.random() * 4.8;
+        pl.vx = Math.cos(angle) * outSpd;
+        pl.vy = isSmoke ? 3.8 + Math.random() * 3.2 : 2.6 + Math.random() * 4.2;
+        pl.vz = Math.sin(angle) * outSpd;
+        pl.rx = Math.random() * Math.PI * 2;
+        pl.ry = 0;
+        pl.rz = (Math.random() - 0.5) * 3.8;
+
+        pl.mat.blending = isSmoke ? THREE.NormalBlending : THREE.AdditiveBlending;
+        pl.mat.color.setHex(isSmoke ? 0x334155 : 0xfef08a);
+        pl.mat.opacity = pl.delayMs > 0 ? 0 : 0.98;
+        pl.mat.needsUpdate = true;
+        pl.mesh.scale.setScalar(pl.startScale);
+        pl.mesh.visible = pl.delayMs <= 0;
+      }
+
+      // 6. Ballistic Burning Red Steel Drum Shrapnel + Blown Drum Lid Chunks with Sparking Floor Bounce
+      const shrapCount = isLow ? 12 : 22;
+      for (let i = 0; i < shrapCount; i++) {
+        const sh = barrelShrapnelPool[shrapnelCursor];
+        shrapnelCursor = (shrapnelCursor + 1) % SHRAPNEL_POOL_SIZE;
+        const isDrumLid = i === 0;
+        const ang = (i / shrapCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.4;
+        const spd = isDrumLid ? 2.2 + Math.random() * 2.5 : 6.0 + Math.random() * 9.2;
+        sh.active = true;
+        sh.ageMs = 0;
+        sh.maxAgeMs = 1250 + Math.random() * 600;
+        sh.bounces = 0;
+        sh.mesh.position.set(
+          bx + Math.cos(ang) * (isDrumLid ? 0.08 : 0.35),
+          isDrumLid ? 1.15 : 0.55 + Math.random() * 0.65,
+          bz + Math.sin(ang) * (isDrumLid ? 0.08 : 0.35)
+        );
+        sh.vx = Math.cos(ang) * spd;
+        sh.vy = isDrumLid ? 11.5 + Math.random() * 3.5 : 5.8 + Math.random() * 8.4;
+        sh.vz = Math.sin(ang) * spd;
+        sh.rx = (Math.random() - 0.5) * 24;
+        sh.ry = (Math.random() - 0.5) * 24;
+        sh.rz = (Math.random() - 0.5) * 24;
+        sh.mat.emissiveIntensity = 1.85;
+        sh.mesh.scale.setScalar(isDrumLid ? 2.1 : 0.85 + Math.random() * 0.85);
+        sh.mesh.visible = true;
+      }
+
+      // 7. High-Velocity White-Hot Sparks & Incandescent Fuel Droplet Streamers
+      spawnImpactBurst(bx, 0.95, bz, 0, 1, 0, 0xffffff, isLow ? 14 : 24, 2.55, 1.85);
+      spawnImpactBurst(bx, 0.85, bz, 0, 1, 0, 0xfef08a, isLow ? 18 : 30, 2.25, 2.05);
+      spawnImpactBurst(bx, 0.68, bz, 0, 1, 0, 0xf97316, isLow ? 16 : 28, 1.9, 2.4);
+      spawnImpactBurst(bx, 0.48, bz, 0, 1, 0, 0xdc2626, isLow ? 12 : 20, 1.5, 2.7);
+
+      if (container) {
+        container.dataset.lastBarrelBlastX = bx.toFixed(2);
+        container.dataset.lastBarrelBlastZ = bz.toFixed(2);
+        container.dataset.activeExplosionPlumes = String(plumeCount);
       }
     };
 
@@ -1719,7 +2123,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     let queuedWeaponCycle = 0;
     let hitMarkerTimerMs = 0;
 
-    // Weapon viewmodel spring sway, smooth locomotion blend, wall contact & micro-animation state
+    // Weapon viewmodel spring sway, smooth locomotion blend, physical 3D recoil & arm transition state
     let swayYaw = 0;
     let swayPitch = 0;
     let swayRoll = 0;
@@ -1738,11 +2142,84 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     let wallTouchImpulse = 0;
     let triggerPullBlend = 0;
     let inspectBreathPhase = 0;
+    let fpWeaponKickZ = 0;
+    let fpWeaponKickPitch = 0;
+    let fpWeaponKickRoll = 0;
 
-    // Pre-allocated scratch vectors for 60fps tracer loop (zero GC churn)
+    // Unified FPV <-> TPV transition blend (0 = First-Person, 1 = Third-Person) & 360° 3rd-person camera orbit
+    let tpViewBlend = firstPersonModeRef.current ? 0 : 1;
+    let tpOrbitYawOffset = 0;
+    let tpOrbitPitchOffset = 0.18;
+    const fpCamPos = new THREE.Vector3();
+    const tpCamPos = new THREE.Vector3();
+    const fpCamQuat = new THREE.Quaternion();
+    const tpCamQuat = new THREE.Quaternion();
+    const orbitLookTarget = new THREE.Vector3();
+    const orbitDummyCam = new THREE.PerspectiveCamera();
+
+    // Pre-allocated scratch vectors & objects for 60fps combat loop (zero GC churn)
     const tracerStartVec = new THREE.Vector3();
     const tracerEndVec = new THREE.Vector3();
     const tracerMidVec = new THREE.Vector3();
+    const _muzzleWorldPos = new THREE.Vector3();
+    const subInputScratch: PlayerInputSnapshot = {
+      moveX: 0,
+      moveZ: 0,
+      lookDeltaYaw: 0,
+      lookDeltaPitch: 0,
+      sprintHeld: false,
+      jumpPressed: false,
+      crouchToggled: false,
+      slidePressed: false,
+      fireHeld: false,
+      fireJustPressed: false,
+      adsHeld: false,
+      reloadPressed: false,
+      selectWeapon: null,
+      cycleWeaponDelta: 0,
+    };
+    const combatKinematicsScratch: CombatWeaponKinematicsInput = {
+      swayPosX: 0,
+      swayPosY: 0,
+      swayPosZ: 0,
+      swayYaw: 0,
+      swayPitch: 0,
+      swayRoll: 0,
+      strafeRoll: 0,
+      wallObstruction: 0,
+      wallBumpWave: 0,
+      recoilKickZ: 0,
+      recoilKickPitch: 0,
+      recoilKickRoll: 0,
+      landDipY: 0,
+      jumpImpulseY: 0,
+      landRollImpulse: 0,
+      airborneLift: 0,
+      airbornePitch: 0,
+      triggerPullBlend: 0,
+      muzzleFlashActive: false,
+      fireCooldownRatio: 0,
+      magAmmoCount: 30,
+      isFirstHalfSwap: false,
+      swapHalfProgress: 0,
+      weaponRig: undefined,
+    };
+    const weaponSwayState: WeaponSwayPhysicsState = createWeaponSwayPhysicsState();
+    const weaponSwayInputScratch: WeaponSwayStepInput = {
+      weaponId: 'm4a1',
+      lookDeltaYaw: 0,
+      lookDeltaPitch: 0,
+      localVelRight: 0,
+      localVelFwd: 0,
+      velY: 0,
+      moveSpeed: 0,
+      walkBobPhase: 0,
+      adsBlend: 0,
+      isCrouching: false,
+      isSprinting: false,
+      isSliding: false,
+      isGrounded: true,
+    };
 
     // HUD dirty-check cache to prevent redundant DOM style/text writes at 60fps
     let lastHpPctStr = '';
@@ -1752,8 +2229,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     let lastKillsText = '';
     let lastBotKillsText = '';
     let lastTimerText = '';
-    let lastScopeOpacityStr = '';
     let lastChOpacityStr = '';
+    let smoothedChGapPx = 13.0;
+    let lastChGapStr = '';
+    let lastChTickLenStr = '';
+    let lastChDotScaleStr = '';
+    let lastChColorStr = '';
+    let lastChWeaponStr = '';
     let lastSlideOpacityStr = '';
     let lastHitMarkerOpacityStr = '';
     let lastHurtOpacityStr = '';
@@ -1765,13 +2247,24 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       const kb = settingsRef.current.keybindings;
       if (e.code === kb.jump) jumpQueued = true;
       if (e.code === kb.crouch || e.code === 'KeyC') crouchToggleQueued = true;
-      if (e.code === kb.slide || e.code === 'KeyV') slideQueued = true;
+      if (e.code === kb.slide || e.code === 'KeyX') slideQueued = true;
+      if (e.code === 'KeyV' || e.code === kb.toggleView) {
+        onToggleFirstPersonRef.current?.();
+        soundEngine.play('ui_click');
+      }
+      if ((e.code === kb.fire || e.code === 'KeyJ' || e.code === 'KeyF') && !e.repeat) {
+        mouseFireJustPressed = true;
+      }
       if (e.code === kb.reload || e.code === 'KeyR') reloadQueued = true;
       if (e.code === kb.nextWeapon || e.code === 'KeyQ') queuedWeaponCycle = 1;
 
       const pair = simRef.current.player.loadoutWeapons;
       if (e.code === 'Digit1') queuedWeaponSelect = pair[0];
       if (e.code === 'Digit2') queuedWeaponSelect = pair[1];
+      if (e.code === 'Digit3') queuedWeaponSelect = 'mp5';
+      if (e.code === 'Digit4') queuedWeaponSelect = 'spas12';
+      if (e.code === 'Digit5') queuedWeaponSelect = 'ak47';
+      if (e.code === 'Digit6') queuedWeaponSelect = 'deagle';
     };
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -2154,12 +2647,21 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     };
 
     const onMouseDown = (e: MouseEvent) => {
-      if (screenStateRef.current !== 'combat' || loadoutOverlayOpenRef.current) return;
+      if (
+        screenStateRef.current !== 'combat' ||
+        loadoutOverlayOpenRef.current ||
+        backpackOpenRef.current
+      )
+        return;
       if (isUiElementTarget(e.target)) return;
 
       lastMousePos = { x: e.clientX, y: e.clientY };
       mouseLookDragHeld = true;
 
+      if (e.button === 0 && document.pointerLockElement === renderer.domElement) {
+        mouseFireJustPressed = true;
+        mouseFireHeld = true;
+      }
       if (e.button === 2) {
         mouseAdsHeld = true;
       }
@@ -2175,7 +2677,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     };
 
     const onMouseMove = (e: MouseEvent) => {
-      if (screenStateRef.current !== 'combat' || loadoutOverlayOpenRef.current) return;
+      if (
+        screenStateRef.current !== 'combat' ||
+        loadoutOverlayOpenRef.current ||
+        backpackOpenRef.current
+      )
+        return;
       if (document.pointerLockElement === renderer.domElement) {
         mouseLookDeltaX += e.movementX;
         mouseLookDeltaY += e.movementY;
@@ -2233,6 +2740,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       renderer.setSize(container.clientWidth, container.clientHeight);
     };
 
+    const onWindowBlur = () => {
+      mouseAdsHeld = false;
+      mouseFireHeld = false;
+      mouseLookDragHeld = false;
+      lastMousePos = null;
+      keysDown.clear();
+    };
+
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('pointerdown', onPointerDown);
@@ -2244,31 +2759,47 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
     window.addEventListener('wheel', onWheel, { passive: true });
     window.addEventListener('contextmenu', onContextMenu);
     window.addEventListener('resize', onResize);
+    window.addEventListener('blur', onWindowBlur);
 
     // 9. Main 60fps Game Loop (with software-WebGL main-thread yield so headless browser clicks never stall)
     let rafId = 0;
     let softGlTimerId = 0;
     let isDisposed = false;
     let lastTime = performance.now();
+    let fireBufferTimerMs = 0;
 
-    const scheduleNextFrame = () => {
+    const afterDraw = () => {
       if (isDisposed) return;
-      if (isSoftwareGl) {
-        softGlTimerId = window.setTimeout(() => {
-          if (!isDisposed) {
-            rafId = requestAnimationFrame(animate);
-          }
-        }, 36);
-      } else {
-        rafId = requestAnimationFrame(animate);
-      }
+      const gl = renderer.getContext() as WebGL2RenderingContext;
+      const sync =
+        gl && typeof gl.fenceSync === 'function'
+          ? gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
+          : null;
+      if (gl && typeof gl.flush === 'function') gl.flush();
+      const poll = () => {
+        if (isDisposed) return;
+        const state = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS);
+        if (state === gl.UNSIGNALED) {
+          softGlTimerId = window.setTimeout(poll, 5);
+        } else {
+          if (sync) gl.deleteSync(sync);
+          softGlTimerId = window.setTimeout(() => {
+            if (!isDisposed) {
+              rafId = requestAnimationFrame(animate);
+            }
+          }, 80);
+        }
+      };
+      softGlTimerId = window.setTimeout(poll, 5);
     };
 
     const animate = (now: number) => {
-      scheduleNextFrame();
+      if (!isSoftwareGl && !isDisposed) {
+        rafId = requestAnimationFrame(animate);
+      }
       const rawDt = (now - lastTime) / 1000;
       lastTime = now;
-      const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
+      const dt = Math.min(Math.max(rawDt, 0.001), isSoftwareGl ? 0.25 : 0.05);
       const dtMs = dt * 1000;
 
       const sim = simRef.current;
@@ -2277,205 +2808,329 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         buildArenaGeometry(arenaIdRef.current);
         propMeshes.forEach((m) => propsGroup.remove(m));
         propMeshes.clear();
+        bulletImpactSystem.clear();
+      }
+      if (settingsRef.current.particleQuality !== lastImpactQualitySetting) {
+        lastImpactQualitySetting = settingsRef.current.particleQuality;
+        bulletImpactSystem.setQualityProfile(lastImpactQualitySetting, isSoftwareGl);
       }
 
-      if (screenStateRef.current === 'combat' && !loadoutOverlayOpenRef.current) {
-        const kb = settingsRef.current.keybindings;
-        const touch = touchInputRef.current;
+      const isCombatScene =
+        screenStateRef.current === 'combat' ||
+        screenStateRef.current === 'paused' ||
+        screenStateRef.current === 'match_result';
 
-        let moveX = touch.moveX;
-        let moveZ = touch.moveZ;
-        if (keysDown.has('KeyA') || keysDown.has('ArrowLeft')) moveX -= 1;
-        if (keysDown.has('KeyD') || keysDown.has('ArrowRight')) moveX += 1;
-        if (keysDown.has('KeyW') || keysDown.has('ArrowUp')) moveZ -= 1;
-        if (keysDown.has('KeyS') || keysDown.has('ArrowDown')) moveZ += 1;
-        moveX = Math.max(-1, Math.min(1, moveX));
-        moveZ = Math.max(-1, Math.min(1, moveZ));
+      if (isCombatScene) {
+        const isPausedOrOverlay =
+          screenStateRef.current === 'paused' ||
+          screenStateRef.current === 'match_result' ||
+          loadoutOverlayOpenRef.current ||
+          backpackOpenRef.current;
 
-        const sprintHeld =
-          keysDown.has(kb.sprint) || keysDown.has('ShiftLeft') || touch.sprint;
+        let moveX = 0;
+        let moveZ = 0;
+        let fireHeld = false;
+        let frameLookYawDelta = 0;
+        let frameLookPitchDelta = 0;
 
-        const sensMult = settingsRef.current.touchSensitivity ?? 1.0;
-        const fireSensMult = settingsRef.current.fireSensitivity ?? 1.0;
-        const activeSpec = WEAPON_REGISTRY[sim.player.activeWeapon];
-        const adsSensFactor = getScopeSensitivityMultiplier(
+        if (!sim.player.weaponOptics && settingsRef.current.weaponOptics) {
+          sim.player.weaponOptics = { ...settingsRef.current.weaponOptics };
+        }
+        const activeOpticId = resolveEquippedOptic(
           sim.player.activeWeapon,
-          sim.player.adsBlend
+          sim.player.weaponOptics
+        );
+        const adsSensFactor = computeAimSensitivityMultiplier(
+          sim.player.adsBlend,
+          activeOpticId
         );
 
-        // Separate Camera Free-Look Sensitivity vs Fire-Button Joystick Aim Sensitivity
-        // Both scale down smoothly when scoped in based on optic magnification (adsSensFactor)
-        const mouseSens = 0.0026 * sensMult * adsSensFactor;
-        const touchSens = 0.0056 * sensMult * adsSensFactor;
-        const fireSens = 0.0046 * fireSensMult * adsSensFactor;
+        if (!isPausedOrOverlay) {
+          const kb = settingsRef.current.keybindings;
+          const touch = touchInputRef.current;
 
-        const lookYawDelta =
-          mouseLookDeltaX * mouseSens +
-          (touch.cameraDeltaX || 0) * touchSens +
-          (touch.attackDragX || 0) * fireSens;
-        const lookPitchDelta =
-          mouseLookDeltaY * mouseSens +
-          (touch.cameraDeltaY || 0) * touchSens +
-          (touch.attackDragY || 0) * fireSens;
+          moveX = touch.moveX;
+          moveZ = touch.moveZ;
+          if (keysDown.has('KeyA') || keysDown.has('ArrowLeft')) moveX -= 1;
+          if (keysDown.has('KeyD') || keysDown.has('ArrowRight')) moveX += 1;
+          if (keysDown.has('KeyW') || keysDown.has('ArrowUp')) moveZ -= 1;
+          if (keysDown.has('KeyS') || keysDown.has('ArrowDown')) moveZ += 1;
+          moveX = Math.max(-1, Math.min(1, moveX));
+          moveZ = Math.max(-1, Math.min(1, moveZ));
 
-        mouseLookDeltaX = 0;
-        mouseLookDeltaY = 0;
-        touch.attackDragX = 0;
-        touch.attackDragY = 0;
-        touch.cameraDeltaX = 0;
-        touch.cameraDeltaY = 0;
+          const sprintHeld =
+            keysDown.has(kb.sprint) || keysDown.has('ShiftLeft') || touch.sprint;
 
-        // Accumulate smooth weapon rotational sway & axial wrist roll inertia
-        const weightFactor =
-          sim.player.activeWeapon === 'awp' || sim.player.activeWeapon === 'spas12'
-            ? 1.25
-            : sim.player.activeWeapon === 'mp5' || sim.player.activeWeapon === 'deagle'
-            ? 0.82
-            : 1.0;
-        swayYaw = THREE.MathUtils.clamp(
-          swayYaw + lookYawDelta * 0.48 * weightFactor,
-          -0.15,
-          0.15
-        );
-        swayPitch = THREE.MathUtils.clamp(
-          swayPitch + lookPitchDelta * 0.48 * weightFactor,
-          -0.13,
-          0.13
-        );
-        swayRoll = THREE.MathUtils.clamp(
-          swayRoll - lookYawDelta * 0.62 * weightFactor,
-          -0.18,
-          0.18
-        );
+          const sensMult = settingsRef.current.touchSensitivity ?? 1.0;
+          const fireSensMult = settingsRef.current.fireSensitivity ?? 1.0;
 
-        const fireJustPressed = mouseFireJustPressed || touch.lightPressed;
-        const fireHeld = mouseFireHeld || touch.lightHeld;
-        const adsHeld =
-          mouseAdsHeld || keysDown.has(kb.ads) || Boolean(touch.aimHeld);
-        const jumpPressed = jumpQueued || touch.jumpPressed;
-        const reloadPressed = reloadQueued || touch.heavyPressed;
-        const crouchToggled = crouchToggleQueued || touch.dodgePressed;
-        const slidePressed = slideQueued || Boolean(touch.slidePressed);
+          // Separate Camera Free-Look Sensitivity vs Fire-Button Joystick Aim Sensitivity
+          // Both scale down smoothly when in ADS based on optic magnification (adsSensFactor: 1.00 / 0.70 / 0.50 / 0.35)
+          const mouseSens = 0.0026 * sensMult * adsSensFactor;
+          const touchSens = 0.0056 * sensMult * adsSensFactor;
+          const fireSens = 0.0046 * fireSensMult * adsSensFactor;
 
-        if (touch.selectedWeapon) {
-          queuedWeaponSelect = touch.selectedWeapon;
-          touch.selectedWeapon = undefined;
-        }
+          const freeLookYawDelta =
+            mouseLookDeltaX * mouseSens +
+            (touch.cameraDeltaX || 0) * touchSens;
+          const freeLookPitchDelta =
+            mouseLookDeltaY * mouseSens +
+            (touch.cameraDeltaY || 0) * touchSens;
+          const fireAimYawDelta = (touch.attackDragX || 0) * fireSens;
+          const fireAimPitchDelta = (touch.attackDragY || 0) * fireSens;
 
-        mouseFireJustPressed = false;
-        jumpQueued = false;
-        reloadQueued = false;
-        crouchToggleQueued = false;
-        slideQueued = false;
-        touch.lightPressed = false;
-        touch.jumpPressed = false;
-        touch.heavyPressed = false;
-        touch.dodgePressed = false;
-        touch.slidePressed = false;
+          const lookYawDelta = freeLookYawDelta + fireAimYawDelta;
+          const lookPitchDelta = freeLookPitchDelta + fireAimPitchDelta;
+          frameLookYawDelta = lookYawDelta;
+          frameLookPitchDelta = lookPitchDelta;
 
-        const inputSnap: PlayerInputSnapshot = {
-          moveX,
-          moveZ,
-          lookDeltaYaw: lookYawDelta,
-          lookDeltaPitch: lookPitchDelta,
-          sprintHeld,
-          jumpPressed,
-          crouchToggled,
-          slidePressed,
-          fireHeld,
-          fireJustPressed,
-          adsHeld,
-          reloadPressed,
-          selectWeapon: queuedWeaponSelect,
-          cycleWeaponDelta: queuedWeaponCycle,
-        };
-        queuedWeaponSelect = null;
-        queuedWeaponCycle = 0;
+          mouseLookDeltaX = 0;
+          mouseLookDeltaY = 0;
+          touch.attackDragX = 0;
+          touch.attackDragY = 0;
+          touch.cameraDeltaX = 0;
+          touch.cameraDeltaY = 0;
 
-        const prevRoundOver = sim.roundOver;
-        const events = stepSimulation(
-          sim,
-          dt,
-          inputSnap,
-          botDifficultyRef.current,
-          gameModeRef.current === 'training',
-          trainingConfigRef.current
-        );
+          const fireJustPressed = mouseFireJustPressed || touch.lightPressed;
+          fireHeld =
+            mouseFireHeld ||
+            touch.lightHeld ||
+            keysDown.has(kb.fire) ||
+            keysDown.has('KeyJ') ||
+            keysDown.has('KeyF');
+          const adsHeld =
+            mouseAdsHeld || keysDown.has(kb.ads) || Boolean(touch.aimHeld);
+          const jumpPressed = jumpQueued || touch.jumpPressed;
+          const reloadPressed = reloadQueued || touch.heavyPressed;
+          const crouchToggled = crouchToggleQueued || touch.dodgePressed;
+          const slidePressed = slideQueued || Boolean(touch.slidePressed);
 
-        for (const evt of events) {
-          if (evt.type === 'shot_fired') {
-            const wSpec = WEAPON_REGISTRY[evt.weaponId || sim.player.activeWeapon];
-            soundEngine.play(wSpec ? wSpec.soundId : 'shot_m4a1');
-            spawnShellCasing();
-          } else if (evt.type === 'headshot') {
-            soundEngine.play('headshot');
-            hitMarkerTimerMs = 190;
-            onCombatEventRef.current(evt);
-          } else if (evt.type === 'hit_body') {
-            soundEngine.play('hit_marker');
-            hitMarkerTimerMs = 130;
-          } else if (evt.type === 'enemy_killed') {
-            soundEngine.play('ko');
-            onCombatEventRef.current(evt);
-          } else if (evt.type === 'wave_clear' || evt.type === 'player_respawn') {
-            soundEngine.play('ui_confirm');
-            onCombatEventRef.current(evt);
-          } else if (evt.type === 'footstep') {
-            const surf = evt.surface || sim.player.currentSurface;
-            const intensity = evt.stepIntensity || 'walk';
-            soundEngine.playFootstep(surf, intensity, sim.player.footstepCount);
-
-            // Subtle, single-axis downward heel cushion on step contact (no jerky camera rotation or spark bursts)
-            const impScale =
-              intensity === 'land'
-                ? 1.25
-                : intensity === 'sprint'
-                ? 1.0
-                : intensity === 'crouch'
-                ? 0.45
-                : 0.75;
-            stepImpactDipY = -0.012 * impScale;
-          } else if (evt.type === 'slide_start') {
-            soundEngine.play('ui_click');
-          } else if (evt.type === 'barrel_explode') {
-            soundEngine.play('ko');
-            if (evt.x !== undefined && evt.z !== undefined) {
-              spawnImpactBurst(evt.x, 1.0, evt.z, 0, 1, 0, 0xf97316, 22, 1.8, 2.2);
-              spawnImpactBurst(evt.x, 1.0, evt.z, 0, 1, 0, 0xfef08a, 14, 1.4, 1.8);
-            }
-            onCombatEventRef.current(evt);
-          } else if (evt.type === 'reload_start') {
-            soundEngine.play('reload_start');
-          } else if (evt.type === 'reload_done') {
-            soundEngine.play('reload_done');
-          } else if (evt.type === 'player_hurt') {
-            soundEngine.play('hit_heavy');
+          if (touch.selectedWeapon) {
+            queuedWeaponSelect = touch.selectedWeapon;
+            touch.selectedWeapon = undefined;
           }
-        }
 
-        if (!prevRoundOver && sim.roundOver && sim.roundWinner) {
-          onRoundFinishedRef.current(sim.roundWinner);
-        }
+          mouseFireJustPressed = false;
+          jumpQueued = false;
+          reloadQueued = false;
+          crouchToggleQueued = false;
+          slideQueued = false;
+          touch.lightPressed = false;
+          touch.jumpPressed = false;
+          touch.heavyPressed = false;
+          touch.dodgePressed = false;
+          touch.slidePressed = false;
 
-        // Spawn 3D surface impact VFX for any newly created bullet traces
-        for (const tr of sim.traces) {
-          if (tr.id > highestProcessedTraceId) {
-            highestProcessedTraceId = tr.id;
-            spawnTraceImpactVFX(
-              tr.fromX,
-              tr.fromY,
-              tr.fromZ,
-              tr.toX,
-              tr.toY,
-              tr.toZ,
-              tr.hitNormalX,
-              tr.hitNormalY,
-              tr.hitNormalZ,
-              tr.hitKind,
-              tr.weaponId,
-              tr.isEnemyShot
+          const freeLookEyeDragX = (touch.freeLookDeltaX || 0) * touchSens;
+          const freeLookEyeDragY = (touch.freeLookDeltaY || 0) * touchSens;
+          touch.freeLookDeltaX = 0;
+          touch.freeLookDeltaY = 0;
+
+          const isAltOrbit =
+            !firstPersonModeRef.current &&
+            !adsHeld &&
+            !fireHeld &&
+            (keysDown.has('AltLeft') || keysDown.has('AltRight'));
+          const isEyeButtonOrbit =
+            !firstPersonModeRef.current &&
+            !adsHeld &&
+            !fireHeld &&
+            Boolean(touch.freeLookActive);
+
+          // Standard look/drag ALWAYS rotates player.yaw and player.pitch in both 1st-person and 3rd-person
+          // so the character and gun always aim & shoot directly where the player looks!
+          // Holding the 360° Free-Look Eye button (or Alt key) orbits around the character to inspect front/back/sides.
+          let playerYawDelta = lookYawDelta;
+          let playerPitchDelta = lookPitchDelta;
+          if (isEyeButtonOrbit) {
+            tpOrbitYawOffset = Math.atan2(
+              Math.sin(tpOrbitYawOffset - freeLookEyeDragX * 1.15),
+              Math.cos(tpOrbitYawOffset - freeLookEyeDragX * 1.15)
             );
+            tpOrbitPitchOffset = THREE.MathUtils.clamp(
+              tpOrbitPitchOffset + freeLookEyeDragY * 0.95,
+              -0.72,
+              0.92
+            );
+          } else if (isAltOrbit) {
+            tpOrbitYawOffset = Math.atan2(
+              Math.sin(tpOrbitYawOffset - freeLookYawDelta * 1.15),
+              Math.cos(tpOrbitYawOffset - freeLookYawDelta * 1.15)
+            );
+            tpOrbitPitchOffset = THREE.MathUtils.clamp(
+              tpOrbitPitchOffset + freeLookPitchDelta * 0.95,
+              -0.72,
+              0.92
+            );
+            playerYawDelta = fireAimYawDelta;
+            playerPitchDelta = fireAimPitchDelta;
+          } else {
+            // Smoothly keep camera aligned over-the-shoulder with player's aim ray
+            const alignAlpha = Math.min(1, dt * (fireHeld || adsHeld ? 18 : 12));
+            tpOrbitYawOffset += (0 - tpOrbitYawOffset) * alignAlpha;
+            tpOrbitPitchOffset += (0.14 - tpOrbitPitchOffset) * alignAlpha;
           }
+
+          const pendingSelectWeapon = queuedWeaponSelect;
+          const pendingCycleWeapon = queuedWeaponCycle;
+          queuedWeaponSelect = null;
+          queuedWeaponCycle = 0;
+
+          if (fireJustPressed) {
+            fireBufferTimerMs = 450;
+          }
+
+          const prevRoundOver = sim.roundOver;
+          let remainingDt = dt;
+          let firstSubStep = true;
+          while (remainingDt > 0.0001) {
+            const subDt = Math.min(remainingDt, 0.05);
+            remainingDt -= subDt;
+            const willReadyThisStep =
+              sim.player.weaponSwitchTimerMs <= subDt * 1000 &&
+              sim.player.fireCooldownMs <= subDt * 1000;
+            const triggerFire =
+              fireBufferTimerMs > 0 && willReadyThisStep;
+
+            subInputScratch.moveX = moveX;
+            subInputScratch.moveZ = moveZ;
+            subInputScratch.sprintHeld = sprintHeld;
+            subInputScratch.fireHeld = fireHeld;
+            subInputScratch.adsHeld = adsHeld;
+            subInputScratch.aimMode = Boolean(touch.aimHeld)
+              ? 'hold'
+              : (settingsRef.current.aimMode ?? 'hold');
+            if (firstSubStep) {
+              subInputScratch.lookDeltaYaw = playerYawDelta;
+              subInputScratch.lookDeltaPitch = playerPitchDelta;
+              subInputScratch.jumpPressed = jumpPressed;
+              subInputScratch.crouchToggled = crouchToggled;
+              subInputScratch.slidePressed = slidePressed;
+              subInputScratch.reloadPressed = reloadPressed;
+              subInputScratch.selectWeapon = pendingSelectWeapon;
+              subInputScratch.cycleWeaponDelta = pendingCycleWeapon;
+              subInputScratch.fireJustPressed =
+                triggerFire || (fireJustPressed && willReadyThisStep);
+            } else {
+              subInputScratch.lookDeltaYaw = 0;
+              subInputScratch.lookDeltaPitch = 0;
+              subInputScratch.jumpPressed = false;
+              subInputScratch.crouchToggled = false;
+              subInputScratch.slidePressed = false;
+              subInputScratch.reloadPressed = false;
+              subInputScratch.selectWeapon = null;
+              subInputScratch.cycleWeaponDelta = 0;
+              subInputScratch.fireJustPressed = triggerFire;
+            }
+
+            const subEvents = stepSimulation(
+              sim,
+              subDt,
+              subInputScratch,
+              botDifficultyRef.current,
+              gameModeRef.current === 'training',
+              trainingConfigRef.current
+            );
+            let p1FiredThisSub = false;
+            for (let ei = 0; ei < subEvents.length; ei++) {
+              const evt = subEvents[ei];
+              if (evt.type === 'shot_fired' && evt.actor === 'p1') {
+                p1FiredThisSub = true;
+              }
+              if (evt.type === 'shot_fired') {
+                const firedWid = evt.weaponId || sim.player.activeWeapon;
+                const wSpec = WEAPON_REGISTRY[firedWid];
+                soundEngine.play(wSpec ? wSpec.soundId : 'shot_m4a1');
+                const kickMult =
+                  firedWid === 'awp'
+                    ? 2.15
+                    : firedWid === 'spas12'
+                    ? 1.95
+                    : firedWid === 'deagle'
+                    ? 1.75
+                    : firedWid === 'ak47'
+                    ? 1.38
+                    : firedWid === 'm4a1'
+                    ? 1.05
+                    : 0.82;
+                const adsStabilize = 1 - sim.player.adsBlend * 0.35;
+                fpWeaponKickZ = Math.min(0.12, fpWeaponKickZ + 0.036 * kickMult * adsStabilize);
+                fpWeaponKickPitch = Math.min(
+                  0.28,
+                  fpWeaponKickPitch + 0.072 * kickMult * adsStabilize
+                );
+                fpWeaponKickRoll += (Math.random() - 0.42) * 0.048 * kickMult * adsStabilize;
+              } else if (evt.type === 'headshot') {
+                soundEngine.play('headshot');
+                hitMarkerTimerMs = 190;
+                onCombatEventRef.current(evt);
+              } else if (evt.type === 'hit_body') {
+                soundEngine.play('hit_marker');
+                hitMarkerTimerMs = 130;
+              } else if (evt.type === 'enemy_killed') {
+                soundEngine.play('ko');
+                onCombatEventRef.current(evt);
+              } else if (evt.type === 'wave_clear' || evt.type === 'player_respawn') {
+                soundEngine.play('ui_confirm');
+                onCombatEventRef.current(evt);
+              } else if (evt.type === 'footstep') {
+                const surf = evt.surface || sim.player.currentSurface;
+                const intensity = evt.stepIntensity || 'walk';
+                soundEngine.playFootstep(surf, intensity, sim.player.footstepCount);
+                const impScale =
+                  intensity === 'land'
+                    ? 1.25
+                    : intensity === 'sprint'
+                    ? 1.0
+                    : intensity === 'crouch'
+                    ? 0.45
+                    : 0.75;
+                stepImpactDipY = -0.012 * impScale;
+              } else if (evt.type === 'slide_start') {
+                soundEngine.play('ui_click');
+              } else if (evt.type === 'barrel_explode') {
+                soundEngine.play('ko');
+                if (evt.x !== undefined && evt.z !== undefined) {
+                  spawnBarrelExplosionVFX(evt.x, evt.z);
+                }
+                onCombatEventRef.current(evt);
+              } else if (evt.type === 'weapon_switch') {
+                soundEngine.play('ui_click');
+                onCombatEventRef.current(evt);
+              } else if (evt.type === 'reload_start') {
+                soundEngine.play('reload_start');
+              } else if (evt.type === 'reload_done') {
+                soundEngine.play('reload_done');
+              } else if (evt.type === 'player_hurt') {
+                soundEngine.play('hit_heavy');
+              }
+            }
+            if (p1FiredThisSub) {
+              fireBufferTimerMs = 0;
+            } else if (fireBufferTimerMs > 0) {
+              fireBufferTimerMs = Math.max(0, fireBufferTimerMs - subDt * 1000);
+            }
+            firstSubStep = false;
+          }
+
+          if (!prevRoundOver && sim.roundOver && sim.roundWinner) {
+            onRoundFinishedRef.current(sim.roundWinner);
+          }
+        } else {
+          // In pause menu or loadout overlay: consume and discard inputs so they don't buffer
+          mouseLookDeltaX = 0;
+          mouseLookDeltaY = 0;
+          mouseFireJustPressed = false;
+          jumpQueued = false;
+          reloadQueued = false;
+          crouchToggleQueued = false;
+          slideQueued = false;
+          touchInputRef.current.cameraDeltaX = 0;
+          touchInputRef.current.cameraDeltaY = 0;
+          touchInputRef.current.attackDragX = 0;
+          touchInputRef.current.attackDragY = 0;
+          queuedWeaponSelect = null;
+          queuedWeaponCycle = 0;
         }
 
         // Update Camera Position, FOV Zoom (ADS + Slide Surge), Jump/Landing Weight & Trauma Shake
@@ -2504,11 +3159,31 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         airborneLift += (targetAirLift - airborneLift) * Math.min(1, dt * 12);
         airbornePitch += (targetAirPitch - airbornePitch) * Math.min(1, dt * 12);
 
-        const baseFov = p.isSliding ? 84 : 78;
-        const targetFov = THREE.MathUtils.lerp(baseFov, activeSpec.adsFov, p.adsBlend);
-        if (Math.abs(camera.fov - targetFov) > 0.05) {
-          camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 18);
+        const liveOpticId = resolveEquippedOptic(
+          p.activeWeapon,
+          p.weaponOptics
+        );
+        const composedFov = computeComposedCameraFOV({
+          baseFov: settingsRef.current.baseFov ?? 90,
+          adsProgress: p.adsBlend,
+          opticId: liveOpticId,
+          isSliding: p.isSliding,
+          isSprinting: p.isSprinting,
+          recoilFovKickDeg: fpWeaponKickPitch * 6.5,
+        });
+        if (Math.abs(camera.fov - composedFov) > 0.01) {
+          camera.fov = composedFov;
           camera.updateProjectionMatrix();
+        }
+        if (container) {
+          container.dataset.cameraFov = camera.fov.toFixed(2);
+          container.dataset.adsStage = p.adsState.stage;
+          container.dataset.adsProgress = p.adsBlend.toFixed(3);
+          container.dataset.equippedOptic = liveOpticId;
+          container.dataset.aimSensitivityMult = computeAimSensitivityMultiplier(
+            p.adsBlend,
+            liveOpticId
+          ).toFixed(3);
         }
 
         const moveSpeed = Math.hypot(p.vx, p.vz);
@@ -2627,378 +3302,412 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         }
 
         const isFp = firstPersonModeRef.current;
+        const targetTpBlend = isFp ? 0 : 1;
+        tpViewBlend += (targetTpBlend - tpViewBlend) * (1 - Math.exp(-12 * dt));
+        if (Math.abs(targetTpBlend - tpViewBlend) < 0.001) {
+          tpViewBlend = targetTpBlend;
+        }
+        const tpEase = tpViewBlend * tpViewBlend * (3 - 2 * tpViewBlend);
+
         lobbyStageGroup.visible = false;
         brushCursorRing.visible = false;
-        combatPlayerRig.root.visible = !isFp;
-        viewmodelRig.visible = isFp;
+
+        // SINGLE UNIFIED CHARACTER MODEL & ANIMATION FOR BOTH FIRST-PERSON (FPV) AND THIRD-PERSON (TPV):
+        // Never use a separate viewmodelRig; combatPlayerRig IS the player body, arms, hands, and weapon in both FPV and TPV!
+        // Switching between FPV and TPV ONLY changes the camera position/angle (and hides neckPivot inside the head in FPV).
+        viewmodelRig.visible = false;
+        combatPlayerRig.root.visible = true;
+        combatPlayerRig.torsoPivot.visible = true;
+        const showHeadInView = tpViewBlend > 0.18;
+        combatPlayerRig.neckPivot.visible = showHeadInView;
+        for (const pm of combatPlayerRig.regionMeshes.pelvis) {
+          pm.visible = true;
+        }
 
         for (const slot of ['headgear', 'backgear', 'shoulders', 'chestRig'] as EquipmentSlotId[]) {
           setCharacterEquipmentSlotVisible(
             combatPlayerRig.equipmentGroups,
             slot,
-            activeEquipmentRef.current.includes(slot)
+            activeEquipmentRef.current.includes(slot) &&
+              (slot !== 'headgear' || showHeadInView)
           );
         }
 
-        if (!isFp) {
-          // 3rd-Person Combat Camera & Full-Body Painted Chameleon Character Animation
-          combatPlayerRig.root.position.set(p.x, p.y, p.z);
-          combatPlayerRig.root.rotation.y = p.yaw + Math.PI;
-          updateChameleonRigAnimation(
-            combatPlayerRig,
-            'combat',
-            now * 0.001,
-            moveSpeed,
-            p.walkBobPhase,
-            p.isCrouching
-          );
+        // Determine active displayed weapon across two-stage holster/draw swap
+        const swapTotalMs = p.weaponSwitchDurationMs || 340;
+        const swapHalfMs = swapTotalMs * 0.5;
+        const isFirstHalfSwap = Boolean(
+          p.weaponSwitchTimerMs > swapHalfMs &&
+            p.previousWeapon &&
+            p.previousWeapon !== p.activeWeapon
+        );
+        const displayedWeaponId: WeaponId = isFirstHalfSwap
+          ? (p.previousWeapon as WeaponId)
+          : p.activeWeapon;
+        const swapProgress =
+          p.weaponSwitchTimerMs > 0
+            ? Math.sin((1 - p.weaponSwitchTimerMs / swapTotalMs) * Math.PI)
+            : 0;
 
-          const tpDist = 2.45;
-          const lookBackX = Math.sin(p.yaw) * tpDist;
-          const lookBackZ = Math.cos(p.yaw) * tpDist;
-          const safeTpXZ = resolveEntityCollisions(
-            p.x + lookBackX + camRightX * 0.42,
-            p.z + lookBackZ + camRightZ * 0.42,
-            0.25,
-            arenaDefNow,
-            sim.breakableProps
-          );
-          camera.position.set(
-            safeTpXZ.x,
-            p.y + p.eyeHeight + 0.36 + bobY * 0.5,
-            safeTpXZ.z
-          );
-          camera.rotation.y = p.yaw + p.recoilKickYaw + shakeYaw;
-          camera.rotation.x = THREE.MathUtils.clamp(
-            p.pitch + p.recoilKickPitch + shakePitch - 0.08,
-            -1.25,
-            1.25
-          );
-          camera.rotation.z = 0;
-        } else {
-          camera.position.set(
-            safeCamXZ.x,
-            p.y + p.eyeHeight + bobY + landDipY + jumpImpulseY,
-            safeCamXZ.z
-          );
-          camera.rotation.y = p.yaw + p.recoilKickYaw + shakeYaw;
-          camera.rotation.x = THREE.MathUtils.clamp(
-            p.pitch + p.recoilKickPitch + shakePitch + reloadCamPitch,
-            -1.42,
-            1.42
-          );
-        }
-
-        // Decay weapon sway, axial roll inertia & strafe/slide banking
+        // Decay weapon sway, physical 3D recoil kick, axial roll inertia & strafe/slide banking
         swayYaw *= Math.exp(-10 * dt);
         swayPitch *= Math.exp(-10 * dt);
         swayRoll *= Math.exp(-12 * dt);
+        fpWeaponKickZ *= Math.exp(-18 * dt);
+        fpWeaponKickPitch *= Math.exp(-16 * dt);
+        fpWeaponKickRoll *= Math.exp(-14 * dt);
         const slideRollTarget = p.isSliding ? 0.14 : 0;
         const targetStrafeRoll =
           moveX * 0.055 * (1 - p.adsBlend * 0.65) + slideRollTarget;
         strafeRoll += (targetStrafeRoll - strafeRoll) * Math.min(1, dt * 12);
-        if (isFp) {
-          camera.rotation.z =
-            -strafeRoll * 0.45 + reloadCamRoll + landRollImpulse * 0.4;
+
+        // Smooth Interpolated Tactical Sprint & Slide Canted Poses (shared across 1st-person and 3rd-person)
+        const isSprintingPose =
+          p.isSprinting &&
+          moveSpeed > 5.2 &&
+          !p.isAds &&
+          !p.isSliding &&
+          p.fireCooldownMs <= 0 &&
+          !p.isReloading &&
+          p.weaponSwitchTimerMs <= 0;
+        const targetSprint = isSprintingPose ? 1 : 0;
+        const targetSlide = p.isSliding && !p.isAds ? 1 : 0;
+        sprintBlend += (targetSprint - sprintBlend) * (1 - Math.exp(-12 * dt));
+        slideBlend += (targetSlide - slideBlend) * (1 - Math.exp(-14 * dt));
+        const sprintEase = sprintBlend * sprintBlend * (3 - 2 * sprintBlend);
+        const slideEase = slideBlend * slideBlend * (3 - 2 * slideBlend);
+
+        if (currentCombatWeaponId !== displayedWeaponId) {
+          currentCombatWeaponId = displayedWeaponId;
+          combatPlayerRig.weaponMount.remove(combatWeaponProp);
+          combatWeaponProp = buildCompactHandheldWeaponProp(currentCombatWeaponId, true);
+          combatPlayerRig.weaponMount.add(combatWeaponProp);
         }
 
-        // Update First-Person Weapon Viewmodel Kinematics & Smooth Two-Stage Swap + Reload Animations
-        const swapTotalMs = p.weaponSwitchDurationMs || 340;
-        const swapHalfMs = swapTotalMs * 0.5;
-        const isFirstHalfSwap =
-          p.weaponSwitchTimerMs > swapHalfMs &&
-          p.previousWeapon &&
-          p.previousWeapon !== p.activeWeapon;
-        const displayedWeaponId: WeaponId = isFirstHalfSwap
-          ? (p.previousWeapon as WeaponId)
-          : p.activeWeapon;
+        // Universal 3D Weapon Wall-Obstruction & Physical Wall-Brace Kinematics
+        const liveWallObs = computeWeaponWallObstruction(
+          p,
+          arenaDefNow,
+          sim.breakableProps
+        ).obstruction;
+        const prevWallBlend = wallObstructionBlend;
+        wallObstructionBlend +=
+          (liveWallObs - wallObstructionBlend) * (1 - Math.exp(-16 * dt));
+        if (prevWallBlend < 0.08 && wallObstructionBlend >= 0.08) {
+          wallTouchImpulse = 1.0;
+        }
+        wallTouchImpulse *= Math.exp(-14 * dt);
+        const wallBumpWave = Math.sin(wallTouchImpulse * Math.PI) * 0.022;
 
-        for (const wid of WEAPON_ORDER) {
-          const vm = weaponModels[wid];
-          const isDisplayed = wid === displayedWeaponId;
-          // Hide viewmodel when deeply scoped so circular optical reticle overlay has unobstructed view
-          vm.root.visible = isDisplayed && p.adsBlend < 0.72 && isFp;
+        // Articulated Trigger Squeeze Micro-Animation on Every Shot
+        const targetTrigger = fireHeld || p.muzzleFlashTimerMs > 0 ? 1.0 : 0.0;
+        triggerPullBlend += (targetTrigger - triggerPullBlend) * Math.min(1, dt * 28);
 
-          if (isDisplayed) {
-            const hipX = 0.23;
-            const hipY = -0.21;
-            const hipZ = -0.42;
-            const adsX = 0.0;
-            const adsY = wid === 'ak47' ? -0.115 : -0.122;
-            const adsZ = -0.31;
+        // Decompose world velocity into player-local right/backward components for smooth 16-direction locomotion
+        const pRightX = Math.cos(p.yaw);
+        const pRightZ = -Math.sin(p.yaw);
+        const pBackX = Math.sin(p.yaw);
+        const pBackZ = Math.cos(p.yaw);
+        const rawLocalVelRight = p.vx * pRightX + p.vz * pRightZ;
+        const rawLocalVelFwd = -(p.vx * pBackX + p.vz * pBackZ);
+        const velLocalX = moveSpeed > 0.1 ? rawLocalVelRight / moveSpeed : 0;
+        const velLocalZ =
+          moveSpeed > 0.1 ? (p.vx * pBackX + p.vz * pBackZ) / moveSpeed : 0;
+        const animMoveX =
+          Math.abs(moveX) > 0.05 || Math.abs(moveZ) > 0.05 ? moveX : velLocalX;
+        const animMoveZ =
+          Math.abs(moveX) > 0.05 || Math.abs(moveZ) > 0.05 ? moveZ : velLocalZ;
 
-            // Smooth Two-Stage Weapon Swap Kinematics (1: Holster Outgoing -> 2: Draw Incoming)
-            let switchOffsetX = 0;
-            let switchDrop = 0;
-            let switchOffsetZ = 0;
-            let switchRotX = 0;
-            let switchRotY = 0;
-            let switchRotZ = 0;
+        // Advance 6-DOF Physics-Based Weapon Sway & Mass Inertia Solver (Idle Breathing + Movement Bob + Acceleration Lag)
+        weaponSwayInputScratch.weaponId = displayedWeaponId;
+        weaponSwayInputScratch.lookDeltaYaw = frameLookYawDelta;
+        weaponSwayInputScratch.lookDeltaPitch = frameLookPitchDelta;
+        weaponSwayInputScratch.localVelRight = rawLocalVelRight;
+        weaponSwayInputScratch.localVelFwd = rawLocalVelFwd;
+        weaponSwayInputScratch.velY = p.vy;
+        weaponSwayInputScratch.moveSpeed = moveSpeed;
+        weaponSwayInputScratch.walkBobPhase = p.walkBobPhase;
+        weaponSwayInputScratch.adsBlend = p.adsBlend;
+        weaponSwayInputScratch.isCrouching = p.isCrouching;
+        weaponSwayInputScratch.isSprinting = p.isSprinting;
+        weaponSwayInputScratch.isSliding = p.isSliding;
+        weaponSwayInputScratch.isGrounded = p.isGrounded;
+        stepWeaponSwayPhysics(weaponSwayState, dt, weaponSwayInputScratch);
 
-            if (p.weaponSwitchTimerMs > 0) {
-              if (isFirstHalfSwap) {
-                // Stage 1: Lower & tilt outgoing weapon smoothly down-left
-                const t = 1 - (p.weaponSwitchTimerMs - swapHalfMs) / swapHalfMs;
-                const ease = t * t * (3 - 2 * t);
-                switchOffsetX = -0.09 * ease;
-                switchDrop = -0.29 * ease;
-                switchOffsetZ = 0.08 * ease;
-                switchRotX = -0.62 * ease;
-                switchRotY = 0.34 * ease;
-                switchRotZ = 0.42 * ease;
-              } else {
-                // Stage 2: Draw incoming weapon up from right hip with damped spring arc
-                const t = p.weaponSwitchTimerMs / swapHalfMs;
-                const ease = t * t;
-                const flourish = Math.sin((1 - t) * Math.PI);
-                switchOffsetX = 0.08 * ease;
-                switchDrop = -0.28 * ease + 0.018 * flourish;
-                switchOffsetZ = 0.09 * ease;
-                switchRotX = -0.58 * ease + 0.08 * flourish;
-                switchRotY = -0.28 * ease;
-                switchRotZ = -0.46 * ease + 0.12 * flourish;
-              }
-            }
+        swayYaw = weaponSwayState.yaw;
+        swayPitch = weaponSwayState.pitch;
+        swayRoll = weaponSwayState.roll;
 
-            // Multi-Phase Realistic Reload Animation (1: Tilt & Drop Mag -> 2: Slam New Mag -> 3: Rack Bolt)
-            let reloadOffsetX = 0;
-            let reloadOffsetY = 0;
-            let reloadRotX = 0;
-            let reloadRotY = 0;
-            let reloadRotZ = 0;
-            let reloadBoltPull = 0;
+        if (container) {
+          container.dataset.weaponSwayX = weaponSwayState.posX.toFixed(5);
+          container.dataset.weaponSwayY = weaponSwayState.posY.toFixed(5);
+          container.dataset.weaponSwayPitch = weaponSwayState.pitch.toFixed(5);
+          container.dataset.weaponSwayYaw = weaponSwayState.yaw.toFixed(5);
+          container.dataset.weaponSwayRoll = weaponSwayState.roll.toFixed(5);
+        }
 
-            if (p.isReloading) {
-              const reloadTotal = WEAPON_REGISTRY[wid].reloadTimeMs;
-              const progress = 1 - p.reloadTimerMs / Math.max(1, reloadTotal);
+        const effectivePitch = THREE.MathUtils.clamp(
+          p.pitch + p.recoilKickPitch + shakePitch + reloadCamPitch,
+          -1.42,
+          1.42
+        );
+        const effectiveYaw = p.yaw + p.recoilKickYaw + shakeYaw;
 
-              if (progress < 0.34) {
-                // Phase 1: Tilt rifle & drop spent magazine out of magwell
-                const t = progress / 0.34;
-                const ease = Math.sin(t * (Math.PI * 0.5));
-                reloadOffsetX = -0.05 * ease;
-                reloadOffsetY = -0.06 * ease;
-                reloadRotX = 0.28 * ease;
-                reloadRotY = 0.22 * ease;
-                reloadRotZ = 0.48 * ease;
-                vm.magazine.position.set(
-                  vm.magBasePos.x - 0.02 * ease,
-                  vm.magBasePos.y - 0.24 * t * t,
-                  vm.magBasePos.z + 0.03 * ease
-                );
-              } else if (progress < 0.72) {
-                // Phase 2: Insert fresh magazine & slam upward into receiver
-                const t = (progress - 0.34) / 0.38;
-                const slamImpulse = t > 0.75 ? Math.sin(((t - 0.75) / 0.25) * Math.PI) * 0.035 : 0;
-                reloadOffsetX = -0.05;
-                reloadOffsetY = -0.06 + slamImpulse;
-                reloadRotX = 0.28 - slamImpulse * 2.2;
-                reloadRotY = 0.22;
-                reloadRotZ = 0.48;
-                const magLift = (1 - Math.min(1, t / 0.78)) * -0.24;
-                vm.magazine.position.set(
-                  vm.magBasePos.x,
-                  vm.magBasePos.y + magLift,
-                  vm.magBasePos.z
-                );
-              } else {
-                // Phase 3: Rack bolt carrier / charging handle and settle back to shoulder
-                const t = (progress - 0.72) / 0.28;
-                const returnEase = 1 - t;
-                const rackWave = Math.sin(t * Math.PI);
-                reloadOffsetX = -0.05 * returnEase;
-                reloadOffsetY = -0.06 * returnEase - 0.02 * rackWave;
-                reloadRotX = 0.28 * returnEase + 0.14 * rackWave;
-                reloadRotY = 0.22 * returnEase - 0.12 * rackWave;
-                reloadRotZ = 0.48 * returnEase - 0.18 * rackWave;
-                reloadBoltPull = rackWave * 0.065;
-                vm.magazine.position.copy(vm.magBasePos);
-              }
-            } else {
-              vm.magazine.position.copy(vm.magBasePos);
-            }
+        const tpReloadTotal = WEAPON_REGISTRY[p.activeWeapon].reloadTimeMs;
+        const tpReloadProg = p.isReloading
+          ? 1 - p.reloadTimerMs / Math.max(1, tpReloadTotal)
+          : 0;
 
-            // Smooth Interpolated Tactical Sprint & Slide Canted Poses (eliminates instant snap/teleport)
-            const isSprintingPose =
-              p.isSprinting &&
-              moveSpeed > 5.2 &&
-              !p.isAds &&
-              !p.isSliding &&
-              p.fireCooldownMs <= 0 &&
-              !p.isReloading &&
-              p.weaponSwitchTimerMs <= 0;
-            const targetSprint = isSprintingPose ? 1 : 0;
-            const targetSlide = p.isSliding && !p.isAds ? 1 : 0;
-            // Smooth exponential damping into and out of running & sliding stances
-            sprintBlend += (targetSprint - sprintBlend) * Math.min(1, dt * 10.5);
-            slideBlend += (targetSlide - slideBlend) * Math.min(1, dt * 12.0);
+        const tpVm = combatWeaponProp?.userData?.weaponRig as
+          | WeaponViewModelRig
+          | undefined;
+        const displayedOpticId = resolveEquippedOptic(
+          displayedWeaponId,
+          p.weaponOptics
+        );
+        const adsPose = computeWeaponADSPose(p.adsState);
+        if (tpVm) {
+          setWeaponRigOpticAttachment(tpVm, displayedOpticId);
+          // Hide the 3D weapon mesh only when inside the high-magnification scope eye-box (Stage 5-7)
+          // so Stages 1-4 visibly show the 3D weapon and 3D scope rising to the player's eye!
+          tpVm.root.visible = !(adsPose.hideViewModelMesh && tpViewBlend < 0.25);
+        }
 
-            const sprintEase = sprintBlend * sprintBlend * (3 - 2 * sprintBlend);
-            const slideEase = slideBlend * slideBlend * (3 - 2 * slideBlend);
+        const ammoState = p.weapons[displayedWeaponId];
+        combatKinematicsScratch.swayPosX =
+          weaponSwayState.posX + adsPose.weaponOffset[0];
+        combatKinematicsScratch.swayPosY =
+          weaponSwayState.posY + adsPose.weaponOffset[1];
+        combatKinematicsScratch.swayPosZ =
+          weaponSwayState.posZ + adsPose.weaponOffset[2];
+        combatKinematicsScratch.swayYaw = swayYaw + adsPose.weaponRotation[1];
+        combatKinematicsScratch.swayPitch =
+          swayPitch + adsPose.weaponRotation[0];
+        combatKinematicsScratch.swayRoll =
+          swayRoll + adsPose.weaponRotation[2];
+        combatKinematicsScratch.strafeRoll = strafeRoll;
+        combatKinematicsScratch.wallObstruction = wallObstructionBlend;
+        combatKinematicsScratch.wallBumpWave = wallBumpWave;
+        combatKinematicsScratch.recoilKickZ = fpWeaponKickZ * adsPose.recoilScale;
+        combatKinematicsScratch.recoilKickPitch =
+          fpWeaponKickPitch * adsPose.recoilScale;
+        combatKinematicsScratch.recoilKickRoll =
+          fpWeaponKickRoll * adsPose.recoilScale;
+        combatKinematicsScratch.landDipY = landDipY;
+        combatKinematicsScratch.jumpImpulseY = jumpImpulseY;
+        combatKinematicsScratch.landRollImpulse = landRollImpulse;
+        combatKinematicsScratch.airborneLift = airborneLift;
+        combatKinematicsScratch.airbornePitch = airbornePitch;
+        combatKinematicsScratch.triggerPullBlend = triggerPullBlend;
+        combatKinematicsScratch.muzzleFlashActive = p.muzzleFlashTimerMs > 0;
+        combatKinematicsScratch.fireCooldownRatio =
+          p.fireCooldownMs / Math.max(1, WEAPON_REGISTRY[displayedWeaponId].fireIntervalMs);
+        combatKinematicsScratch.magAmmoCount = ammoState ? ammoState.mag : 30;
+        combatKinematicsScratch.isFirstHalfSwap = isFirstHalfSwap;
+        combatKinematicsScratch.swapHalfProgress =
+          p.weaponSwitchTimerMs > 0 ? p.weaponSwitchTimerMs / swapHalfMs : 0;
+        combatKinematicsScratch.weaponRig = tpVm;
 
-            // Clean, smooth rhythmic chest-carry stride oscillation while sprinting (no overlapping twitch)
-            const sprintSwingX = strideLateral * 0.018 * sprintEase;
-            const sprintSwingY = strideVertical * 0.014 * sprintEase;
-            const sprintSwingRotY = -strideLateral * 0.045 * sprintEase;
-            const sprintSwingRotZ = strideLateral * 0.032 * sprintEase;
+        // Place the single unified character body at the player's exact world position in BOTH FPV and TPV
+        combatPlayerRig.root.position.set(safeCamXZ.x, p.y, safeCamXZ.z);
+        combatPlayerRig.root.rotation.y = effectiveYaw + Math.PI;
+        updateChameleonRigAnimation(
+          combatPlayerRig,
+          'combat',
+          now * 0.001,
+          moveSpeed,
+          p.walkBobPhase,
+          p.isCrouching,
+          animMoveX,
+          animMoveZ,
+          p.isReloading,
+          tpReloadProg,
+          p.recoilKickPitch + fpWeaponKickPitch,
+          displayedWeaponId,
+          effectivePitch,
+          p.adsBlend,
+          sprintEase,
+          slideEase,
+          swapProgress,
+          combatKinematicsScratch
+        );
+        combatPlayerRig.root.updateMatrixWorld(true);
 
-            // Universal 3D Weapon Wall-Obstruction & Physical Wall-Brace Kinematics
-            const liveWallObs = computeWeaponWallObstruction(
-              p,
-              arenaDefNow,
-              sim.breakableProps
-            ).obstruction;
-            const prevWallBlend = wallObstructionBlend;
-            wallObstructionBlend +=
-              (liveWallObs - wallObstructionBlend) * Math.min(1, dt * 16.0);
-            if (prevWallBlend < 0.08 && wallObstructionBlend >= 0.08) {
-              // Tactile barrel-to-wall contact bump micro-impulse
-              wallTouchImpulse = 1.0;
-            }
-            wallTouchImpulse *= Math.exp(-14 * dt);
+        // Compute Exact 3D Muzzle Tip World Position on combatWeaponProp & Enforce Level 3D Wall Clearance (Zero Skyward Tilt!)
+        if (tpVm) {
+          // Axial CQB barrel foreshortening when pressed against a tall wall so the barrel tip never pokes into the wall mesh
+          const barrelZScale = 1 - Math.min(0.28, wallObstructionBlend * 0.28);
+          tpVm.root.scale.set(1, 1, barrelZScale);
+          combatPlayerRig.weaponMount.updateMatrixWorld(true);
+          tpVm.muzzleFlashGroup.getWorldPosition(_muzzleWorldPos);
 
-            const wallEase =
-              wallObstructionBlend *
-              wallObstructionBlend *
-              (3 - 2 * wallObstructionBlend);
-            const wallBrace =
-              wallObstructionBlend > 0.32
-                ? (wallObstructionBlend - 0.32) / 0.68
-                : 0;
-            const wallBumpWave = Math.sin(wallTouchImpulse * Math.PI) * 0.022;
-
-            // Retract weapon backward into shoulder on initial contact, then pivot into Tactical High-Port Wall Brace
-            const wallShiftX = -wallEase * 0.08 * (1 - p.adsBlend * 0.6);
-            const wallLiftY =
-              (wallEase * 0.055 + wallBrace * 0.045) * (1 - p.adsBlend * 0.65);
-            const wallRetractZ = wallEase * 0.34 + wallBumpWave;
-            const wallRotX =
-              (wallBrace * 0.62 + wallBumpWave * 1.8) * (1 - p.adsBlend * 0.65);
-            const wallRotY =
-              (wallEase * 0.22 + wallBrace * 0.38) * (1 - p.adsBlend * 0.65);
-            const wallRotZ = -wallBrace * 0.26 * (1 - p.adsBlend * 0.65);
-
-            const recoilBack = Math.min(0.085, p.recoilKickPitch * 0.42);
-            const posX =
-              THREE.MathUtils.lerp(hipX, adsX, p.adsBlend) +
-              switchOffsetX +
-              reloadOffsetX -
-              swayYaw * 0.45 -
-              sprintEase * 0.06 +
-              sprintSwingX -
-              slideEase * 0.05 +
-              bobX * 0.35 +
-              wallShiftX;
-            const posY =
-              THREE.MathUtils.lerp(hipY, adsY, p.adsBlend) +
-              switchDrop +
-              reloadOffsetY +
-              (landDipY + jumpImpulseY) * 0.68 +
-              airborneLift +
-              swayPitch * 0.35 -
-              sprintEase * 0.05 +
-              sprintSwingY -
-              slideEase * 0.04 +
-              bobY * 0.48 +
-              wallLiftY;
-            const posZ =
-              THREE.MathUtils.lerp(hipZ, adsZ, p.adsBlend) +
-              switchOffsetZ +
-              recoilBack -
-              sprintEase * 0.025 +
-              wallRetractZ;
-
-            vm.root.position.set(posX, posY, posZ);
-            vm.root.rotation.set(
-              p.recoilKickPitch * 0.68 +
-                reloadRotX +
-                switchRotX +
-                swayPitch +
-                airbornePitch -
-                sprintEase * 0.22 +
-                slideEase * 0.12 +
-                wallRotX,
-              reloadRotY +
-                switchRotY -
-                swayYaw +
-                sprintEase * 0.48 +
-                sprintSwingRotY +
-                slideEase * 0.18 +
-                wallRotY,
-              reloadRotZ +
-                switchRotZ -
-                strafeRoll +
-                swayRoll +
-                landRollImpulse +
-                sprintEase * 0.18 +
-                sprintSwingRotZ +
-                slideEase * 0.52 +
-                wallRotZ
-            );
-
-            // Sync 1st-Person Custom Painted Chameleon Forearms & Hands to Active Weapon Viewmodel
-            fpChameleonArmsGroup.visible = vm.root.visible;
-            if (fpChameleonArmsGroup.visible) {
-              fpChameleonArmsGroup.position.copy(vm.root.position);
-              fpChameleonArmsGroup.rotation.copy(vm.root.rotation);
-              fpRightArm.position.set(0.015, -0.055, 0.08);
-              fpLeftArm.position.set(-0.042, -0.048, -0.14);
-            }
-
-            // Articulated Trigger Squeeze Micro-Animation on Every Shot
-            const targetTrigger =
-              fireHeld || p.muzzleFlashTimerMs > 0 ? 1.0 : 0.0;
-            triggerPullBlend +=
-              (targetTrigger - triggerPullBlend) * Math.min(1, dt * 28);
-            vm.triggerBlade.position.z =
-              vm.triggerBaseZ + triggerPullBlend * 0.0075;
-            vm.triggerBlade.rotation.x = 0.35 + triggerPullBlend * 0.36;
-
-            // Articulated Fire-Selector Switch Flick during Weapon Draw
-            const drawSelectorFlick =
-              p.weaponSwitchTimerMs > 0 && !isFirstHalfSwap
-                ? Math.sin((p.weaponSwitchTimerMs / swapHalfMs) * Math.PI) * 0.65
-                : 0;
-            vm.fireSelector.rotation.x =
-              (WEAPON_REGISTRY[wid].autoFire ? 0.45 : 0.0) - drawSelectorFlick;
-
-            // Reciprocating Slide / Bolt Kickback on Every Shot + Last-Round Bolt Lock + Reload Bolt Rack
-            const ammoState = p.weapons[wid];
-            const emptyLockBack =
-              ammoState && ammoState.mag === 0 && !p.isReloading ? 0.036 : 0;
-            const shotKick =
-              p.muzzleFlashTimerMs > 0
-                ? 0.048
-                : Math.min(0.038, p.recoilKickPitch * 0.25);
-            vm.slideOrBolt.position.z =
-              vm.slideBaseZ + Math.max(shotKick, reloadBoltPull, emptyLockBack);
-
-            // SPAS-12 Pump-Action Foregrip Rack Animation
-            if (vm.pumpGrip && wid === 'spas12') {
-              const cdRatio = p.fireCooldownMs / Math.max(1, WEAPON_REGISTRY.spas12.fireIntervalMs);
-              const pumpShift =
-                cdRatio > 0.25 && cdRatio < 0.85
-                  ? Math.sin(((cdRatio - 0.25) / 0.6) * Math.PI) * 0.075
-                  : reloadBoltPull;
-              vm.pumpGrip.position.z = vm.pumpBaseZ + pumpShift;
-            }
-
-            // 3-Axis Muzzle Flash & Dynamic Muzzle PointLight
-            const showFlash = p.muzzleFlashTimerMs > 0;
-            vm.muzzleFlashGroup.visible = showFlash;
-            if (showFlash) {
-              vm.muzzleFlashGroup.rotation.z = Math.random() * Math.PI * 2;
-              const fScale = 0.85 + Math.random() * 0.45;
-              vm.muzzleFlashGroup.scale.setScalar(fScale);
-              muzzlePointLight.intensity = 4.2;
-            } else {
-              muzzlePointLight.intensity = Math.max(
-                0,
-                muzzlePointLight.intensity - dt * 38
-              );
+          // 3D height-aware muzzle check: low cover walls below _muzzleWorldPos.y do NOT collide with or tilt the barrel!
+          let clampedMuzzleX = _muzzleWorldPos.x;
+          let clampedMuzzleZ = _muzzleWorldPos.z;
+          const mRad = 0.22;
+          const mY = _muzzleWorldPos.y;
+          for (const block of arenaDefNow.blocks) {
+            if (mY > block.height + 0.02) continue;
+            const hw = block.width * 0.5;
+            const hd = block.depth * 0.5;
+            const cx = Math.max(block.x - hw, Math.min(block.x + hw, clampedMuzzleX));
+            const cz = Math.max(block.z - hd, Math.min(block.z + hd, clampedMuzzleZ));
+            const dx = clampedMuzzleX - cx;
+            const dz = clampedMuzzleZ - cz;
+            const d2 = dx * dx + dz * dz;
+            if (d2 < mRad * mRad && d2 > 1e-8) {
+              const d = Math.sqrt(d2);
+              clampedMuzzleX = cx + (dx / d) * mRad;
+              clampedMuzzleZ = cz + (dz / d) * mRad;
             }
           }
+          const penDist = Math.hypot(
+            clampedMuzzleX - _muzzleWorldPos.x,
+            clampedMuzzleZ - _muzzleWorldPos.z
+          );
+          if (penDist > 0.001) {
+            // Retract barrel axially backward along local Z (keeping barrel 100% level so bullets and gun point forward!)
+            combatPlayerRig.weaponMount.position.z = Math.max(
+              0.38,
+              combatPlayerRig.weaponMount.position.z - Math.min(0.08, penDist * 0.65)
+            );
+            const charPropNow =
+              CHARACTER_ROSTER[combatPlayerRig.characterId]?.proportions ||
+              CHARACTER_ROSTER.volt.proportions;
+            enforceWeaponBodyClearance(
+              combatPlayerRig.weaponMount.position,
+              combatPlayerRig.weaponMount.rotation,
+              displayedWeaponId,
+              charPropNow.torsoWidth,
+              charPropNow.headScale,
+              combatPlayerRig.neckPivot.rotation.x + combatPlayerRig.headPivot.rotation.x
+            );
+            combatPlayerRig.weaponMount.updateMatrixWorld(true);
+            tpVm.muzzleFlashGroup.getWorldPosition(_muzzleWorldPos);
+            _muzzleWorldPos.x = clampedMuzzleX;
+            _muzzleWorldPos.z = clampedMuzzleZ;
+          }
+          muzzlePointLight.position.copy(_muzzleWorldPos);
+          if (p.muzzleFlashTimerMs > 0) {
+            muzzlePointLight.intensity = 4.5;
+          } else {
+            muzzlePointLight.intensity = Math.max(0, muzzlePointLight.intensity - dt * 38);
+          }
         }
+
+        for (let ti = 0; ti < sim.traces.length; ti++) {
+          const tr = sim.traces[ti];
+          if (tr.id > highestProcessedTraceId) {
+            highestProcessedTraceId = tr.id;
+            if (!tr.isEnemyShot && tpVm) {
+              // Snap player bullet tracer origin 100% to the actual 3D gun barrel muzzle tip!
+              tr.fromX = _muzzleWorldPos.x;
+              tr.fromY = _muzzleWorldPos.y;
+              tr.fromZ = _muzzleWorldPos.z;
+            }
+            spawnTraceImpactVFX(
+              tr.fromX,
+              tr.fromY,
+              tr.fromZ,
+              tr.toX,
+              tr.toY,
+              tr.toZ,
+              tr.hitNormalX,
+              tr.hitNormalY,
+              tr.hitNormalZ,
+              tr.hitKind,
+              tr.weaponId,
+              tr.isEnemyShot,
+              tr.propKind,
+              tr.damage
+            );
+          }
+        }
+
+        // Compute First-Person Camera Pose directly at the character's eye socket in combatPlayerRig.torsoPivot space!
+        const eyeLocalX =
+          THREE.MathUtils.lerp(-0.015, -0.165, p.adsBlend) +
+          adsPose.weaponOffset[0] * 0.4;
+        const eyeLocalY =
+          THREE.MathUtils.lerp(0.62, 0.58, p.adsBlend) +
+          adsPose.weaponOffset[1] * 0.4 +
+          (bobY + landDipY + jumpImpulseY) * 0.45;
+        const eyeLocalZ = 0.18 + adsPose.weaponOffset[2] * 0.35;
+        fpCamPos.set(eyeLocalX, eyeLocalY, eyeLocalZ);
+        combatPlayerRig.torsoPivot.localToWorld(fpCamPos);
+        const safeFpEyeXZ = resolveEntityCollisions(
+          fpCamPos.x,
+          fpCamPos.z,
+          0.34,
+          arenaDefNow,
+          sim.breakableProps
+        );
+        fpCamPos.x = safeFpEyeXZ.x;
+        fpCamPos.z = safeFpEyeXZ.z;
+
+        orbitDummyCam.rotation.order = 'YXZ';
+        orbitDummyCam.rotation.set(
+          effectivePitch,
+          effectiveYaw,
+          -strafeRoll * 0.45 + reloadCamRoll + landRollImpulse * 0.4
+        );
+        fpCamQuat.copy(orbitDummyCam.quaternion);
+
+        // Compute Precision Over-The-Shoulder Third-Person Camera Pose (converges on exact firing ray + supports 360° Free-Look Eye orbit)
+        const tpDist = THREE.MathUtils.lerp(2.28, 1.35, p.adsBlend);
+        const orbitYaw = effectiveYaw + tpOrbitYawOffset;
+        const orbitPitch = THREE.MathUtils.clamp(
+          0.14 + tpOrbitPitchOffset - effectivePitch * 0.52,
+          -0.58,
+          0.56
+        );
+        const horizDist = Math.cos(orbitPitch) * tpDist;
+        const vertOffset = Math.sin(orbitPitch) * tpDist;
+        const frontInspectFactor = Math.cos(tpOrbitYawOffset);
+        const shoulderOffset =
+          THREE.MathUtils.lerp(0.58, 0.42, p.adsBlend) *
+          Math.max(0, frontInspectFactor);
+        const orbitRightX = Math.cos(orbitYaw);
+        const orbitRightZ = -Math.sin(orbitYaw);
+        const rawTpX =
+          p.x + Math.sin(orbitYaw) * horizDist + orbitRightX * shoulderOffset;
+        const rawTpZ =
+          p.z + Math.cos(orbitYaw) * horizDist + orbitRightZ * shoulderOffset;
+        const safeTpXZ = resolveEntityCollisions(
+          rawTpX,
+          rawTpZ,
+          0.25,
+          arenaDefNow,
+          sim.breakableProps
+        );
+        const shoulderPivotY = (p.isCrouching ? 1.04 : 1.44) + bobY * 0.45;
+        tpCamPos.set(
+          safeTpXZ.x,
+          Math.max(p.y + 0.28, p.y + shoulderPivotY + vertOffset),
+          safeTpXZ.z
+        );
+
+        // Converge 3rd-person camera directly onto the player's exact aim ray 26m ahead so center crosshair = bullet impact!
+        const aimCosP = Math.cos(effectivePitch);
+        const aimDirX = -Math.sin(effectiveYaw) * aimCosP;
+        const aimDirY = Math.sin(effectivePitch);
+        const aimDirZ = -Math.cos(effectiveYaw) * aimCosP;
+        const inspectBlend = Math.min(1, Math.abs(tpOrbitYawOffset) / 0.35);
+        const rayTargetX = p.x + aimDirX * 26.0 + orbitRightX * shoulderOffset * 0.12;
+        const rayTargetY = p.y + p.eyeHeight + aimDirY * 26.0;
+        const rayTargetZ = p.z + aimDirZ * 26.0 + orbitRightZ * shoulderOffset * 0.12;
+        orbitLookTarget.set(
+          THREE.MathUtils.lerp(rayTargetX, p.x, inspectBlend),
+          THREE.MathUtils.lerp(rayTargetY, p.y + shoulderPivotY - 0.12, inspectBlend),
+          THREE.MathUtils.lerp(rayTargetZ, p.z, inspectBlend)
+        );
+        orbitDummyCam.position.copy(tpCamPos);
+        orbitDummyCam.lookAt(orbitLookTarget);
+        tpCamQuat.copy(orbitDummyCam.quaternion);
+
+        // Smoothly interpolate ONLY the Camera Position & Orientation between First-Person and Third-Person!
+        camera.position.lerpVectors(fpCamPos, tpCamPos, tpEase);
+        camera.quaternion.slerpQuaternions(fpCamQuat, tpCamQuat, tpEase);
       } else {
         // 9B. 3D Character Lobby & Vault Custom Painting Studio Showcase
         viewmodelRig.visible = false;
@@ -3026,7 +3735,8 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
             currentLobbyCharId,
             maxAnisotropy
           );
-          combatWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId);
+          currentCombatWeaponId = currentLobbyWeaponId;
+          combatWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId, true);
           combatPlayerRig.weaponMount.add(combatWeaponProp);
           combatPlayerRig.root.visible = false;
           scene.add(combatPlayerRig.root);
@@ -3053,8 +3763,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           lobbyWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId);
           lobbyCharRig.weaponMount.add(lobbyWeaponProp);
 
+          currentCombatWeaponId = currentLobbyWeaponId;
           combatPlayerRig.weaponMount.remove(combatWeaponProp);
-          combatWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId);
+          combatWeaponProp = buildCompactHandheldWeaponProp(currentLobbyWeaponId, true);
           combatPlayerRig.weaponMount.add(combatWeaponProp);
         }
 
@@ -3063,10 +3774,23 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
           (activeLobbyTabRef.current === 'vault' &&
             vaultSubTabRef.current === 'studio');
 
-        // Show handheld weapon prop only when inspecting Loadout or Weapons tabs so the pure-white humanoid silhouette and hands are unobstructed in Lobby, Character, and Paint Studio
+        // Show handheld weapon prop when inspecting Loadout/Weapons tabs or when the 'inspect' pose animation is active
         lobbyWeaponProp.visible =
           activeLobbyTabRef.current === 'loadout' ||
-          activeLobbyTabRef.current === 'weapons';
+          activeLobbyTabRef.current === 'weapons' ||
+          characterPoseRef.current === 'inspect';
+        const lobbyVm = lobbyWeaponProp?.userData?.weaponRig as
+          | WeaponViewModelRig
+          | undefined;
+        if (lobbyVm) {
+          setWeaponRigOpticAttachment(
+            lobbyVm,
+            resolveEquippedOptic(
+              currentLobbyWeaponId,
+              settingsRef.current.weaponOptics
+            )
+          );
+        }
 
         // Smooth scale transition on character or design change
         const baseLobbyScale = isStudioView ? 0.94 : 0.84;
@@ -3133,8 +3857,25 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         // Update Character Pose & Animation
         const activePose = isStudioView
           ? 'studio_neutral'
-          : characterPoseRef.current;
-        updateChameleonRigAnimation(lobbyCharRig, activePose, now * 0.001);
+          : (activeLobbyTabRef.current === 'loadout' ||
+                activeLobbyTabRef.current === 'weapons') &&
+              characterPoseRef.current === 'idle'
+            ? 'inspect'
+            : characterPoseRef.current;
+        updateChameleonRigAnimation(
+          lobbyCharRig,
+          activePose,
+          now * 0.001,
+          0,
+          0,
+          false,
+          0,
+          0,
+          false,
+          0,
+          0,
+          currentLobbyWeaponId
+        );
 
         // Sync Flanking Squadmate Pedestals in Lobby/Friends
         const showSquad =
@@ -3348,6 +4089,49 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       }
 
+      // 10C. Sync 3D Tactical World Loot Items (Weapons, Attachments, Ammo & Gear)
+      const activeLootIds = new Set<string>();
+      if (sim.worldLoot) {
+        for (const wl of sim.worldLoot) {
+          activeLootIds.add(wl.lootId);
+          let wlEntry = worldLootMeshes.get(wl.lootId);
+          if (!wlEntry) {
+            const grp = new THREE.Group();
+            const isWep = Boolean(wl.item.weaponState);
+            const isAtt = wl.item.itemId.startsWith('att_');
+            const caseMesh = new THREE.Mesh(
+              worldLootCaseGeo,
+              isWep
+                ? worldLootWeaponMat
+                : isAtt
+                  ? worldLootAttachmentMat
+                  : worldLootSupplyMat
+            );
+            caseMesh.position.y = 0.24;
+            const stripe = new THREE.Mesh(worldLootStripeGeo, worldLootTrimMat);
+            stripe.position.y = 0.24;
+            const ring = new THREE.Mesh(worldLootRingGeo, worldLootRingMat);
+            ring.rotation.x = -Math.PI / 2;
+            ring.position.y = 0.025;
+            grp.add(caseMesh, stripe, ring);
+            worldLootGroup.add(grp);
+            wlEntry = { group: grp, ring };
+            worldLootMeshes.set(wl.lootId, wlEntry);
+          }
+          const hoverY = Math.sin(now * 0.004 + wl.x * 0.7) * 0.06;
+          wlEntry.group.position.set(wl.x, hoverY, wl.z);
+          wlEntry.group.rotation.y = now * 0.0018 + wl.z;
+          const pulse = 0.9 + Math.sin(now * 0.006 + wl.x) * 0.12;
+          wlEntry.ring.scale.setScalar(pulse);
+        }
+      }
+      worldLootMeshes.forEach((entry, lootId) => {
+        if (!activeLootIds.has(lootId)) {
+          worldLootGroup.remove(entry.group);
+          worldLootMeshes.delete(lootId);
+        }
+      });
+
       // 11. Update Pooled Ballistic VFX (Tracers, Shell Casings, Sparks, Rings)
       for (let i = 0; i < TRACER_POOL_SIZE; i++) {
         const item = tracerPool[i];
@@ -3372,31 +4156,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         item.glowMat.opacity = alpha * 0.65;
         item.glowMat.color.setHex(trace.colorHex);
         item.group.visible = true;
-      }
-
-      // Update Spinning Brass Shell Casings
-      for (let i = 0; i < CASING_POOL_SIZE; i++) {
-        const c = casingPool[i];
-        if (!c.active) continue;
-        c.ageMs += dtMs;
-        if (c.ageMs >= c.maxAgeMs) {
-          c.active = false;
-          c.mesh.visible = false;
-          continue;
-        }
-        c.vy -= 13.5 * dt;
-        c.mesh.position.x += c.vx * dt;
-        c.mesh.position.y += c.vy * dt;
-        c.mesh.position.z += c.vz * dt;
-        if (c.mesh.position.y < 0.02) {
-          c.mesh.position.y = 0.02;
-          c.vy = Math.abs(c.vy) * 0.42;
-          c.vx *= 0.7;
-          c.vz *= 0.7;
-        }
-        c.mesh.rotation.x += c.rx * dt;
-        c.mesh.rotation.y += c.ry * dt;
-        c.mesh.rotation.z += c.rz * dt;
       }
 
       // Update 3D Impact Sparks & Debris Particles
@@ -3440,6 +4199,158 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         const t = r.ageMs / r.maxAgeMs;
         r.mesh.scale.setScalar(0.35 + t * r.maxScale);
         r.mat.opacity = (1 - t) * 0.85;
+      }
+
+      // Update Multi-Stage Red Drum Explosion Core Flashes, Rolling Fireballs, Mushroom Smoke Plumes & Shrapnel
+      if (explosionPointLight.intensity > 0) {
+        explosionPointLight.intensity = Math.max(
+          0,
+          explosionPointLight.intensity * Math.exp(-6.5 * dt) - dt * 2.5
+        );
+      }
+
+      for (let i = 0; i < CORE_FLASH_POOL_SIZE; i++) {
+        const cf = explosionCoreFlashPool[i];
+        if (!cf.active) continue;
+        cf.ageMs += dtMs;
+        if (cf.ageMs >= cf.maxAgeMs) {
+          cf.active = false;
+          cf.group.visible = false;
+          continue;
+        }
+        const t = cf.ageMs / cf.maxAgeMs;
+        const easeOut = 1 - (1 - t) * (1 - t);
+        cf.group.scale.setScalar(0.5 + easeOut * cf.maxScale);
+        cf.group.rotation.y += dt * 8;
+        cf.innerMat.opacity = Math.max(0, 1 - t * 1.35);
+        cf.outerMat.opacity = Math.max(0, (1 - t) * 0.95);
+      }
+
+      for (let i = 0; i < EXPLOSION_PLUME_POOL_SIZE; i++) {
+        const pl = explosionPlumePool[i];
+        if (!pl.active) continue;
+        if (pl.delayMs > 0) {
+          pl.delayMs -= dtMs;
+          if (pl.delayMs <= 0) {
+            pl.mesh.visible = true;
+            pl.mat.opacity = 0.96;
+            // Secondary sub-detonation light pulse!
+            explosionPointLight.intensity = Math.max(explosionPointLight.intensity, 12.5);
+          } else {
+            continue;
+          }
+        }
+        pl.ageMs += dtMs;
+        if (pl.ageMs >= pl.maxAgeMs) {
+          pl.active = false;
+          pl.mesh.visible = false;
+          continue;
+        }
+        const t = pl.ageMs / pl.maxAgeMs;
+        // Drag & thermal buoyancy lift
+        const drag = Math.exp(-2.8 * dt);
+        pl.vx *= drag;
+        pl.vz *= drag;
+        if (pl.isSmoke) {
+          pl.vy *= Math.exp(-1.2 * dt);
+        } else {
+          pl.vy += 1.6 * dt;
+        }
+        pl.mesh.position.x += pl.vx * dt;
+        pl.mesh.position.y += pl.vy * dt;
+        pl.mesh.position.z += pl.vz * dt;
+        // Billboard volumetric cloud sprite toward active camera and roll organically around view axis
+        pl.mesh.quaternion.copy(camera.quaternion);
+        pl.rx += pl.rz * dt;
+        pl.mesh.rotateZ(pl.rx);
+
+        const scale = THREE.MathUtils.lerp(pl.startScale, pl.endScale, 1 - (1 - t) * (1 - t));
+        pl.mesh.scale.setScalar(scale);
+
+        if (pl.isSmoke) {
+          // Dark billowing mushroom smoke cooling from warm soot to charcoal gray
+          if (t < 0.22) {
+            pl.mat.color.setHex(0x7c2d12);
+          } else if (t < 0.52) {
+            pl.mat.color.setHex(0x475569);
+          } else {
+            pl.mat.color.setHex(0x1e293b);
+          }
+          const fadeIn = Math.min(1, t * 4.5);
+          pl.mat.opacity = fadeIn * (1 - t) * 0.78;
+        } else {
+          // Thermal fireball cooling progression: Incandescent White-Gold -> Fiery Orange -> Crimson -> Soot
+          if (t < 0.2) {
+            pl.mat.color.setHex(0xfef08a);
+          } else if (t < 0.52) {
+            pl.mat.color.setHex(0xf97316);
+          } else if (t < 0.78) {
+            pl.mat.color.setHex(0xdc2626);
+          } else {
+            pl.mat.color.setHex(0x451a03);
+          }
+          const flicker = 0.9 + 0.1 * Math.sin(pl.ageMs * 0.045 + i);
+          pl.mat.opacity = (1 - t * t) * 0.94 * flicker;
+        }
+      }
+
+      for (let i = 0; i < SHRAPNEL_POOL_SIZE; i++) {
+        const sh = barrelShrapnelPool[i];
+        if (!sh.active) continue;
+        sh.ageMs += dtMs;
+        if (sh.ageMs >= sh.maxAgeMs) {
+          sh.active = false;
+          sh.mesh.visible = false;
+          continue;
+        }
+        const t = sh.ageMs / sh.maxAgeMs;
+        sh.vy -= 18.5 * dt;
+        sh.mesh.position.x += sh.vx * dt;
+        sh.mesh.position.y += sh.vy * dt;
+        sh.mesh.position.z += sh.vz * dt;
+        if (sh.mesh.position.y < 0.05) {
+          sh.mesh.position.y = 0.05;
+          sh.vy = Math.abs(sh.vy) * 0.46;
+          sh.vx *= 0.68;
+          sh.vz *= 0.68;
+          if (sh.bounces < 2) {
+            sh.bounces++;
+            spawnImpactBurst(
+              sh.mesh.position.x,
+              0.06,
+              sh.mesh.position.z,
+              0,
+              1,
+              0,
+              0xfbbf24,
+              2,
+              0.65,
+              0.7
+            );
+          }
+        }
+        sh.mesh.rotation.x += sh.rx * dt;
+        sh.mesh.rotation.y += sh.ry * dt;
+        sh.mesh.rotation.z += sh.rz * dt;
+        sh.mat.emissiveIntensity = Math.max(0, (1 - t) * 1.85);
+      }
+
+      // Update Batched Procedural Bullet Impact Engine (Instanced Marks, LOD Uniforms & Pooled Secondary Effects)
+      bulletImpactSystem.update(dt, camera);
+
+      // Cool Fresh Blast Crater Embers
+      for (let i = 0; i < DECAL_POOL_SIZE; i++) {
+        const d = decalPool[i];
+        if (!d.active || d.isBlood || d.ageMs >= 2400) continue;
+        d.ageMs += dtMs;
+        if (d.emberGlow > 0) {
+          if (d.ageMs < 420) {
+            d.mat.color.setHex(0xffedd5);
+          } else {
+            d.mat.color.setHex(0xffffff);
+            d.emberGlow = 0;
+          }
+        }
       }
 
       // 12. Direct 60fps HUD DOM Synchronization (dirty-checked to avoid redundant layout/style churn)
@@ -3529,21 +4440,71 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
         }
       }
 
-      // Scope Overlay & Hip-fire Crosshair Smooth Crossfade
-      if (hudRefs.lockReticle.current) {
-        const scopeOpacity = p.adsBlend > 0.15 ? Math.min(1, (p.adsBlend - 0.15) / 0.65) : 0;
-        const scopeOpacityStr = scopeOpacity.toFixed(2);
-        if (scopeOpacityStr !== lastScopeOpacityStr) {
-          lastScopeOpacityStr = scopeOpacityStr;
-          hudRefs.lockReticle.current.style.opacity = scopeOpacityStr;
-        }
-      }
+      // Scope Overlay & Hip-fire Crosshair Smooth Crossfade via ScopeViewController
+      syncScopeOverlayDom(
+        hudRefs.lockReticle.current,
+        p.adsState,
+        p.recoilKickPitch + fpWeaponKickPitch
+      );
       if (hudRefs.crosshairRef.current) {
-        const chOpacity = Math.max(0, 1 - p.adsBlend * 1.4);
+        const chEl = hudRefs.crosshairRef.current;
+        const chOpacity = p.adsState
+          ? p.adsState.hipCrosshairOpacity
+          : Math.max(0, 1 - p.adsBlend * 1.4);
         const chOpacityStr = chOpacity.toFixed(2);
         if (chOpacityStr !== lastChOpacityStr) {
           lastChOpacityStr = chOpacityStr;
-          hudRefs.crosshairRef.current.style.opacity = chOpacityStr;
+          chEl.style.opacity = chOpacityStr;
+        }
+
+        // Dynamic Crosshair Expansion from Character Movement, Weapon Accuracy & Recoil State
+        const chMetrics = computeDynamicCrosshairState(p, fpWeaponKickPitch);
+        const gapLerpRate = chMetrics.targetGapPx > smoothedChGapPx ? 26 : 16;
+        smoothedChGapPx +=
+          (chMetrics.targetGapPx - smoothedChGapPx) * (1 - Math.exp(-gapLerpRate * dt));
+
+        const gapStr = `${smoothedChGapPx.toFixed(1)}px`;
+        if (gapStr !== lastChGapStr) {
+          lastChGapStr = gapStr;
+          chEl.style.setProperty('--ch-gap', gapStr);
+          chEl.dataset.gapPx = smoothedChGapPx.toFixed(2);
+          chEl.dataset.spreadDeg = chMetrics.totalSpreadDeg.toFixed(2);
+          chEl.dataset.baseSpreadDeg = chMetrics.baseSpreadDeg.toFixed(2);
+          chEl.dataset.moveSpreadDeg = chMetrics.movementSpreadDeg.toFixed(2);
+          chEl.dataset.recoilSpreadDeg = chMetrics.recoilSpreadDeg.toFixed(2);
+        }
+
+        const isShotgun = p.activeWeapon === 'spas12';
+        const tickLenPx = isShotgun
+          ? 7.5
+          : 8.5 + chMetrics.recoilIntensity * 2.5 + chMetrics.movementIntensity * 1.5;
+        const tickLenStr = `${tickLenPx.toFixed(1)}px`;
+        if (tickLenStr !== lastChTickLenStr) {
+          lastChTickLenStr = tickLenStr;
+          chEl.style.setProperty('--ch-tick-len', tickLenStr);
+        }
+
+        const dotScale = 1.0 + chMetrics.recoilIntensity * 0.38;
+        const dotScaleStr = dotScale.toFixed(2);
+        if (dotScaleStr !== lastChDotScaleStr) {
+          lastChDotScaleStr = dotScaleStr;
+          chEl.style.setProperty('--ch-dot-scale', dotScaleStr);
+        }
+
+        const chColor =
+          chMetrics.recoilIntensity > 0.45
+            ? '#fbbf24'
+            : p.isCrouching && chMetrics.movementIntensity < 0.08
+              ? '#6ee7b7'
+              : '#f4f4f5';
+        if (chColor !== lastChColorStr) {
+          lastChColorStr = chColor;
+          chEl.style.setProperty('--ch-color', chColor);
+        }
+
+        if (p.activeWeapon !== lastChWeaponStr) {
+          lastChWeaponStr = p.activeWeapon;
+          chEl.dataset.weapon = p.activeWeapon;
         }
       }
 
@@ -3575,6 +4536,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       }
 
       renderer.render(scene, camera);
+      if (isSoftwareGl && !isDisposed) {
+        afterDraw();
+      }
     };
 
     rafId = requestAnimationFrame(animate);
@@ -3594,9 +4558,19 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({
       window.removeEventListener('wheel', onWheel);
       window.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('blur', onWindowBlur);
       lobbyCharRig.dispose();
       combatPlayerRig.dispose();
       squadSlotEntries.forEach((s) => s.rig.dispose());
+      worldLootCaseGeo.dispose();
+      worldLootStripeGeo.dispose();
+      worldLootRingGeo.dispose();
+      worldLootTrimMat.dispose();
+      worldLootWeaponMat.dispose();
+      worldLootAttachmentMat.dispose();
+      worldLootSupplyMat.dispose();
+      worldLootRingMat.dispose();
+      bulletImpactSystem.dispose();
       texSet.dispose();
       envTarget.dispose();
       renderer.dispose();

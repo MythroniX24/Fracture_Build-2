@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "node -e \"const fs=require('fs');(async()=>{for(let i=0;i<50&&!fs.existsSync('server.ts');i++)await new Promise(r=>setTimeout(r,200));})()\" && tsx server.ts",
     "build": "vite build",
     "start": "node server.ts",
     "preview": "vite preview",

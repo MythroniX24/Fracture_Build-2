@@ -376,15 +376,44 @@ async function startServer() {
   }
 
   if (process.env.NODE_ENV !== 'production') {
-    const { createServer: createViteServer } = await import('vite');
-    const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
-      },
-      appType: 'spa',
+    let viteMiddleware: express.RequestHandler | null = null;
+    const viteReadyPromise = (async () => {
+      const fs = await import('fs');
+      const requiredFiles = [
+        path.join(__dirname, 'src/App.tsx'),
+        path.join(__dirname, 'src/components/MenuScreens.tsx'),
+        path.join(__dirname, 'src/components/WeaponArtwork.tsx'),
+        path.join(__dirname, 'src/game/chameleonCharacter3D.ts'),
+        path.join(__dirname, 'src/game/impact/ImpactAngleSolver.ts'),
+        path.join(__dirname, 'src/game/impact/ImpactMaterialProfiles.ts'),
+        path.join(__dirname, 'src/game/ads/index.ts'),
+      ];
+      for (let attempt = 0; attempt < 30; attempt++) {
+        if (requiredFiles.every((f) => fs.existsSync(f))) break;
+        await new Promise((r) => setTimeout(r, 150));
+      }
+
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: {
+          middlewareMode: true,
+          hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+        },
+        appType: 'spa',
+      });
+      viteMiddleware = vite.middlewares;
+    })();
+
+    app.use(async (req, res, next) => {
+      if (!viteMiddleware) {
+        await viteReadyPromise;
+      }
+      if (viteMiddleware) {
+        viteMiddleware(req, res, next);
+      } else {
+        next();
+      }
     });
-    app.use(vite.middlewares);
   } else {
     const distPath = path.join(__dirname, 'dist');
     app.use(express.static(distPath));

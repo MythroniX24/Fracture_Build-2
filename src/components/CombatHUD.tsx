@@ -12,6 +12,12 @@ import {
   WeaponId,
 } from '../game/config.ts';
 import { soundEngine } from '../audio/soundEngine.ts';
+import {
+  CORE_SELECTABLE_OPTICS,
+  type OpticId,
+  getOpticConfig,
+  resolveEquippedOptic,
+} from '../game/ads/index.ts';
 import { HudActionIcon, WeaponIllustration } from './WeaponArtwork.tsx';
 
 export interface HudDomRefs {
@@ -70,6 +76,9 @@ export interface TouchInputState {
   abilityPressed: boolean;
   cameraDeltaX?: number;
   cameraDeltaY?: number;
+  freeLookActive?: boolean;
+  freeLookDeltaX?: number;
+  freeLookDeltaY?: number;
   selectedWeapon?: WeaponId;
 }
 
@@ -110,6 +119,7 @@ export interface CombatHUDProps {
   ) => void;
   onConfirmRespawn?: () => void;
   onSelectWeapon?: (w: WeaponId) => void;
+  onSelectWeaponOptic?: (weaponId: WeaponId, opticId: OpticId) => void;
   onToggleMute: () => void;
   onToggleFullscreen: () => void;
   onToggleLockOn: () => void;
@@ -119,6 +129,12 @@ export interface CombatHUDProps {
   onOpenLayoutEditor?: () => void;
   onRestartRound: () => void;
   onUpdateTrainingConfig: (upd: Partial<TrainingConfig>) => void;
+  backpackOpen?: boolean;
+  onToggleBackpack?: () => void;
+  nearbyLootPrompt?: { lootId: string; label: string } | null;
+  onPickupNearbyLoot?: (lootId: string) => void;
+  armorHp?: number;
+  maxArmorHp?: number;
 }
 
 export const CombatHUD: React.FC<CombatHUDProps> = ({
@@ -137,20 +153,58 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
   onSelectLoadoutPair,
   onConfirmRespawn,
   onSelectWeapon,
+  onSelectWeaponOptic,
   onToggleMute,
   onToggleFullscreen,
+  firstPersonMode = true,
+  onToggleFirstPerson,
   onPause,
   onRestartRound,
   onUpdateTrainingConfig,
+  backpackOpen = false,
+  onToggleBackpack,
+  nearbyLootPrompt = null,
+  onPickupNearbyLoot,
+  armorHp = 0,
+  maxArmorHp = 100,
 }) => {
   const [selectedWeaponUi, setSelectedWeaponUi] = useState<WeaponId>(
     propActiveWeapon || loadoutWeapons[0]
   );
   const [adsToggled, setAdsToggled] = useState<boolean>(false);
+  const [isFreeLookEyeActive, setIsFreeLookEyeActive] = useState<boolean>(false);
 
-  // Guard timestamp to prevent pointerDown + click from double-firing on a single tap
+  React.useEffect(() => {
+    if (propActiveWeapon) {
+      setSelectedWeaponUi((prev) => {
+        if (prev !== propActiveWeapon) {
+          setAdsToggled(false);
+          touchInputRef.current.aimHeld = false;
+        }
+        return propActiveWeapon;
+      });
+    }
+  }, [propActiveWeapon, touchInputRef]);
+
+  React.useEffect(() => {
+    if (loadoutOverlayMode) {
+      setAdsToggled(false);
+      touchInputRef.current.aimHeld = false;
+    }
+  }, [loadoutOverlayMode, touchInputRef]);
+
+  // Guard timestamps (320ms) to prevent pointerDown + click from double-firing on a single tap/click
   const lastWeaponTapTimeRef = useRef<number>(0);
   const lastLoadoutTapTimeRef = useRef<number>(0);
+  const lastViewToggleTapTimeRef = useRef<number>(0);
+  const lastPauseTapTimeRef = useRef<number>(0);
+  const lastRespawnTapTimeRef = useRef<number>(0);
+  const lastBackpackTapTimeRef = useRef<number>(0);
+  const lastLootPickupTapTimeRef = useRef<number>(0);
+
+  // 3rd-Person 360° Free-Look Eye Button Drag Refs
+  const freeLookPointerId = useRef<number | null>(null);
+  const freeLookLastPos = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // Left Movement Joystick Refs
   const stickZoneRef = useRef<HTMLDivElement | null>(null);
@@ -207,6 +261,24 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
         return;
       }
 
+      if (freeLookPointerId.current !== null && e.pointerId === freeLookPointerId.current) {
+        let dx = e.clientX - freeLookLastPos.current.x;
+        let dy = e.clientY - freeLookLastPos.current.y;
+        if (dx === 0 && typeof e.movementX === 'number' && Math.abs(e.movementX) > 0) {
+          dx = e.movementX;
+        }
+        if (dy === 0 && typeof e.movementY === 'number' && Math.abs(e.movementY) > 0) {
+          dy = e.movementY;
+        }
+        freeLookLastPos.current = { x: e.clientX, y: e.clientY };
+        touchInputRef.current.freeLookActive = true;
+        touchInputRef.current.freeLookDeltaX =
+          (touchInputRef.current.freeLookDeltaX || 0) + dx * 1.45;
+        touchInputRef.current.freeLookDeltaY =
+          (touchInputRef.current.freeLookDeltaY || 0) + dy * 1.45;
+        return;
+      }
+
       if (firePointerId.current !== null && e.pointerId === firePointerId.current) {
         let dx = e.clientX - fireLastPos.current.x;
         let dy = e.clientY - fireLastPos.current.y;
@@ -219,9 +291,9 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
         fireLastPos.current = { x: e.clientX, y: e.clientY };
         updateFireJoystickKnob(e.clientX, e.clientY);
         touchInputRef.current.attackDragX =
-          (touchInputRef.current.attackDragX || 0) + dx * 1.15;
+          (touchInputRef.current.attackDragX || 0) + dx * 1.55;
         touchInputRef.current.attackDragY =
-          (touchInputRef.current.attackDragY || 0) + dy * 1.15;
+          (touchInputRef.current.attackDragY || 0) + dy * 1.55;
         touchInputRef.current.lightHeld = true;
       } else if (lookPointersRef.current.has(e.pointerId)) {
         const prev = lookPointersRef.current.get(e.pointerId)!;
@@ -243,6 +315,11 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
     };
 
     const onWindowPointerUp = (e: PointerEvent) => {
+      if (freeLookPointerId.current !== null && e.pointerId === freeLookPointerId.current) {
+        freeLookPointerId.current = null;
+        touchInputRef.current.freeLookActive = false;
+        setIsFreeLookEyeActive(false);
+      }
       if (stickPointerId.current !== null && e.pointerId === stickPointerId.current) {
         stickPointerId.current = null;
         setIsStickActiveUi(false);
@@ -265,6 +342,11 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
     const onWindowBlur = () => {
       lookPointersRef.current.clear();
       lookTouchesRef.current.clear();
+      if (freeLookPointerId.current !== null) {
+        freeLookPointerId.current = null;
+        touchInputRef.current.freeLookActive = false;
+        setIsFreeLookEyeActive(false);
+      }
       if (stickPointerId.current !== null) {
         stickPointerId.current = null;
         setIsStickActiveUi(false);
@@ -445,9 +527,9 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
     updateFireJoystickKnob(e.clientX, e.clientY);
     if (dx !== 0 || dy !== 0) {
       touchInputRef.current.attackDragX =
-        (touchInputRef.current.attackDragX || 0) + dx * 1.45;
+        (touchInputRef.current.attackDragX || 0) + dx * 1.75;
       touchInputRef.current.attackDragY =
-        (touchInputRef.current.attackDragY || 0) + dy * 1.45;
+        (touchInputRef.current.attackDragY || 0) + dy * 1.75;
     }
   };
 
@@ -482,9 +564,9 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
         fireLastPos.current = { x: t.clientX, y: t.clientY };
         updateFireJoystickKnob(t.clientX, t.clientY);
         touchInputRef.current.attackDragX =
-          (touchInputRef.current.attackDragX || 0) + dx * 0.75;
+          (touchInputRef.current.attackDragX || 0) + dx * 1.05;
         touchInputRef.current.attackDragY =
-          (touchInputRef.current.attackDragY || 0) + dy * 0.75;
+          (touchInputRef.current.attackDragY || 0) + dy * 1.05;
         break;
       }
     }
@@ -510,10 +592,12 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
    */
   const handleWeaponBoxTrigger = (wid: WeaponId) => {
     const now = performance.now();
-    if (now - lastWeaponTapTimeRef.current < 80) return;
+    if (now - lastWeaponTapTimeRef.current < 320) return;
     lastWeaponTapTimeRef.current = now;
 
     const current = propActiveWeapon || selectedWeaponUi;
+    setAdsToggled(false);
+    touchInputRef.current.aimHeld = false;
     if (current === wid) {
       soundEngine.play('reload_start');
       if (onSelectWeapon) {
@@ -537,7 +621,7 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
     weapons: [WeaponId, WeaponId]
   ) => {
     const now = performance.now();
-    if (now - lastLoadoutTapTimeRef.current < 80) return;
+    if (now - lastLoadoutTapTimeRef.current < 320) return;
     lastLoadoutTapTimeRef.current = now;
 
     soundEngine.unlock();
@@ -547,8 +631,33 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
     onSelectLoadoutPair?.(pairId, weapons, shouldAutoSpawn);
   };
 
+  const handleViewModeToggle = () => {
+    const now = performance.now();
+    if (now - lastViewToggleTapTimeRef.current < 320) return;
+    lastViewToggleTapTimeRef.current = now;
+    soundEngine.play('ui_click');
+    onToggleFirstPerson?.();
+  };
+
+  const handlePauseTrigger = () => {
+    const now = performance.now();
+    if (now - lastPauseTapTimeRef.current < 320) return;
+    lastPauseTapTimeRef.current = now;
+    soundEngine.play('ui_click');
+    onPause();
+  };
+
+  const handleRespawnTrigger = () => {
+    const now = performance.now();
+    if (now - lastRespawnTapTimeRef.current < 320) return;
+    lastRespawnTapTimeRef.current = now;
+    soundEngine.play('ui_confirm');
+    onConfirmRespawn?.();
+  };
+
   const currentWeapon = propActiveWeapon || selectedWeaponUi;
-  const isSniperWeapon = currentWeapon === 'awp';
+  const activeOpticId = resolveEquippedOptic(currentWeapon, settings?.weaponOptics);
+  const activeOptic = getOpticConfig(activeOpticId);
   const isKillCallout =
     combatCallout &&
     (combatCallout.text.includes('ELIMINATED') ||
@@ -592,162 +701,260 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
       />
 
       {/* =================================================================== */}
-      {/* REALISTIC CIRCULAR OPTICAL SCOPE WITH VISIBLE PERIPHERAL SCREEN     */}
+      {/* UNIVERSAL ADS & DATA-DRIVEN OPTICAL SCOPE LENS + RETICLE OVERLAY    */}
+      {/* - Hidden (no overlay) when Iron Sights ('none') are equipped        */}
+      {/* - Circular 2.0X Tactical Optic or 4.0X ACOG Marksman Scope when     */}
+      {/*   an optic attachment is equipped and Sight Acquisition is active   */}
       {/* =================================================================== */}
       <div
         ref={hudRefs.lockReticle}
-        className="fixed inset-0 pointer-events-none flex items-center justify-center transition-opacity duration-100 opacity-0"
+        data-testid="scope-overlay-root"
+        data-optic-id={activeOpticId}
+        data-scope-active="false"
+        style={{ '--scope-lens-scale': '1' } as React.CSSProperties}
+        className="fixed inset-0 pointer-events-none flex items-center justify-center opacity-0"
       >
-        {isSniperWeapon ? (
-          /* Realistic Circular 8x Sniper Scope with Peripheral World View Visible Around Sides */
+        {activeOptic.overlay.showLensOverlay && (
           <div className="relative w-full h-full flex items-center justify-center pointer-events-none">
-            {/* Soft Peripheral Vignette (Does NOT black out side screen — world stays visible on sides!) */}
+            {/* Aspect-Correct Outer Eye-Relief Vignette & Peripheral Mask */}
             <div
               className="absolute inset-0 pointer-events-none"
               style={{
                 background:
-                  'radial-gradient(circle at center, transparent 175px, rgba(8, 12, 18, 0.34) 225px, rgba(5, 8, 14, 0.56) 100%)',
+                  activeOpticId === 'scope_4x' ||
+                  activeOpticId === 'scope_6x' ||
+                  activeOpticId === 'scope_8x'
+                    ? 'radial-gradient(circle at center, transparent 155px, rgba(6, 10, 16, 0.72) 215px, rgba(3, 5, 10, 0.94) 100%)'
+                    : 'radial-gradient(circle at center, transparent 145px, rgba(8, 12, 18, 0.52) 205px, rgba(4, 7, 12, 0.82) 100%)',
               }}
             />
 
-            {/* Machined Circular Sniper Scope Housing Tube */}
-            <div className="relative w-[330px] h-[330px] sm:w-[400px] sm:h-[400px] rounded-full border-[14px] sm:border-[16px] border-[#0d1016] ring-2 ring-zinc-400/50 shadow-[0_0_55px_rgba(0,0,0,0.85),inset_0_0_32px_rgba(0,0,0,0.8)] flex items-center justify-center bg-emerald-950/[0.04]">
-              {/* Top Elevation & Right Windage Mechanical Turret Knobs on Scope Ring */}
-              <div className="absolute -top-6 w-12 h-4 rounded-t-md bg-zinc-800 border border-zinc-500/50 shadow-md" />
-              <div className="absolute -right-6 w-4 h-12 rounded-r-md bg-zinc-800 border border-zinc-500/50 shadow-md" />
-              <div className="absolute -left-5 w-3.5 h-9 rounded-l-md bg-zinc-800 border border-zinc-500/40" />
-
-              {/* Inner Anti-Reflective Emerald Lens Coating Ring */}
-              <div className="absolute inset-1.5 rounded-full border border-emerald-400/35 pointer-events-none" />
-              <div className="absolute inset-4 rounded-full border border-white/10 pointer-events-none" />
-
-              {/* Precision Dual-Plane Mil-Dot Reticle Inside Circular Lens */}
-              <svg
-                className="w-full h-full text-zinc-100/90 pointer-events-none"
-                viewBox="0 0 200 200"
-                fill="none"
+            {activeOpticId === 'scope_2x' ? (
+              /* 2.0X TACTICAL COMBAT OPTIC LENS & ILLUMINATED CIRCLE-CHEVRON RETICLE */
+              <div
+                data-testid="scope-lens-2x"
+                style={{
+                  transform: 'scale(var(--scope-lens-scale, 1))',
+                  backgroundColor: activeOptic.overlay.glassTintCss,
+                }}
+                className="relative w-[290px] h-[290px] sm:w-[340px] sm:h-[340px] rounded-full border-[12px] sm:border-[14px] border-[#0f131a] ring-2 ring-zinc-400/55 shadow-[0_0_50px_rgba(0,0,0,0.88),inset_0_0_28px_rgba(0,0,0,0.75)] flex items-center justify-center"
               >
-                <line x1="4" y1="100" x2="88" y2="100" stroke="currentColor" strokeWidth="0.9" />
-                <line x1="112" y1="100" x2="196" y2="100" stroke="currentColor" strokeWidth="0.9" />
-                <line x1="100" y1="4" x2="100" y2="88" stroke="currentColor" strokeWidth="0.9" />
-                <line x1="100" y1="112" x2="100" y2="196" stroke="currentColor" strokeWidth="0.9" />
-                {/* Thick Outer German #4 Duplex Posts */}
-                <line x1="4" y1="100" x2="36" y2="100" stroke="currentColor" strokeWidth="2.4" />
-                <line x1="164" y1="100" x2="196" y2="100" stroke="currentColor" strokeWidth="2.4" />
-                <line x1="100" y1="164" x2="100" y2="196" stroke="currentColor" strokeWidth="2.4" />
-                {/* Mil-Dot Windage & Elevation Ticks */}
-                {[-36, -24, -12, 12, 24, 36].map((offset) => (
-                  <g key={offset}>
-                    <line
-                      x1={100 + offset}
-                      y1="97.5"
-                      x2={100 + offset}
-                      y2="102.5"
-                      stroke="currentColor"
-                      strokeWidth="0.85"
-                    />
-                    <line
-                      x1="97.5"
-                      y1={100 + offset}
-                      x2="102.5"
-                      y2={100 + offset}
-                      stroke="currentColor"
-                      strokeWidth="0.85"
-                    />
-                  </g>
-                ))}
-                {/* Illuminated Center Chevron & Red Precision Dot */}
-                <path
-                  d="M96 103 L100 98.5 L104 103"
-                  stroke="#10b981"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-                <circle cx="100" cy="100" r="1.5" fill="#ef4444" />
-                {/* Rangefinder Stadia Ladder */}
-                <line x1="94" y1="122" x2="106" y2="122" stroke="#10b981" strokeWidth="0.75" strokeOpacity="0.8" />
-                <line x1="96" y1="132" x2="104" y2="132" stroke="#10b981" strokeWidth="0.75" strokeOpacity="0.8" />
-                <line x1="97.5" y1="142" x2="102.5" y2="142" stroke="#10b981" strokeWidth="0.75" strokeOpacity="0.8" />
-              </svg>
-              <div className="absolute bottom-6 px-2.5 py-0.5 rounded-full bg-black/75 border border-emerald-400/35 font-mono text-[10px] text-emerald-300 tracking-widest">
-                8.0X OPTIC
-              </div>
-            </div>
-          </div>
-        ) : (
-          /* Realistic Circular 2.0X Tactical Red-Dot / Holographic Tube Scope with Clear Side View */
-          <div className="relative w-full h-full flex items-center justify-center pointer-events-none">
-            {/* Subtle Peripheral Dimming (Side screen remains clearly visible!) */}
-            <div
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                background:
-                  'radial-gradient(circle at center, transparent 150px, rgba(8, 12, 18, 0.22) 210px, rgba(6, 9, 14, 0.42) 100%)',
-              }}
-            />
+                {/* Inner Anti-Reflective Emerald Lens Bezel */}
+                <div className="absolute inset-1.5 rounded-full border border-emerald-400/35 pointer-events-none" />
+                <div className="absolute inset-3.5 rounded-full border border-white/10 pointer-events-none" />
 
-            {/* Cylindrical Machined Red-Dot Scope Housing */}
-            <div className="relative w-[280px] h-[280px] sm:w-[330px] sm:h-[330px] rounded-full border-[11px] sm:border-[13px] border-[#11151c] ring-2 ring-zinc-400/55 bg-sky-500/[0.03] shadow-[0_0_45px_rgba(0,0,0,0.8),inset_0_0_24px_rgba(56,189,248,0.14)] flex items-center justify-center">
-              {/* Inner Anti-Reflective Lens Bezel */}
-              <div className="absolute inset-1.5 rounded-full border border-sky-400/35 pointer-events-none" />
-              {/* Top Fiber-Optic Cap & Side Windage Turret Knob */}
-              <div className="absolute -top-4 w-20 h-3 rounded-t-md bg-zinc-800 border border-white/25 flex items-center justify-center">
-                <div className="w-12 h-0.5 bg-emerald-400/85 rounded-full" />
-              </div>
-              <div className="absolute -right-4 w-3.5 h-10 rounded-r-md bg-zinc-800 border border-white/25" />
+                {/* Top Elevation & Side Windage Turret Caps */}
+                <div className="absolute -top-4 w-16 h-3 rounded-t-md bg-zinc-800 border border-white/25 flex items-center justify-center">
+                  <div className="w-10 h-0.5 bg-emerald-400/85 rounded-full" />
+                </div>
+                <div className="absolute -right-4 w-3.5 h-10 rounded-r-md bg-zinc-800 border border-white/25" />
 
-              {/* Precision Illuminated Circular Reflex Reticle */}
-              <svg
-                className="w-52 h-52 text-rose-500 drop-shadow-[0_0_8px_rgba(244,63,94,0.85)] pointer-events-none"
-                viewBox="0 0 200 200"
-                fill="none"
+                {/* Centered 2.0X Tactical Circle-Dot & Chevron SVG Reticle */}
+                <svg
+                  data-testid="reticle-svg-2x"
+                  className="w-56 h-56 pointer-events-none"
+                  viewBox="0 0 200 200"
+                  fill="none"
+                >
+                  {/* Outer Interrupted Stadia Ring */}
+                  <circle
+                    cx="100"
+                    cy="100"
+                    r="34"
+                    stroke="#10b981"
+                    strokeWidth="1.6"
+                    strokeDasharray="28 10"
+                    strokeOpacity="0.92"
+                  />
+                  {/* Horizontal & Vertical Guide Stadia Ticks */}
+                  <line x1="22" y1="100" x2="58" y2="100" stroke="#e4e4e7" strokeWidth="1.2" strokeOpacity="0.85" />
+                  <line x1="142" y1="100" x2="178" y2="100" stroke="#e4e4e7" strokeWidth="1.2" strokeOpacity="0.85" />
+                  <line x1="100" y1="22" x2="100" y2="58" stroke="#e4e4e7" strokeWidth="1.2" strokeOpacity="0.85" />
+                  <line x1="100" y1="142" x2="100" y2="178" stroke="#e4e4e7" strokeWidth="1.2" strokeOpacity="0.85" />
+                  {[-18, -10, 10, 18].map((tick) => (
+                    <line
+                      key={tick}
+                      x1={100 + tick}
+                      y1="98"
+                      x2={100 + tick}
+                      y2="102"
+                      stroke="#10b981"
+                      strokeWidth="1.0"
+                      strokeOpacity="0.8"
+                    />
+                  ))}
+                  {/* Illuminated Center Aiming Chevron + Precision Dot */}
+                  <path
+                    d="M95.5 104.5 L100 99.5 L104.5 104.5"
+                    stroke="#10b981"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <circle cx="100" cy="100" r="1.9" fill="#34d399" />
+                  <circle cx="100" cy="110" r="1.1" fill="#10b981" fillOpacity="0.8" />
+                </svg>
+
+                <div className="absolute bottom-5 px-2.5 py-0.5 rounded-full bg-black/80 border border-emerald-400/40 font-mono text-[10px] text-emerald-300 tracking-widest">
+                  2.0X OPTIC
+                </div>
+              </div>
+            ) : (
+              /* 4.0X ACOG MARKSMAN / HIGH-POWER BALLISTIC SCOPE LENS & BDC MIL-HASH RETICLE */
+              <div
+                data-testid="scope-lens-4x"
+                style={{
+                  transform: 'scale(var(--scope-lens-scale, 1))',
+                  backgroundColor: activeOptic.overlay.glassTintCss,
+                }}
+                className="relative w-[330px] h-[330px] sm:w-[390px] sm:h-[390px] rounded-full border-[14px] sm:border-[16px] border-[#0b0e14] ring-2 ring-zinc-400/50 shadow-[0_0_65px_rgba(0,0,0,0.92),inset_0_0_36px_rgba(0,0,0,0.85)] flex items-center justify-center"
               >
-                <circle
-                  cx="100"
-                  cy="100"
-                  r="32"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeDasharray="25 10"
-                />
-                <circle
-                  cx="100"
-                  cy="100"
-                  r="13"
-                  stroke="currentColor"
-                  strokeWidth="1.1"
-                  strokeOpacity="0.68"
-                />
-                <line x1="100" y1="44" x2="100" y2="62" stroke="currentColor" strokeWidth="1.8" />
-                <line x1="100" y1="138" x2="100" y2="156" stroke="currentColor" strokeWidth="1.8" />
-                <line x1="44" y1="100" x2="62" y2="100" stroke="currentColor" strokeWidth="1.8" />
-                <line x1="138" y1="100" x2="156" y2="100" stroke="currentColor" strokeWidth="1.8" />
-                <circle cx="100" cy="100" r="2.2" fill="#fda4af" />
-                <circle cx="100" cy="108" r="1.2" fill="#fb7185" fillOpacity="0.8" />
-              </svg>
+                {/* Top Fiber-Optic & Right Windage Mechanical Turret Knobs */}
+                <div className="absolute -top-6 w-14 h-4 rounded-t-md bg-zinc-800 border border-zinc-500/50 shadow-md flex items-center justify-center">
+                  <div className="w-8 h-1 bg-rose-500/85 rounded-full" />
+                </div>
+                <div className="absolute -right-6 w-4 h-12 rounded-r-md bg-zinc-800 border border-zinc-500/50 shadow-md" />
+                <div className="absolute -left-5 w-3.5 h-9 rounded-l-md bg-zinc-800 border border-zinc-500/40" />
 
-              <div className="absolute bottom-5 px-2.5 py-0.5 rounded-full bg-black/75 border border-sky-400/35 font-mono text-[10px] text-sky-300 tracking-widest">
-                2.0X OPTIC
+                {/* Inner Anti-Reflective Lens Coating Rings */}
+                <div className="absolute inset-1.5 rounded-full border border-sky-400/35 pointer-events-none" />
+                <div className="absolute inset-4 rounded-full border border-white/10 pointer-events-none" />
+
+                {/* Precision 4.0X BDC Mil-Hash & Chevron Marksman Reticle */}
+                <svg
+                  data-testid="reticle-svg-4x"
+                  className="w-full h-full text-zinc-100/92 pointer-events-none"
+                  viewBox="0 0 200 200"
+                  fill="none"
+                >
+                  <line x1="4" y1="100" x2="88" y2="100" stroke="currentColor" strokeWidth="0.9" />
+                  <line x1="112" y1="100" x2="196" y2="100" stroke="currentColor" strokeWidth="0.9" />
+                  <line x1="100" y1="4" x2="100" y2="88" stroke="currentColor" strokeWidth="0.9" />
+                  <line x1="100" y1="112" x2="100" y2="196" stroke="currentColor" strokeWidth="0.9" />
+                  {/* Thick Outer Duplex Posts */}
+                  <line x1="4" y1="100" x2="36" y2="100" stroke="currentColor" strokeWidth="2.4" />
+                  <line x1="164" y1="100" x2="196" y2="100" stroke="currentColor" strokeWidth="2.4" />
+                  <line x1="100" y1="164" x2="100" y2="196" stroke="currentColor" strokeWidth="2.4" />
+                  {/* Mil-Hash Windage & Elevation Ticks */}
+                  {[-36, -24, -12, 12, 24, 36].map((offset) => (
+                    <g key={offset}>
+                      <line
+                        x1={100 + offset}
+                        y1="97.5"
+                        x2={100 + offset}
+                        y2="102.5"
+                        stroke="currentColor"
+                        strokeWidth="0.85"
+                      />
+                      <line
+                        x1="97.5"
+                        y1={100 + offset}
+                        x2="102.5"
+                        y2={100 + offset}
+                        stroke="currentColor"
+                        strokeWidth="0.85"
+                      />
+                    </g>
+                  ))}
+                  {/* Illuminated Crimson Center Chevron & BDC Holdover Ladder */}
+                  <path
+                    d="M96 103.5 L100 98.5 L104 103.5"
+                    stroke="#f43f5e"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <circle cx="100" cy="100" r="1.4" fill="#fb7185" />
+                  <line x1="94" y1="118" x2="106" y2="118" stroke="#f43f5e" strokeWidth="0.85" strokeOpacity="0.88" />
+                  <line x1="95.5" y1="128" x2="104.5" y2="128" stroke="#f43f5e" strokeWidth="0.85" strokeOpacity="0.85" />
+                  <line x1="97" y1="138" x2="103" y2="138" stroke="#f43f5e" strokeWidth="0.85" strokeOpacity="0.82" />
+                </svg>
+
+                <div className="absolute bottom-6 px-2.5 py-0.5 rounded-full bg-black/80 border border-rose-400/40 font-mono text-[10px] text-rose-300 tracking-widest">
+                  {activeOptic.magnification.toFixed(1)}X OPTIC
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
       </div>
 
       {/* =================================================================== */}
-      {/* 1. CENTER FPS CROSSHAIR & HIT MARKER                                */}
+      {/* 1. DYNAMIC BALLISTIC CROSSHAIR & HIT MARKER                         */}
       {/* =================================================================== */}
       <div
         ref={hudRefs.crosshairRef}
+        data-testid="dynamic-crosshair"
+        data-gap-px="13.0"
+        data-spread-deg="1.60"
+        style={
+          {
+            '--ch-gap': '13px',
+            '--ch-tick-len': '9px',
+            '--ch-dot-scale': '1',
+            '--ch-color': '#f4f4f5',
+          } as React.CSSProperties
+        }
         className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none flex items-center justify-center transition-opacity duration-75"
       >
-        <div className="relative w-7 h-7 flex items-center justify-center">
-          <span className="absolute top-0 w-[1.5px] h-2 bg-zinc-100/90 shadow-sm" />
-          <span className="absolute bottom-0 w-[1.5px] h-2 bg-zinc-100/90 shadow-sm" />
-          <span className="absolute left-0 h-[1.5px] w-2 bg-zinc-100/90 shadow-sm" />
-          <span className="absolute right-0 h-[1.5px] w-2 bg-zinc-100/90 shadow-sm" />
-          <span className="w-1 h-1 rounded-full bg-zinc-100" />
+        <div className="relative w-32 h-32 flex items-center justify-center">
+          {/* Top Dynamic Tick */}
+          <span
+            data-testid="crosshair-tick-top"
+            style={{
+              height: 'var(--ch-tick-len, 9px)',
+              backgroundColor: 'var(--ch-color, #f4f4f5)',
+              transform:
+                'translate3d(0, calc(-1 * var(--ch-gap, 13px) - var(--ch-tick-len, 9px) * 0.5), 0)',
+            }}
+            className="absolute w-[2px] rounded-full shadow-[0_0_3px_rgba(0,0,0,0.95)] ring-[0.5px] ring-black/75"
+          />
+
+          {/* Bottom Dynamic Tick */}
+          <span
+            data-testid="crosshair-tick-bottom"
+            style={{
+              height: 'var(--ch-tick-len, 9px)',
+              backgroundColor: 'var(--ch-color, #f4f4f5)',
+              transform:
+                'translate3d(0, calc(var(--ch-gap, 13px) + var(--ch-tick-len, 9px) * 0.5), 0)',
+            }}
+            className="absolute w-[2px] rounded-full shadow-[0_0_3px_rgba(0,0,0,0.95)] ring-[0.5px] ring-black/75"
+          />
+
+          {/* Left Dynamic Tick */}
+          <span
+            data-testid="crosshair-tick-left"
+            style={{
+              width: 'var(--ch-tick-len, 9px)',
+              backgroundColor: 'var(--ch-color, #f4f4f5)',
+              transform:
+                'translate3d(calc(-1 * var(--ch-gap, 13px) - var(--ch-tick-len, 9px) * 0.5), 0, 0)',
+            }}
+            className="absolute h-[2px] rounded-full shadow-[0_0_3px_rgba(0,0,0,0.95)] ring-[0.5px] ring-black/75"
+          />
+
+          {/* Right Dynamic Tick */}
+          <span
+            data-testid="crosshair-tick-right"
+            style={{
+              width: 'var(--ch-tick-len, 9px)',
+              backgroundColor: 'var(--ch-color, #f4f4f5)',
+              transform:
+                'translate3d(calc(var(--ch-gap, 13px) + var(--ch-tick-len, 9px) * 0.5), 0, 0)',
+            }}
+            className="absolute h-[2px] rounded-full shadow-[0_0_3px_rgba(0,0,0,0.95)] ring-[0.5px] ring-black/75"
+          />
+
+          {/* Precision Center Aim Dot */}
+          <span
+            data-testid="crosshair-center-dot"
+            style={{
+              backgroundColor: 'var(--ch-color, #f4f4f5)',
+              transform: 'scale(var(--ch-dot-scale, 1))',
+            }}
+            className="w-1.5 h-1.5 rounded-full shadow-[0_0_3px_rgba(0,0,0,0.95)] ring-[0.5px] ring-black/80"
+          />
         </div>
 
         {/* Hit Marker X */}
@@ -899,6 +1106,114 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
             )}
           </button>
 
+          {/* Tactical Backpack Toggle Button [B] */}
+          <button
+            type="button"
+            tabIndex={-1}
+            data-testid="hud-backpack-button"
+            aria-label="Toggle Tactical Backpack (B)"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              const now = performance.now();
+              if (now - lastBackpackTapTimeRef.current < 320) return;
+              lastBackpackTapTimeRef.current = now;
+              soundEngine.play('ui_click');
+              onToggleBackpack?.();
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              e.currentTarget.blur();
+              const now = performance.now();
+              if (now - lastBackpackTapTimeRef.current < 320) return;
+              lastBackpackTapTimeRef.current = now;
+              soundEngine.play('ui_click');
+              onToggleBackpack?.();
+            }}
+            className={`h-9 px-2.5 rounded-lg border flex items-center gap-1.5 cursor-pointer text-xs font-mono font-bold tracking-wider transition-colors ${
+              backpackOpen
+                ? 'bg-emerald-500 text-zinc-950 border-emerald-300 shadow-[0_0_16px_rgba(16,185,129,0.45)]'
+                : 'bg-[#111318]/90 hover:bg-zinc-800 border-white/15 text-zinc-200'
+            }`}
+          >
+            <svg className="w-3.5 h-3.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+              <path d="M6 7h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z" />
+              <path d="M9 7V5a3 3 0 0 1 6 0v2" />
+              <path d="M8 12h8" />
+            </svg>
+            <span>BAG [B]</span>
+          </button>
+
+          {/* TPV / FPV View Mode Toggle Button */}
+          <button
+            type="button"
+            tabIndex={-1}
+            data-testid="view-mode-toggle"
+            aria-label={firstPersonMode ? 'Switch to Third Person View (V)' : 'Switch to First Person View (V)'}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              handleViewModeToggle();
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleViewModeToggle();
+            }}
+            className="h-9 px-2.5 rounded-lg bg-[#111318]/90 hover:bg-zinc-800 border border-white/15 flex items-center gap-1.5 text-zinc-200 cursor-pointer text-xs font-mono font-bold tracking-wider"
+          >
+            {firstPersonMode ? (
+              <>
+                <svg className="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                <span className="text-sky-300">TPV</span>
+              </>
+            ) : (
+              <>
+                <svg className="w-3.5 h-3.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                  <circle cx="12" cy="12" r="8" />
+                  <line x1="12" y1="2" x2="12" y2="6" />
+                  <line x1="12" y1="18" x2="12" y2="22" />
+                  <line x1="2" y1="12" x2="6" y2="12" />
+                  <line x1="18" y1="12" x2="22" y2="12" />
+                </svg>
+                <span className="text-emerald-300">FPV</span>
+              </>
+            )}
+          </button>
+
+          {/* 3rd-Person 360° Free-Look Eye Button (Drag to orbit around front/back/sides without turning character) */}
+          {!firstPersonMode && (
+            <button
+              type="button"
+              tabIndex={-1}
+              data-testid="tpv-freelook-eye"
+              aria-label="Hold and drag to inspect character 360 degrees (or hold Alt)"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                try {
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                } catch {
+                  // ignore
+                }
+                freeLookPointerId.current = e.pointerId;
+                freeLookLastPos.current = { x: e.clientX, y: e.clientY };
+                touchInputRef.current.freeLookActive = true;
+                setIsFreeLookEyeActive(true);
+              }}
+              className={`h-9 px-2.5 rounded-lg border flex items-center gap-1.5 cursor-grab active:cursor-grabbing text-xs font-mono font-bold tracking-wider touch-none transition-colors ${
+                isFreeLookEyeActive
+                  ? 'bg-sky-500/30 border-sky-400 text-sky-200 shadow-[0_0_16px_rgba(56,189,248,0.4)]'
+                  : 'bg-[#111318]/90 hover:bg-zinc-800 border-white/15 text-zinc-200'
+              }`}
+            >
+              <svg className="w-3.5 h-3.5 text-sky-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+              <span className="hidden sm:inline text-[10px] text-sky-200">360°</span>
+            </button>
+          )}
+
           <button
             type="button"
             tabIndex={-1}
@@ -922,8 +1237,11 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
             aria-label="Pause Game"
             onPointerDown={(e) => {
               e.stopPropagation();
-              soundEngine.play('ui_click');
-              onPause();
+              handlePauseTrigger();
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              handlePauseTrigger();
             }}
             className="w-9 h-9 rounded-lg bg-[#111318]/90 hover:bg-zinc-800 border border-white/15 flex items-center justify-center text-zinc-200 cursor-pointer"
           >
@@ -971,8 +1289,80 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
           </div>
         </div>
 
-        {/* CENTER-BOTTOM: 2 Small Gun Boxes ABOVE Sleek Thin Green Health Line + Side Percentage */}
-        <div className="flex flex-col items-center gap-2 mx-auto" data-ui-interactive="true">
+        {/* CENTER-BOTTOM: Nearby Loot Prompt + Optic Selector + 2 Small Gun Boxes ABOVE Sleek Thin Green Health Line */}
+        <div className="flex flex-col items-center gap-1.5 mx-auto" data-ui-interactive="true">
+          {/* Proximity World Loot Pickup Prompt ([E] Pick Up ...) */}
+          {nearbyLootPrompt && (
+            <button
+              type="button"
+              tabIndex={-1}
+              data-testid="hud-loot-pickup-prompt"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                const now = performance.now();
+                if (now - lastLootPickupTapTimeRef.current < 320) return;
+                lastLootPickupTapTimeRef.current = now;
+                soundEngine.play('ui_confirm');
+                onPickupNearbyLoot?.(nearbyLootPrompt.lootId);
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                e.currentTarget.blur();
+                const now = performance.now();
+                if (now - lastLootPickupTapTimeRef.current < 320) return;
+                lastLootPickupTapTimeRef.current = now;
+                soundEngine.play('ui_confirm');
+                onPickupNearbyLoot?.(nearbyLootPrompt.lootId);
+              }}
+              className="pointer-events-auto flex items-center gap-2 px-3 py-1 rounded-lg bg-emerald-950/90 hover:bg-emerald-900/95 border border-emerald-400/60 shadow-[0_0_16px_rgba(16,185,129,0.35)] text-emerald-100 font-mono text-[11px] font-bold tracking-wide cursor-pointer"
+            >
+              <span className="px-1.5 py-0.5 rounded bg-emerald-500 text-zinc-950 font-black text-[10px]">
+                E
+              </span>
+              <span>PICK UP {nearbyLootPrompt.label.toUpperCase()}</span>
+            </button>
+          )}
+
+          {/* Quick Optic Attachment Selector Bar (IRON 1x | 2X Scope | 4X Scope) */}
+          <div
+            data-testid="hud-optic-selector"
+            className="pointer-events-auto flex items-center gap-1 px-1.5 py-0.5 rounded-lg bg-[#111318]/90 border border-white/15 shadow-md"
+          >
+            <span className="font-mono text-[9px] uppercase tracking-wider text-zinc-400 px-1">
+              OPTIC
+            </span>
+            {CORE_SELECTABLE_OPTICS.map((optId) => {
+              const cfg = getOpticConfig(optId);
+              const isEquipped = activeOpticId === optId;
+              return (
+                <button
+                  key={optId}
+                  type="button"
+                  tabIndex={-1}
+                  data-testid={`optic-btn-${optId}`}
+                  aria-label={`Equip ${cfg.name}`}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    soundEngine.play('ui_click');
+                    onSelectWeaponOptic?.(currentWeapon, optId);
+                  }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    e.currentTarget.blur();
+                    onSelectWeaponOptic?.(currentWeapon, optId);
+                  }}
+                  className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold tracking-wider transition-colors cursor-pointer touch-manipulation ${
+                    isEquipped
+                      ? 'bg-emerald-500 text-zinc-950 shadow-sm'
+                      : 'text-zinc-300 hover:bg-white/10 hover:text-white'
+                  }`}
+                >
+                  {cfg.shortLabel}
+                </button>
+              );
+            })}
+          </div>
+
           {/* 2 Small Gun Boxes Directly Above Health Bar (1-Tap Switch or Reload) */}
           <div
             style={getBtnTransform('weaponBar')}
@@ -981,11 +1371,14 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
             {loadoutWeapons.map((wid, idx) => {
               const spec = WEAPON_REGISTRY[wid];
               const isSelected = currentWeapon === wid;
+              const slotOpticId = resolveEquippedOptic(wid, settings?.weaponOptics);
+              const slotOpticCfg = getOpticConfig(slotOpticId);
               return (
                 <button
                   key={wid}
                   type="button"
                   tabIndex={-1}
+                  data-testid={`weapon-slot-${idx + 1}`}
                   aria-label={`Weapon Slot ${idx + 1}`}
                   onPointerDown={(e) => {
                     e.stopPropagation();
@@ -1002,6 +1395,11 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
                       : 'bg-[#111318]/88 border-white/15 hover:border-white/35 opacity-80 hover:opacity-100'
                   }`}
                 >
+                  {/* Equipped Optic Mini Badge on Top-Right of Gun Slot */}
+                  <span className="pointer-events-none absolute top-1 right-1.5 font-mono text-[8px] font-bold tracking-wider px-1 rounded bg-black/65 text-emerald-300 border border-white/10">
+                    {slotOpticCfg.shortLabel}
+                  </span>
+
                   {/* Actual Gun Image ONLY (No Gun Name) */}
                   <WeaponIllustration weaponId={wid} className="w-22 sm:w-25 h-8 sm:h-9 pointer-events-none" />
 
@@ -1019,29 +1417,47 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
             })}
           </div>
 
-          {/* Sleek Thin Green Health Line (NO Bulky Outer Box!) + Percentage Directly Beside It */}
+          {/* Sleek Thin Green Health Line (NO Bulky Outer Box!) + Armor Bar + Percentage Directly Beside It */}
           <div
             style={getBtnTransform('healthBar')}
-            className="pointer-events-none flex items-center gap-2.5 px-1 py-0.5"
+            className="pointer-events-none flex flex-col items-center gap-1 px-1 py-0.5"
           >
-            <div className="relative h-2 w-44 sm:w-56 bg-black/65 rounded-full overflow-hidden border border-white/15 shadow-[0_2px_10px_rgba(0,0,0,0.85)]">
-              <div
-                ref={hudRefs.p1HpGhost}
-                className="absolute inset-y-0 left-0 bg-emerald-900/70 transition-all duration-300"
-                style={{ width: '100%' }}
-              />
-              <div
-                ref={hudRefs.p1HpFill}
-                className="relative h-full bg-gradient-to-r from-emerald-500 to-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.9)] transition-all duration-75"
-                style={{ width: '100%' }}
-              />
+            {maxArmorHp > 0 && armorHp > 0 && (
+              <div className="flex items-center gap-2.5">
+                <div className="relative h-1.5 w-44 sm:w-56 bg-black/65 rounded-full overflow-hidden border border-sky-400/25">
+                  <div
+                    data-testid="hud-armor-fill"
+                    className="h-full bg-gradient-to-r from-sky-500 to-cyan-400 transition-all duration-150"
+                    style={{
+                      width: `${Math.max(0, Math.min(100, (armorHp / Math.max(1, maxArmorHp)) * 100)).toFixed(1)}%`,
+                    }}
+                  />
+                </div>
+                <span className="font-mono font-bold text-[10px] text-sky-300 tabular-nums leading-none min-w-[38px]">
+                  {Math.round(armorHp)} AP
+                </span>
+              </div>
+            )}
+            <div className="flex items-center gap-2.5">
+              <div className="relative h-2 w-44 sm:w-56 bg-black/65 rounded-full overflow-hidden border border-white/15 shadow-[0_2px_10px_rgba(0,0,0,0.85)]">
+                <div
+                  ref={hudRefs.p1HpGhost}
+                  className="absolute inset-y-0 left-0 bg-emerald-900/70 transition-all duration-300"
+                  style={{ width: '100%' }}
+                />
+                <div
+                  ref={hudRefs.p1HpFill}
+                  className="relative h-full bg-gradient-to-r from-emerald-500 to-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.9)] transition-all duration-75"
+                  style={{ width: '100%' }}
+                />
+              </div>
+              <span
+                ref={hudRefs.p1HpText}
+                className="font-mono font-black text-xs sm:text-sm text-emerald-400 drop-shadow-[0_1px_4px_rgba(0,0,0,0.95)] tabular-nums leading-none min-w-[38px]"
+              >
+                100%
+              </span>
             </div>
-            <span
-              ref={hudRefs.p1HpText}
-              className="font-mono font-black text-xs sm:text-sm text-emerald-400 drop-shadow-[0_1px_4px_rgba(0,0,0,0.95)] tabular-nums leading-none min-w-[38px]"
-            >
-              100%
-            </span>
           </div>
         </div>
 
@@ -1105,6 +1521,8 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
             aria-label="Reload Weapon"
             onPointerDown={(e) => {
               e.stopPropagation();
+              setAdsToggled(false);
+              touchInputRef.current.aimHeld = false;
               touchInputRef.current.heavyPressed = true;
               lookPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
             }}
@@ -1117,6 +1535,7 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
           {/* 5. SCOPE / ADS BUTTON */}
           <button
             type="button"
+            data-testid="hud-ads-button"
             aria-label="Aim Down Sights"
             onPointerDown={(e) => {
               e.stopPropagation();
@@ -1194,7 +1613,7 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
             loadoutOverlayMode === 'initial' ? 'Select Loadout to Spawn' : 'Respawn Loadout Select'
           }
           data-ui-interactive="true"
-          className="fixed inset-0 z-40 bg-[#090c12]/80 backdrop-blur-xs flex items-center justify-center p-4 pointer-events-auto select-none"
+          className="fixed inset-0 z-40 bg-[#090c12]/65 flex items-center justify-center p-4 pointer-events-auto select-none"
         >
           <div className="w-full max-w-lg bg-[#12151d] border border-white/15 rounded-2xl p-5 sm:p-6 flex flex-col items-center gap-4 shadow-2xl">
             <div className="text-center">
@@ -1256,13 +1675,11 @@ export const CombatHUD: React.FC<CombatHUDProps> = ({
                 aria-label="Respawn"
                 onPointerDown={(e) => {
                   e.stopPropagation();
-                  soundEngine.play('ui_confirm');
-                  onConfirmRespawn?.();
+                  handleRespawnTrigger();
                 }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  soundEngine.play('ui_confirm');
-                  onConfirmRespawn?.();
+                  handleRespawnTrigger();
                 }}
                 className="w-full py-3.5 px-6 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-display font-black text-base uppercase tracking-wider shadow-[0_0_24px_rgba(16,185,129,0.45)] transition-transform active:scale-98 cursor-pointer touch-manipulation"
               >

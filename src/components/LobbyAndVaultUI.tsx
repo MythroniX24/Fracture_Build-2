@@ -43,6 +43,11 @@ import { SharedSettingsPanel } from './MenuScreens.tsx';
 import { WeaponIllustration } from './WeaponArtwork.tsx';
 import { soundEngine } from '../audio/soundEngine.ts';
 import { DEFAULT_SETTINGS } from '../game/config.ts';
+import {
+  CORE_SELECTABLE_OPTICS,
+  getOpticConfig,
+  resolveEquippedOptic,
+} from '../game/ads/index.ts';
 
 export interface PartyMemberSlot {
   id: string;
@@ -137,6 +142,7 @@ export interface LobbyAndVaultUIProps {
   onSelectWeapon: (weaponId: WeaponId) => void;
   onStartMatch: () => void;
   onOpenSettingsModal: () => void;
+  onOpenBackpack?: () => void;
   onClaimMission: (missionId: string) => void;
   onPurchaseCosmeticItem: (itemId: string, price: number, currency?: 'coins' | 'gems') => void;
   // Studio handlers
@@ -2346,6 +2352,11 @@ export const LobbyAndVaultUI: React.FC<LobbyAndVaultUIProps> = (props) => {
                   {loadoutWeapons.map((wid, idx) => {
                     const w = WEAPON_REGISTRY[wid];
                     const active = selectedWeapon === wid;
+                    const optId = resolveEquippedOptic(
+                      wid,
+                      settings?.weaponOptics
+                    );
+                    const optCfg = getOpticConfig(optId);
                     return (
                       <button
                         key={wid}
@@ -2357,14 +2368,66 @@ export const LobbyAndVaultUI: React.FC<LobbyAndVaultUIProps> = (props) => {
                             : 'bg-slate-900/80 border-slate-700'
                         }`}
                       >
-                        <div className="text-[10px] font-semibold text-sky-400">
-                          Slot {idx + 1}
+                        <div className="flex items-center justify-between text-[10px] font-semibold text-sky-400">
+                          <span>Slot {idx + 1}</span>
+                          <span className="font-mono text-emerald-300">
+                            {optCfg.shortLabel}
+                          </span>
                         </div>
                         <div className="text-xs font-bold text-white truncate">
                           {w.name}
                         </div>
                         <div className="text-[10px] text-slate-400 tabular-nums">
                           {w.damage} DMG · {w.magSize} RDS
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Optic Attachment Selector for Active Weapon */}
+              <div>
+                <div className="flex items-center justify-between text-[11px] font-semibold text-slate-300 mb-1.5">
+                  <span>Optic Attachment ({WEAPON_REGISTRY[selectedWeapon].shortName})</span>
+                  <span className="font-mono text-[10px] text-emerald-400">
+                    {
+                      getOpticConfig(
+                        resolveEquippedOptic(selectedWeapon, settings?.weaponOptics)
+                      ).name
+                    }
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {CORE_SELECTABLE_OPTICS.map((optId) => {
+                    const cfg = getOpticConfig(optId);
+                    const activeOpt =
+                      resolveEquippedOptic(selectedWeapon, settings?.weaponOptics) ===
+                      optId;
+                    return (
+                      <button
+                        key={optId}
+                        type="button"
+                        onClick={() => {
+                          soundEngine.play('ui_click');
+                          onUpdateSettings?.({
+                            weaponOptics: {
+                              ...(settings?.weaponOptics || DEFAULT_SETTINGS.weaponOptics),
+                              [selectedWeapon]: optId,
+                            },
+                          });
+                        }}
+                        className={`py-1.5 px-2 rounded border text-center transition-all ${
+                          activeOpt
+                            ? 'bg-emerald-500/20 border-emerald-400 text-emerald-200 font-bold'
+                            : 'bg-slate-900/80 border-slate-700 text-slate-300 hover:border-slate-500'
+                        }`}
+                      >
+                        <div className="font-mono text-[11px] font-bold">
+                          {cfg.shortLabel}
+                        </div>
+                        <div className="text-[9px] text-slate-400">
+                          {cfg.magnification.toFixed(1)}x Zoom
                         </div>
                       </button>
                     );
@@ -2383,6 +2446,14 @@ export const LobbyAndVaultUI: React.FC<LobbyAndVaultUIProps> = (props) => {
                 className="px-2.5 py-2 rounded bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200 border border-slate-600 whitespace-nowrap"
               >
                 Reset
+              </button>
+              <button
+                type="button"
+                data-testid="lobby-open-backpack-btn"
+                onClick={() => props.onOpenBackpack?.()}
+                className="px-2.5 py-2 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-[11px] font-bold text-emerald-300 border border-emerald-400/50 whitespace-nowrap"
+              >
+                Backpack [B]
               </button>
               <button
                 type="button"
@@ -2432,6 +2503,14 @@ export const LobbyAndVaultUI: React.FC<LobbyAndVaultUIProps> = (props) => {
                   {label}
                 </button>
               ))}
+              <button
+                type="button"
+                data-testid="armory-open-backpack-btn"
+                onClick={() => props.onOpenBackpack?.()}
+                className="ml-1 px-2.5 py-1 rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-[11px] font-bold text-emerald-300 border border-emerald-400/50 whitespace-nowrap"
+              >
+                Backpack [B]
+              </button>
               <button
                 type="button"
                 onClick={() => handleNavigateTab('home')}
@@ -2503,6 +2582,50 @@ export const LobbyAndVaultUI: React.FC<LobbyAndVaultUIProps> = (props) => {
                     <div className="flex justify-between tabular-nums">
                       <span className="text-slate-400">Magazine</span>
                       <span className="font-semibold text-white">{spec.magSize} rds</span>
+                    </div>
+                    <div className="pt-1.5 border-t border-slate-800/80">
+                      <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
+                        <span>Optic Sight</span>
+                        <span className="font-mono text-emerald-300 font-bold">
+                          {
+                            getOpticConfig(
+                              resolveEquippedOptic(wid, settings?.weaponOptics)
+                            ).name
+                          }
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        {CORE_SELECTABLE_OPTICS.map((optId) => {
+                          const cfg = getOpticConfig(optId);
+                          const isOptEquipped =
+                            resolveEquippedOptic(wid, settings?.weaponOptics) ===
+                            optId;
+                          return (
+                            <button
+                              key={optId}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                soundEngine.play('ui_click');
+                                onUpdateSettings?.({
+                                  weaponOptics: {
+                                    ...(settings?.weaponOptics ||
+                                      DEFAULT_SETTINGS.weaponOptics),
+                                    [wid]: optId,
+                                  },
+                                });
+                              }}
+                              className={`py-1 rounded font-mono text-[10px] font-bold border transition-colors ${
+                                isOptEquipped
+                                  ? 'bg-emerald-500 text-slate-950 border-emerald-400'
+                                  : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-slate-500'
+                              }`}
+                            >
+                              {cfg.shortLabel}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                     <button
                       type="button"
